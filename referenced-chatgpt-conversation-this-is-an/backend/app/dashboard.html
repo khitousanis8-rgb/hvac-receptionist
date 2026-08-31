@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HVAC Receptionist — Dashboard</title>
+<style>
+  :root {
+    --bg: #0f172a; --card: #1e293b; --border: #334155;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8;
+    --green: #4ade80; --amber: #fbbf24;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px;
+  }
+  header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 20px; }
+  h1 { font-size: 1.4rem; }
+  .meta { color: var(--muted); font-size: 0.85rem; }
+  .stats { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .stat {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 20px; min-width: 140px;
+  }
+  .stat .num { font-size: 1.6rem; font-weight: 700; color: var(--accent); }
+  .stat .label { color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden;
+  }
+  .card h2 {
+    font-size: 0.95rem; padding: 12px 16px;
+    border-bottom: 1px solid var(--border); color: var(--accent);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+  tr:last-child td { border-bottom: none; }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 0.72rem; font-weight: 600;
+  }
+  .badge.booked { background: #14532d; color: var(--green); }
+  .badge.info_only { background: #3b2f0b; color: var(--amber); }
+  .badge.in_progress { background: #1e3a5f; color: var(--accent); }
+  .badge.other { background: #3f3f46; color: var(--muted); }
+  .empty { color: var(--muted); padding: 20px 16px; font-style: italic; }
+  .summary { color: var(--muted); max-width: 320px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📞 HVAC Receptionist</h1>
+  <span class="meta" id="refreshed">loading…</span>
+</header>
+
+<div class="stats">
+  <div class="stat"><div class="num" id="stat-calls">–</div><div class="label">Calls (recent)</div></div>
+  <div class="stat"><div class="num" id="stat-booked">–</div><div class="label">Booked calls</div></div>
+  <div class="stat"><div class="num" id="stat-appts">–</div><div class="label">Appointments</div></div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Recent Calls</h2>
+    <table>
+      <thead><tr><th>When</th><th>Outcome</th><th>Summary</th></tr></thead>
+      <tbody id="calls"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Appointments</h2>
+    <table>
+      <thead><tr><th>When</th><th>Service</th><th>Customer</th></tr></thead>
+      <tbody id="appts"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+function esc(text) {
+  const div = document.createElement("div");
+  div.textContent = text == null ? "" : String(text);
+  return div.innerHTML;
+}
+function badge(outcome) {
+  const known = ["booked", "info_only", "in_progress"];
+  const cls = known.includes(outcome) ? outcome : "other";
+  return '<span class="badge ' + cls + '">' + esc(outcome) + "</span>";
+}
+function fmt(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+async function load() {
+  try {
+    const [callsRes, apptsRes] = await Promise.all([
+      fetch("/v1/calls?limit=50"), fetch("/v1/appointments?limit=50"),
+    ]);
+    const calls = await callsRes.json();
+    const appts = await apptsRes.json();
+
+    document.getElementById("stat-calls").textContent = calls.length;
+    document.getElementById("stat-booked").textContent =
+      calls.filter(function (c) { return c.outcome === "booked"; }).length;
+    document.getElementById("stat-appts").textContent = appts.length;
+
+    const callsBody = document.getElementById("calls");
+    if (calls.length === 0) {
+      callsBody.innerHTML = '<tr><td colspan="3" class="empty">No calls yet — make one from the LiveKit Playground!</td></tr>';
+    } else {
+      callsBody.innerHTML = calls.map(function (c) {
+        const summary = esc(c.transcript_summary ?? "—");
+        return "<tr><td>" + fmt(c.started_at) + "</td><td>" + badge(c.outcome)
+          + '</td><td class="summary">' + summary + "</td></tr>";
+      }).join("");
+    }
+
+    const apptsBody = document.getElementById("appts");
+    if (appts.length === 0) {
+      apptsBody.innerHTML = '<tr><td colspan="3" class="empty">No appointments booked yet.</td></tr>';
+    } else {
+      apptsBody.innerHTML = appts.map(function (a) {
+        const customer = esc(a.customer_name ?? "—")
+          + '<br><span class="meta">' + esc(a.customer_phone) + "</span>";
+        return "<tr><td>" + fmt(a.scheduled_for) + "</td><td>" + esc(a.service)
+          + "</td><td>" + customer + "</td></tr>";
+      }).join("");
+    }
+
+    document.getElementById("refreshed").textContent =
+      "updated " + new Date().toLocaleTimeString();
+  } catch (err) {
+    document.getElementById("refreshed").textContent = "error: " + err;
+  }
+}
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

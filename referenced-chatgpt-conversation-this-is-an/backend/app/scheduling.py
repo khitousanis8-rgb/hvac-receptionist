@@ -1,0 +1,124 @@
+"""Business-hours-aware scheduling with conflict-free slot booking."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.config import Settings
+from app.db import Appointment, Customer
+
+SLOT_MINUTES = 60
+BOOKABLE_STATUSES = ("booked",)
+
+
+def _parse_hhmm(value: str) -> dt_time:
+    hour, minute = value.split(":")
+    return dt_time(int(hour), int(minute))
+
+
+def is_within_business_hours(when: datetime, settings: Settings) -> bool:
+    """Check a timezone-aware datetime against the configured opening hours."""
+    local = when.astimezone(ZoneInfo(settings.business_timezone))
+    day_name = local.strftime("%A").lower()
+    window = settings.business_opening_hours.get(day_name, "closed")
+    if not window or window.lower() == "closed":
+        return False
+    start_s, end_s = window.split("-")
+    start = _parse_hhmm(start_s)
+    end = _parse_hhmm(end_s)
+    local_minutes = local.hour * 60 + local.minute
+    start_minutes = start.hour * 60 + start.minute
+    end_minutes = end.hour * 60 + end.minute
+    if end_s == "24:00":
+        end_minutes = 24 * 60
+    return start_minutes <= local_minutes and local_minutes + SLOT_MINUTES <= end_minutes
+
+
+def has_conflict(session: Session, when: datetime) -> bool:
+    """True if an active appointment already overlaps the requested slot."""
+    slot_end = when + timedelta(minutes=SLOT_MINUTES)
+    earliest_overlap = when - timedelta(minutes=SLOT_MINUTES)
+    existing = (
+        session.query(Appointment)
+        .filter(
+            Appointment.status.in_(BOOKABLE_STATUSES),
+            Appointment.scheduled_for < slot_end,
+            Appointment.scheduled_for > earliest_overlap,
+        )
+        .first()
+    )
+    return existing is not None
+
+
+def get_or_create_customer(
+    session: Session,
+    phone_number: str,
+    name: str | None = None,
+) -> Customer:
+    """Find a customer by phone number, creating a record when unknown."""
+    customer = session.query(Customer).filter_by(phone_number=phone_number).one_or_none()
+    if customer is None:
+        customer = Customer(phone_number=phone_number, name=name)
+        session.add(customer)
+        session.flush()
+    elif name and not customer.name:
+        customer.name = name
+    return customer
+
+
+def book_appointment(
+    session: Session,
+    settings: Settings,
+    phone_number: str,
+    service: str,
+    when: datetime,
+    name: str | None = None,
+    notes: str | None = None,
+) -> tuple[Appointment | None, str]:
+    """Book an appointment, enforcing business hours and conflicts.
+
+    Returns (appointment, message). appointment is None when booking fails.
+    """
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    if when < datetime.now(UTC):
+        return None, "That time is in the past. Please choose a future time."
+    if not is_within_business_hours(when, settings):
+        return None, (
+            "That time is outside business hours. Please choose a time during opening hours."
+        )
+    if has_conflict(session, when):
+        return None, "That slot is already taken. Please choose another time."
+
+    customer = get_or_create_customer(session, phone_number, name)
+    appointment = Appointment(
+        customer_id=customer.id,
+        service=service,
+        scheduled_for=when,
+        notes=notes,
+    )
+    session.add(appointment)
+    session.flush()
+    return appointment, f"Booked {service} at {when.isoformat()}"
+
+
+def list_upcoming(session: Session, phone_number: str) -> list[Appointment]:
+    """Return future active appointments for a customer phone number."""
+    now = datetime.now(UTC)
+    return list(
+        session.execute(
+            select(Appointment)
+            .join(Customer)
+            .where(
+                Customer.phone_number == phone_number,
+                Appointment.scheduled_for >= now,
+                Appointment.status == "booked",
+            )
+            .order_by(Appointment.scheduled_for)
+        ).scalars()
+    )

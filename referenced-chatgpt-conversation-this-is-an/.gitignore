@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Secrets and local configuration
+.env
+.env.local
+
+# Generated local data
+*.sqlite3
+*.db
+coverage.xml
+htmlcov/
+work/
+
+# Operating-system and editor files
+.DS_Store
+.idea/
+.vscode/

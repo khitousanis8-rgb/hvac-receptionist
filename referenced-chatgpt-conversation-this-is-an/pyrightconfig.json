@@ -1,0 +1,10 @@
+{
+    "venvPath": ".",
+    "venv": ".venv",
+    "extraPaths": ["backend"],
+    "include": ["backend"],
+    "exclude": ["**/__pycache__", "**/.pytest_cache", ".venv"],
+    "reportMissingImports": "error",
+    "reportMissingTypeStubs": false,
+    "typeCheckingMode": "basic"
+}
