@@ -1,39 +1,43 @@
 # Deployment Guide — Free Demo Hosting
 
-## Option 1 — Koyeb (no card required) ⭐ recommended for demos
+## Option 1 — Render.com (no card required) ⭐ recommended for demos
 
-Koyeb's free tier runs one always-on web service without a credit card —
-perfect for the API + agent worker (they share one container via `start.sh`).
+Render's free tier runs a Docker web service without a credit card — the API
+and agent worker share one container via `backend/start.sh`.
+Caveat: the service **sleeps after 15 min without HTTP traffic** and wakes in
+~30s on the next request (keep it awake with a free UptimeRobot ping).
 
-### Backend + agent worker on Koyeb
+### Backend + agent worker on Render
 
-1. Sign up at [app.koyeb.com](https://app.koyeb.com) with GitHub
-2. **Create Service** → connect your GitHub repo (`khitousanis8-rgb/hvac-receptionist`)
-3. Configure:
-   - **Builder:** Dockerfile → path `backend/Dockerfile`
-   - **Port:** `8000`, protocol HTTP
-   - **Instance:** Free
-   - **Scaling:** 1 instance (min 0 / max 1 is fine)
+1. Sign up at [dashboard.render.com](https://dashboard.render.com) with GitHub
+2. **New → Web Service** → connect the repo `khitousanis8-rgb/hvac-receptionist`
+3. Render auto-detects `render.yaml` (Dockerfile `backend/Dockerfile`, health
+   check `/health`, free plan). Confirm and continue.
 4. Add **environment variables** (from your `.env`):
    - `APP_ENV=production`
    - `BUSINESS_*` values (company name, phone, address, timezone, hours JSON, services)
    - `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
    - `LLM_API_KEY`, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL`
    - `CORS_ORIGINS=https://<your-vercel-app>.vercel.app` (add after Vercel deploy)
-5. Deploy → your API URL: `https://<service>-<org>.koyeb.app`
-6. Verify: open `https://<your-koyeb-url>/health` → `{"status": "ok"}`
+5. Deploy → your API URL: `https://hvac-receptionist.onrender.com`
+6. Verify: open `https://<your-render-url>/health` → `{"status": "ok"}`
 
 > Note: SQLite resets on each redeploy (fine for demos).
+
+### Optional: keep the demo awake 24/7
+
+Create a free monitor at [uptimerobot.com](https://uptimerobot.com) pinging
+`https://<your-render-url>/health` every 5 minutes.
 
 ### Dashboard on Vercel
 
 1. [vercel.com](https://vercel.com) → Add New → Project → import the GitHub repo
 2. **Root Directory:** `frontend` · **Framework:** Vite (auto)
-3. Environment variable: `VITE_API_BASE` = `https://<your-koyeb-url>`
+3. Environment variable: `VITE_API_BASE` = `https://<your-render-url>` (e.g. `https://hvac-receptionist.onrender.com`)
 4. Deploy → share your `https://<app>.vercel.app` demo link
 
 ### After both are live
-- Set `CORS_ORIGINS` on Koyeb to your Vercel URL and redeploy the service
+- Set `CORS_ORIGINS` on Render to your Vercel URL and redeploy the service
 - Test: make a call from the LiveKit Playground → watch it appear on the dashboard
 
 ---
