@@ -34,3 +34,6 @@ tsconfig.tsbuildinfo
 .DS_Store
 .idea/
 .vscode/
+
+# Fly.io token (secret!)
+fly_token.txt

@@ -1,5 +1,5 @@
-# Fly.io configuration — API + agent worker in one app.
-# Deploy: fly launch --no-deploy && fly secrets set ... && fly deploy
+# Fly.io configuration — API + agent worker in ONE machine (free org limit).
+# Deploy: fly deploy
 
 app = "hvac-receptionist"
 primary_region = "cdg"
@@ -7,11 +7,8 @@ primary_region = "cdg"
 [build]
   dockerfile = "backend/Dockerfile"
 
-# Both processes run on separate machines; scale each with:
-#   fly scale count api=1 worker=1
 [processes]
-  api = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
-  worker = "python -m app.agent.worker start"
+  app = "sh /app/start.sh"
 
 [http_service]
   internal_port = 8000
@@ -19,7 +16,7 @@ primary_region = "cdg"
   auto_stop_machines = false
   auto_start_machines = true
   min_machines_running = 1
-  processes = ["api"]
+  processes = ["app"]
 
 [[vm]]
   size = "shared-cpu-1x"

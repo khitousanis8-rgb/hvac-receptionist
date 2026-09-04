@@ -1,4 +1,45 @@
-# Deployment Guide — Free Demo Hosting (Vercel + Fly.io)
+# Deployment Guide — Free Demo Hosting
+
+## Option 1 — Koyeb (no card required) ⭐ recommended for demos
+
+Koyeb's free tier runs one always-on web service without a credit card —
+perfect for the API + agent worker (they share one container via `start.sh`).
+
+### Backend + agent worker on Koyeb
+
+1. Sign up at [app.koyeb.com](https://app.koyeb.com) with GitHub
+2. **Create Service** → connect your GitHub repo (`khitousanis8-rgb/hvac-receptionist`)
+3. Configure:
+   - **Builder:** Dockerfile → path `backend/Dockerfile`
+   - **Port:** `8000`, protocol HTTP
+   - **Instance:** Free
+   - **Scaling:** 1 instance (min 0 / max 1 is fine)
+4. Add **environment variables** (from your `.env`):
+   - `APP_ENV=production`
+   - `BUSINESS_*` values (company name, phone, address, timezone, hours JSON, services)
+   - `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
+   - `LLM_API_KEY`, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL`
+   - `CORS_ORIGINS=https://<your-vercel-app>.vercel.app` (add after Vercel deploy)
+5. Deploy → your API URL: `https://<service>-<org>.koyeb.app`
+6. Verify: open `https://<your-koyeb-url>/health` → `{"status": "ok"}`
+
+> Note: SQLite resets on each redeploy (fine for demos).
+
+### Dashboard on Vercel
+
+1. [vercel.com](https://vercel.com) → Add New → Project → import the GitHub repo
+2. **Root Directory:** `frontend` · **Framework:** Vite (auto)
+3. Environment variable: `VITE_API_BASE` = `https://<your-koyeb-url>`
+4. Deploy → share your `https://<app>.vercel.app` demo link
+
+### After both are live
+- Set `CORS_ORIGINS` on Koyeb to your Vercel URL and redeploy the service
+- Test: make a call from the LiveKit Playground → watch it appear on the dashboard
+
+---
+
+## Option 2 — Fly.io (requires a card on file, free allowance)
+
 
 Host the dashboard on **Vercel** (free) and the API + agent worker on **Fly.io**
 (free allowance), using LiveKit Cloud and Groq free tiers. Total cost: **$0**
