@@ -1,4 +1,6 @@
 #!/bin/sh
 # Runs the FastAPI API and the LiveKit agent worker in a single container.
-uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+# Uses $PORT when the platform assigns one (Render), otherwise 8000.
+PORT="${PORT:-8000}"
+uvicorn app.main:app --host 0.0.0.0 --port "$PORT" &
 exec python -m app.agent.worker start
