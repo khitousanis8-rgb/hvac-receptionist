@@ -877,9 +877,8 @@ export default function App() {
           </header>
 
           {apiError && (
-            <div className="mb-4 rounded-md border border-[#fecdd3] bg-[#fff1f2] px-4 py-2.5 text-[12px] text-[#e11d48]">
-              Can&apos;t reach the API — check that the backend is running on
-              port 8000. Retrying automatically.
+            <div className="mb-4 rounded-md border border-[#fde68a] bg-[#fffbeb] px-4 py-2.5 text-[12px] text-[#b45309]">
+              Connecting to backend API… If the free server was idle, it takes ~30–50s to wake up. Retrying automatically.
             </div>
           )}
 
