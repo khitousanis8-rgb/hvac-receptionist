@@ -201,11 +201,11 @@ function StatusBadge({ status }: { status: string }) {
 
 function StatCard({ value, label }: { value: number | string; label: string }) {
   return (
-    <div className="rounded-lg border border-[#e7e7e7] bg-white p-4 min-w-[150px] flex-1 shadow-xs">
-      <div className="text-[24px] font-semibold text-[#0a0a0a] leading-none">
+    <div className="rounded-lg border border-[#e7e7e7] bg-white p-3 sm:p-4 min-w-[120px] flex-1 shadow-xs">
+      <div className="text-[20px] sm:text-[24px] font-semibold text-[#0a0a0a] leading-none">
         {value}
       </div>
-      <div className="text-[11px] font-mono uppercase tracking-wider text-[#4e505b] mt-2">
+      <div className="text-[10px] sm:text-[11px] font-mono uppercase tracking-wider text-[#4e505b] mt-1.5 sm:mt-2">
         {label}
       </div>
     </div>
@@ -215,10 +215,12 @@ function StatCard({ value, label }: { value: number | string; label: string }) {
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-lg border border-[#e7e7e7] bg-white overflow-hidden shadow-xs">
-      <h2 className="text-[12px] font-semibold text-[#0a0a0a] px-4 py-2.5 border-b border-[#e7e7e7] bg-[#fafafa]">
+      <h2 className="text-[12px] font-semibold text-[#0a0a0a] px-3 sm:px-4 py-2 sm:py-2.5 border-b border-[#e7e7e7] bg-[#fafafa]">
         {title}
       </h2>
-      {children}
+      <div className="overflow-x-auto w-full">
+        {children}
+      </div>
     </div>
   );
 }
@@ -251,7 +253,7 @@ function CallsTable({
   if (calls.length === 0)
     return <Empty text="No call records yet." />;
   return (
-    <table className="w-full text-left">
+    <table className="w-full min-w-[540px] text-left">
       <thead>
         <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#4e505b] bg-[#fafafa] border-b border-[#e7e7e7]">
           <th className="px-4 py-2">Timestamp</th>
@@ -337,7 +339,7 @@ function AppointmentsTable({
   if (appointments.length === 0)
     return <Empty text="No appointments scheduled yet." />;
   return (
-    <table className="w-full text-left">
+    <table className="w-full min-w-[540px] text-left">
       <thead>
         <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#4e505b] bg-[#fafafa] border-b border-[#e7e7e7]">
           <th className="px-4 py-2">Scheduled For</th>
@@ -457,9 +459,9 @@ function SettingsPage({ config }: { config: PublicConfig | null }) {
               <dt className="text-[#4e505b]">Emergency Phone</dt>
               <dd className="font-mono text-[#e11d48] font-semibold">{config.emergency_phone || "—"}</dd>
             </div>
-            <div className="px-4 py-2.5 flex justify-between gap-3">
+            <div className="px-4 py-2.5 flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-3">
               <dt className="text-[#4e505b]">Service Address</dt>
-              <dd className="text-right text-[#0a0a0a]">{config.address || "—"}</dd>
+              <dd className="sm:text-right text-[#0a0a0a]">{config.address || "—"}</dd>
             </div>
             <div className="px-4 py-2.5 flex justify-between gap-3">
               <dt className="text-[#4e505b]">Timezone</dt>
@@ -667,7 +669,7 @@ function DashboardPage({
   return (
     <div className="space-y-6">
       {/* Metrics Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
         <StatCard
           value={loading ? "—" : calls.data.length}
           label="Total Calls"
@@ -785,11 +787,17 @@ export default function App() {
   ];
 
   return (
-    <div className="relative flex h-screen w-full overflow-hidden bg-white text-[#0a0a0a]">
+    <div className="relative flex flex-col md:flex-row h-screen w-full overflow-hidden bg-white text-[#0a0a0a]">
       <Sidebar open={open} setOpen={setOpen}>
         <SidebarBody className="justify-between gap-6 border-r border-[#e7e7e7] bg-white">
           <div className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden">
-            <Logo showText={open} onNavigate={() => setPage("dashboard")} />
+            <Logo
+              showText={open}
+              onNavigate={() => {
+                setPage("dashboard");
+                setOpen(false);
+              }}
+            />
             <div className="mt-6 flex flex-col gap-1">
               {links.map((link) => (
                 <SidebarLink
@@ -839,9 +847,9 @@ export default function App() {
         </SidebarBody>
       </Sidebar>
 
-      <main className="flex-1 overflow-y-auto bg-white">
-        <div className="p-4 md:p-7 min-h-full bg-white border-l border-[#e7e7e7]">
-          <header className="mb-6 pb-4 border-b border-[#e7e7e7] flex flex-wrap items-center justify-between gap-3">
+      <main className="flex-1 min-h-0 min-w-0 overflow-y-auto bg-white">
+        <div className="p-3 sm:p-5 md:p-7 min-h-full bg-white border-l-0 md:border-l border-[#e7e7e7]">
+          <header className="mb-4 sm:mb-6 pb-3 sm:pb-4 border-b border-[#e7e7e7] flex flex-wrap items-center justify-between gap-3">
             <div>
               <h1 className="text-[18px] font-semibold tracking-tight text-[#0a0a0a] capitalize">
                 {page === "live-call" ? "Live Call Console" : page}

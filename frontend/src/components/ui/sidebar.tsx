@@ -114,39 +114,61 @@ export const MobileSidebar = ({
     <>
       <div
         className={cn(
-          "h-12 px-4 flex flex-row md:hidden items-center justify-between bg-white border-b border-[#e7e7e7] w-full"
+          "h-14 px-4 flex flex-row md:hidden items-center justify-between bg-white border-b border-[#e7e7e7] w-full flex-shrink-0 z-30"
         )}
         {...props}
       >
-        <div className="flex justify-end z-20 w-full">
-          <Menu
-            className="text-[#0a0a0a] cursor-pointer"
-            onClick={() => setOpen(!open)}
-          />
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-[13px] tracking-tight text-[#0a0a0a]">
+            HVAC Receptionist
+          </span>
         </div>
+        <button
+          type="button"
+          aria-label="Toggle navigation menu"
+          className="p-2 rounded-md hover:bg-[#f4f4f5] text-[#0a0a0a] transition-colors duration-150 cursor-pointer"
+          onClick={() => setOpen(!open)}
+        >
+          <Menu className="w-5 h-5 text-[#0a0a0a]" />
+        </button>
+
         <AnimatePresence>
           {open && (
-            <motion.div
-              initial={{ x: "-100%", opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: "-100%", opacity: 0 }}
-              transition={{
-                duration: 0.15,
-                ease: "linear",
-              }}
-              className={cn(
-                "fixed h-full w-full inset-0 bg-white border-r border-[#e7e7e7] p-6 z-[100] flex flex-col justify-between",
-                className
-              )}
-            >
-              <div
-                className="absolute right-6 top-6 z-50 text-[#0a0a0a] cursor-pointer"
-                onClick={() => setOpen(!open)}
+            <>
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                onClick={() => setOpen(false)}
+                className="fixed inset-0 bg-black/30 backdrop-blur-xs z-[90]"
+              />
+
+              <motion.div
+                initial={{ x: "-100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "-100%" }}
+                transition={{
+                  type: "spring",
+                  damping: 28,
+                  stiffness: 280,
+                }}
+                className={cn(
+                  "fixed inset-y-0 left-0 w-72 max-w-[85vw] bg-white border-r border-[#e7e7e7] p-5 z-[100] flex flex-col justify-between shadow-2xl overflow-y-auto",
+                  className
+                )}
               >
-                <X className="w-5 h-5" />
-              </div>
-              {children}
-            </motion.div>
+                <div
+                  className="absolute right-4 top-4 p-1.5 rounded-md hover:bg-[#f4f4f5] text-[#4e505b] hover:text-[#0a0a0a] cursor-pointer transition-colors"
+                  onClick={() => setOpen(false)}
+                >
+                  <X className="w-5 h-5" />
+                </div>
+                <div className="flex-1 flex flex-col mt-2">
+                  {children}
+                </div>
+              </motion.div>
+            </>
           )}
         </AnimatePresence>
       </div>

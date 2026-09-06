@@ -173,7 +173,7 @@ function IdleState({ onStart }: { onStart: () => void }) {
           <button
             type="button"
             onClick={onStart}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-[12px] font-semibold text-[#ffffff] bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] focus-visible:ring-offset-2 cursor-pointer whitespace-nowrap"
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-[12px] font-semibold text-[#ffffff] bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] focus-visible:ring-offset-2 cursor-pointer whitespace-nowrap w-full sm:w-auto"
           >
             <PhoneCall className="w-4 h-4" aria-hidden="true" />
             <span>Connect &amp; Start Call</span>
@@ -491,14 +491,14 @@ function ActiveCallInner({
       </div>
 
       {/* Action Controls Footer */}
-      <div className="px-5 py-4 flex items-center justify-between gap-3 bg-[#fafafa]">
+      <div className="px-4 sm:px-5 py-3.5 sm:py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 bg-[#fafafa]">
         <button
           type="button"
           onClick={toggleMic}
           aria-pressed={!isMicrophoneEnabled}
           aria-label={isMicrophoneEnabled ? "Mute microphone" : "Unmute microphone"}
           className={cn(
-            "inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-[12px] font-semibold border transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer",
+            "w-full sm:w-auto inline-flex items-center justify-center gap-2 px-3.5 py-2.5 sm:py-2 rounded-md text-[12px] font-semibold border transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer",
             isMicrophoneEnabled
               ? "bg-[#ffffff] border-[#e7e7e7] text-[#0a0a0a] hover:bg-[#f4f4f5]"
               : "bg-[#fff1f2] border-[#fecdd3] text-[#e11d48]"
@@ -521,7 +521,7 @@ function ActiveCallInner({
           type="button"
           onClick={handleEndCall}
           aria-label="End call session"
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-[12px] font-semibold text-[#ffffff] bg-[#dc2626] hover:bg-[#b91c1c] active:bg-[#991b1b] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#dc2626] focus-visible:ring-offset-2 cursor-pointer"
+          className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:py-2 rounded-md text-[12px] font-semibold text-[#ffffff] bg-[#dc2626] hover:bg-[#b91c1c] active:bg-[#991b1b] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#dc2626] focus-visible:ring-offset-2 cursor-pointer"
         >
           <PhoneOff className="w-3.5 h-3.5" aria-hidden="true" />
           <span>End Call [Esc]</span>
@@ -612,11 +612,11 @@ function EndedState({
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 pt-2">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-3 pt-2">
         <button
           type="button"
           onClick={onStartAgain}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-[12px] font-semibold text-[#ffffff] bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
+          className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:py-2 rounded-md text-[12px] font-semibold text-[#ffffff] bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
         >
           <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
           <span>Start Another Call</span>
@@ -626,7 +626,7 @@ function EndedState({
           <button
             type="button"
             onClick={onViewCalls}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md text-[12px] font-semibold bg-[#ffffff] border border-[#e7e7e7] text-[#0a0a0a] hover:bg-[#f4f4f5] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 sm:py-2 rounded-md text-[12px] font-semibold bg-[#ffffff] border border-[#e7e7e7] text-[#0a0a0a] hover:bg-[#f4f4f5] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
           >
             <span>Open Calls Log</span>
             <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
@@ -666,11 +666,11 @@ function ErrorState({
         </div>
       </div>
 
-      <div className="flex items-center gap-2.5 pt-1">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 pt-1">
         <button
           type="button"
           onClick={onRetry}
-          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-semibold text-[#ffffff] bg-[#e11d48] hover:bg-[#be123c] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#e11d48] cursor-pointer"
+          className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-1.5 rounded-md text-[12px] font-semibold text-[#ffffff] bg-[#e11d48] hover:bg-[#be123c] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#e11d48] cursor-pointer"
         >
           <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
           <span>Retry</span>
@@ -679,7 +679,7 @@ function ErrorState({
         <button
           type="button"
           onClick={onCancel}
-          className="px-3.5 py-1.5 rounded-md text-[12px] font-medium border border-[#e7e7e7] bg-[#ffffff] text-[#0a0a0a] hover:bg-[#f4f4f5] transition-colors duration-150 cursor-pointer"
+          className="w-full sm:w-auto px-3.5 py-2.5 sm:py-1.5 rounded-md text-[12px] font-medium border border-[#e7e7e7] bg-[#ffffff] text-[#0a0a0a] hover:bg-[#f4f4f5] transition-colors duration-150 cursor-pointer text-center"
         >
           Cancel
         </button>
