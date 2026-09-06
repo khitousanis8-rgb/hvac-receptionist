@@ -8,13 +8,27 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import structlog
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
+from app.agent.dispatch import CredentialsMissingError, DispatchError, create_room_and_token
 from app.config import Settings, get_settings
 from app.dashboard import router as dashboard_router
 from app.db import Appointment, CallRecord, Customer, init_db, new_session
 from app.logging import configure_logging
+
+
+class CallTokenRequest(BaseModel):
+    room_name: str | None = None
+    identity: str | None = None
+
+
+class CallTokenResponse(BaseModel):
+    url: str
+    token: str
+    room: str
+
 
 
 @asynccontextmanager
@@ -37,9 +51,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=runtime_settings.cors_origin_list,
+        allow_origin_regex=r"https://.*\.vercel\.app",
         allow_credentials=False,
-        allow_methods=["GET"],
-        allow_headers=["Content-Type", "X-Request-ID"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
     )
     app.include_router(dashboard_router)
 
@@ -125,6 +140,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 }
                 for appointment, customer in rows
             ]
+
+    @app.post(
+        "/v1/calls/token",
+        response_model=CallTokenResponse,
+        tags=["live-call"],
+    )
+    async def create_call_token(
+        payload: CallTokenRequest | None = None,
+    ) -> CallTokenResponse:
+        """Create a LiveKit room token and dispatch the voice receptionist agent."""
+        room_name = payload.room_name if payload else None
+        identity = payload.identity if payload else None
+
+        if room_name:
+            init_db()
+            with new_session() as session:
+                active_call = (
+                    session.query(CallRecord)
+                    .filter(CallRecord.room_name == room_name, CallRecord.ended_at.is_(None))
+                    .first()
+                )
+                if active_call is not None:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="A call is already in progress for this room.",
+                    )
+
+        try:
+            url, token, room = await create_room_and_token(
+                settings=runtime_settings,
+                room_name=room_name,
+                identity=identity,
+            )
+            return CallTokenResponse(url=url, token=token, room=room)
+        except CredentialsMissingError as err:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(err),
+            ) from err
+        except DispatchError as err:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Agent offline or dispatch rejected: {err}",
+            ) from err
 
     return app
 

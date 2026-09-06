@@ -1,0 +1,1 @@
+{"name":"hvac-receptionist-root","private":true,"scripts":{"build":"npm --prefix frontend run build","dev":"npm --prefix frontend run dev"}}

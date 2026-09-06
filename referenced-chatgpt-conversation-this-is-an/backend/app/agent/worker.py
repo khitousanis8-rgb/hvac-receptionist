@@ -84,6 +84,12 @@ async def receptionist_session(ctx: JobContext) -> None:
     await session.start(agent=HVACReceptionist(settings), room=ctx.room)
     await ctx.connect()
     logger.info("agent_session_started", room=ctx.room.name, call_id=call_id)
+    session.generate_reply(
+        instructions=(
+            f"Greet the caller warmly as the receptionist for "
+            f"{settings.business_company_name} and ask how you can assist them today."
+        )
+    )
 
     async def finalize_call_record() -> None:
         """Save the transcript summary and outcome when the session ends."""

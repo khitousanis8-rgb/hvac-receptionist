@@ -23,7 +23,9 @@ class Settings(BaseSettings):
     log_level: Annotated[str, Field(pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")] = "INFO"
     api_host: str = "0.0.0.0"
     api_port: Annotated[int, Field(ge=1, le=65535)] = 8000
-    cors_origins: str = "http://localhost:3000"
+    cors_origins: str = (
+        "http://localhost:3000,http://localhost:5173,https://hvac-receptionist-umber.vercel.app"
+    )
     database_url: str = "sqlite:///./hvac_receptionist.db"
 
     business_company_name: Annotated[str, Field(min_length=1)] = "Example HVAC"
@@ -71,6 +73,17 @@ class Settings(BaseSettings):
                 self.livekit_api_key,
                 self.livekit_api_secret,
                 self.llm_api_key,
+            ]
+        )
+
+    @property
+    def configured_for_livekit(self) -> bool:
+        """Whether the credentials needed to mint tokens and dispatch are present."""
+        return all(
+            [
+                self.livekit_url,
+                self.livekit_api_key,
+                self.livekit_api_secret,
             ]
         )
 
