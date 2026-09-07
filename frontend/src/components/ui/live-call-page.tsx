@@ -52,23 +52,23 @@ function formatDuration(seconds: number): string {
 const TEST_SCENARIOS = [
   {
     title: "Appointment Booking",
-    phrase: "My AC is blowing warm air, can I schedule a technician for tomorrow morning?",
+    phrase: "My AC is blowing warm air in this Austin heat, can I schedule a technician for tomorrow morning?",
     badge: "Booking",
   },
   {
     title: "Check Upcoming Visit",
-    phrase: "Can you look up my upcoming appointments for 555-555-0100?",
+    phrase: "Can you look up my upcoming maintenance appointment for 512-555-0144?",
     badge: "Lookup",
   },
   {
     title: "Services & Hours",
-    phrase: "What HVAC services do you offer, and what are your operating hours?",
+    phrase: "What are McCullough's operating hours and do you service heat pumps in North Austin?",
     badge: "Info",
   },
   {
     title: "Emergency Safety",
-    phrase: "I smell strong gas near my furnace and hear a loud hissing sound.",
-    badge: "Safety",
+    phrase: "I smell strong gas near my furnace on Buell Ave and hear a loud hissing sound.",
+    badge: "Emergency",
     urgent: true,
   },
 ];
@@ -634,10 +634,10 @@ function ActiveCallInner({
 
             <div className="space-y-0.5">
               <div className="text-[13px] font-semibold text-[#0a0a0a]">
-                HVAC Receptionist
+                McCullough Receptionist
               </div>
               <div className="text-[11px] font-mono text-[#71717a]">
-                Identity: {voiceAssistant.agent?.identity || "hvac-receptionist"}
+                Identity: {voiceAssistant.agent?.identity || "mccullough-receptionist"}
               </div>
             </div>
 

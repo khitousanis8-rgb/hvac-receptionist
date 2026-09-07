@@ -1045,16 +1045,12 @@ export default function App() {
       {/* Mobile Top App Bar (Sticky Header on screens < md) */}
       <div className="md:hidden sticky top-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-b border-[#e7e7e7] px-4 py-2.5 pt-safe flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <Avatar className="h-7 w-7 border border-[#e7e7e7] shrink-0">
-            <AvatarImage
-              src="https://cdn.21st.dev/assets/mirror/ec/ec81be4cc810190ce4d240fcc57295965c5cebaa8751558595ade91eb62c09a4.png"
-              alt="Hallie Richards"
-            />
-            <AvatarFallback className="text-[10px] font-semibold text-[#4e505b]">HR</AvatarFallback>
-          </Avatar>
+          <div className="h-7 w-7 rounded-lg bg-[#0b5ed7] text-white flex items-center justify-center font-bold text-[12px] shrink-0 shadow-xs">
+            MH
+          </div>
           <div>
-            <div className="text-[13px] font-semibold tracking-tight text-[#0a0a0a] leading-tight">
-              {config?.company_name ?? "HVAC Receptionist"}
+            <div className="text-[13px] font-semibold tracking-tight text-[#0a0a0a] leading-tight truncate max-w-[200px]">
+              {config?.company_name ?? "McCullough Heating & AC"}
             </div>
             <div className="flex items-center gap-1.5 text-[10px] font-mono text-[#71717a]">
               <span
@@ -1063,7 +1059,7 @@ export default function App() {
                   online === true ? "bg-emerald-500 animate-pulse" : "bg-rose-500"
                 )}
               />
-              <span>{online === true ? "Online" : "Connecting"}</span>
+              <span>{online === true ? "Austin Dispatch Active" : "Connecting"}</span>
             </div>
           </div>
         </div>
@@ -1168,19 +1164,15 @@ function Logo({ showText, onNavigate }: { showText: boolean; onNavigate: () => v
       }}
       className="flex items-center gap-2.5 py-1 px-1 relative z-20 text-[13px] font-semibold text-[#0a0a0a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] rounded-md"
     >
-      <Avatar className="h-6 w-6 border border-[#e7e7e7] shrink-0">
-        <AvatarImage
-          src="https://cdn.21st.dev/assets/mirror/ec/ec81be4cc810190ce4d240fcc57295965c5cebaa8751558595ade91eb62c09a4.png"
-          alt="Hallie Richards"
-        />
-        <AvatarFallback className="text-[10px] font-semibold text-[#4e505b]">HR</AvatarFallback>
-      </Avatar>
+      <div className="h-6 w-6 rounded-md bg-[#0b5ed7] text-white flex items-center justify-center font-bold text-[10px] shrink-0 shadow-2xs">
+        MH
+      </div>
       <motion.span
         initial={{ opacity: 0 }}
         animate={{ opacity: showText ? 1 : 0 }}
-        className="font-semibold tracking-tight text-[#0a0a0a] whitespace-pre"
+        className="font-semibold tracking-tight text-[#0a0a0a] whitespace-pre truncate max-w-[170px]"
       >
-        HVAC Receptionist
+        McCullough HVAC
       </motion.span>
     </a>
   );
