@@ -3,7 +3,7 @@ set -e
 
 # Runs the FastAPI API and the LiveKit agent worker in a single container.
 # Uses $PORT when the platform assigns one (Render), otherwise 8000.
-PORT="${PORT:-7860}"
+PORT="${PORT:-8000}"
 
 # Run agent worker in background with auto-restart on disconnect
 (
