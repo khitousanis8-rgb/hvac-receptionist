@@ -1,6 +1,10 @@
 #!/bin/sh
 set -e
 
+# Memory optimizations for constrained environments (e.g. Render 512MB RAM)
+export MALLOC_ARENA_MAX=2
+export PYTHONUNBUFFERED=1
+
 # Runs the FastAPI API and the LiveKit agent worker in a single container.
 # Uses $PORT when the platform assigns one (Render), otherwise 8000.
 PORT="${PORT:-8000}"
@@ -15,6 +19,5 @@ PORT="${PORT:-8000}"
   done
 ) &
 
-# Run Uvicorn in foreground as primary web service
-exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
-
+# Run Uvicorn in foreground as primary web service (single worker to conserve RAM)
+exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --workers 1

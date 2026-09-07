@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import structlog
 from dotenv import load_dotenv
-from livekit.agents import Agent, AgentServer, AgentSession, JobContext, cli, inference
+from livekit.agents import Agent, AgentServer, AgentSession, JobContext, JobExecutorType, cli, inference
 from livekit.plugins import openai, silero
 
 from app.agent.prompts import receptionist_instructions
@@ -14,7 +14,12 @@ from app.config import Settings, get_settings
 from app.logging import configure_logging
 
 logger = structlog.get_logger(__name__)
-server = AgentServer()
+# Crucial memory optimization: prod_default spawns 12 idle processes (~1.8GB RAM).
+# By setting num_idle_processes=0 and THREAD executor, memory stays ~150MB, well below 512MB.
+server = AgentServer(
+    num_idle_processes=0,
+    job_executor_type=JobExecutorType.THREAD,
+)
 
 
 class HVACReceptionist(Agent):
