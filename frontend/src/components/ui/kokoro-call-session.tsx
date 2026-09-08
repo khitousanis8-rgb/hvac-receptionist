@@ -169,12 +169,7 @@ export function KokoroCallSession({
 
         // Start the streaming TTS pipeline — creates a TextSplitterStream
         // and begins the background async iterator that synthesizes audio.
-        const isGreeting = userMessage === "__GREETING__";
-        let useStreamingTTS = !isGreeting;
-
-        if (useStreamingTTS) {
-          await kokoroTTS.startStreaming();
-        }
+        await kokoroTTS.startStreaming();
 
         const decoder = new TextDecoder();
         let buffer = "";
@@ -208,12 +203,10 @@ export function KokoroCallSession({
                   accumulatedAssistantReply += data.text;
                   setCurrentAssistantText(accumulatedAssistantReply);
 
-                  if (useStreamingTTS) {
-                    // Push each token directly into the Kokoro splitter.
-                    // The background stream consumer synthesizes audio
-                    // and queues it for playback as chunks complete.
-                    kokoroTTS.pushText(data.text);
-                  }
+                  // Push each token directly into the Kokoro splitter.
+                  // The background stream consumer synthesizes audio
+                  // and queues it for playback as chunks complete.
+                  kokoroTTS.pushText(data.text);
                 } else if (currentEvent === "done") {
                   if (data.outcome) {
                     callOutcomeRef.current = data.outcome;
@@ -229,13 +222,8 @@ export function KokoroCallSession({
           }
         }
 
-        if (useStreamingTTS) {
-          // Signal end-of-input so the splitter flushes remaining text
-          kokoroTTS.flushText();
-        } else if (accumulatedAssistantReply.trim()) {
-          // Greeting: use speak() for the single short sentence
-          await kokoroTTS.speak(accumulatedAssistantReply.trim());
-        }
+        // Signal end-of-input so the splitter flushes remaining text
+        kokoroTTS.flushText();
 
         setIsAgentThinking(false);
         if (accumulatedAssistantReply.trim()) {

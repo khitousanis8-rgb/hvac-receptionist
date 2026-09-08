@@ -175,6 +175,9 @@ class KokoroTTSService {
     this.splitter = new TextSplitterStream();
 
     const turnId = this.streamAbortId;
+    
+    this.isTurnActive = true;
+    this.onTurnStateChange?.(true);
 
     // Start the background consumer that converts text→audio and queues buffers
     this._consumeStream(turnId);
@@ -229,21 +232,15 @@ class KokoroTTSService {
         // If the turn was cancelled (user interrupted or new turn started), stop.
         if (turnId !== this.streamAbortId) return;
 
-        if (!chunk?.audio) continue;
+        if (!chunk?.audio || !chunk.audio.audio) continue;
 
-        const rawAudio: Float32Array = chunk.audio;
-        const sampleRate: number = chunk.sampling_rate || 24000;
+        const rawAudio: Float32Array = chunk.audio.audio;
+        const sampleRate: number = chunk.audio.sampling_rate || 24000;
 
         const audioBuffer = ctx.createBuffer(1, rawAudio.length, sampleRate);
         audioBuffer.getChannelData(0).set(rawAudio);
 
         this.playbackQueue.push(audioBuffer);
-
-        // Signal turn-active on first chunk
-        if (!this.isTurnActive) {
-          this.isTurnActive = true;
-          this.onTurnStateChange?.(true);
-        }
 
         if (!this.isPlaying) {
           this._playNextInQueue();
