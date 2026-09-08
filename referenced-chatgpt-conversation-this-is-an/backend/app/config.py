@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     livekit_url: str | None = None
     livekit_api_key: SecretStr | None = None
     livekit_api_secret: SecretStr | None = None
+    tts_voice: str = "694f9389-aac1-45b6-b726-9d9369183238"
 
     # Any OpenAI-compatible Chat Completions endpoint (Groq, Ollama, OpenRouter, ...).
     llm_api_key: SecretStr | None = None

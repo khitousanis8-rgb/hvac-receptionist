@@ -376,7 +376,18 @@ function ActiveCallSession({
       serverUrl={tokenData.url}
       token={tokenData.token}
       connect={true}
-      audio={true}
+      audio={{
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      }}
+      options={{
+        audioCaptureDefaults: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      }}
       video={false}
       onDisconnected={() => {}}
       onError={(err) => {

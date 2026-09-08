@@ -54,17 +54,29 @@ def build_agent_session(settings: Settings) -> AgentSession[None]:
             # Skip most hidden reasoning tokens for faster first response.
             reasoning_effort="low",
         ),
-        # Text-to-speech: LiveKit Cloud inference (Cartesia Sonic) — uses the
-        # project's LiveKit credentials; includes free monthly inference credits.
-        tts=inference.TTS("cartesia/sonic-3"),
+        # Text-to-speech: LiveKit Cloud inference (Cartesia Sonic).
+        # Explicit stable receptionist voice eliminates clipping and initial audio bursts.
+        tts=inference.TTS("cartesia/sonic-3", voice=settings.tts_voice),
         # Local voice-activity detection so the agent knows when the caller stops talking.
         vad=silero.VAD.load(),
-        # Latency tuning: local VAD turn detection (the cloud semantic detector
-        # added >1.3s round-trip on this network), tighter endpointing, and
-        # start generating before the turn finalizes.
-        min_endpointing_delay=0.3,
-        max_endpointing_delay=2.0,
-        preemptive_generation=True,
+        # Stable turn handling: prevent false interruptions and audio buffer underrun/clicks
+        turn_handling={
+            "turn_detection": "vad",
+            "endpointing": {
+                "mode": "fixed",
+                "min_delay": 0.5,
+                "max_delay": 2.5,
+            },
+            "interruption": {
+                "enabled": True,
+                "min_duration": 0.5,
+                "resume_false_interruption": True,
+                "false_interruption_timeout": 1.5,
+            },
+            "preemptive_generation": {
+                "enabled": False,
+            },
+        },
     )
 
 
