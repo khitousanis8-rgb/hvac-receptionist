@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/v1/calls", tags=["calls"])
 
 
 class ChatMessage(BaseModel):
-    role: str
+    role: Literal["user", "assistant"]
     content: str
 
 
@@ -163,7 +163,11 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             yield f"event: delta\ndata: {json.dumps({'text': greeting_text})}\n\n"
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only', 'call_id': call_id})}\n\n"
 
-        return StreamingResponse(greeting_generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            greeting_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     if not settings.llm_api_key:
         raise HTTPException(
@@ -283,7 +287,11 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             logger.error("chat_stream_error", error=str(e))
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
-    return StreamingResponse(sse_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 class TranscribeRequest(BaseModel):

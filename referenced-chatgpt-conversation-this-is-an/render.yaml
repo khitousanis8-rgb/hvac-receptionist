@@ -1,4 +1,4 @@
-# Render.com blueprint — API + agent worker in one free web service.
+# Render.com blueprint — Kokoro chat API in one free web service.
 # Render reads this file automatically when you create a service from the repo.
 # Docs: https://render.com/docs/blueprint-spec
 
@@ -13,6 +13,6 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     # Set these in the Render dashboard (Environment tab) — do NOT commit secrets:
-    # APP_ENV, BUSINESS_* (company info), LIVEKIT_URL, LIVEKIT_API_KEY,
-    # LIVEKIT_API_SECRET, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL,
-    # CORS_ORIGINS (your Vercel URL after the dashboard deploy)
+    # APP_ENV, BUSINESS_* (company info), LLM_API_KEY, LLM_BASE_URL,
+    # LLM_MODEL, CORS_ORIGINS (your Vercel URL after the dashboard deploy).
+    # Leave ENABLE_LIVEKIT_WORKER=false for the in-browser Kokoro flow.

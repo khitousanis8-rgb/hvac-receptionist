@@ -2,12 +2,13 @@
 
 ## Option 1 — Render.com (no card required) ⭐ recommended for demos
 
-Render's free tier runs a Docker web service without a credit card — the API
-and agent worker share one container via `backend/start.sh`.
+Render's free tier runs the FastAPI service without a credit card. The browser
+loads Kokoro locally for speech, so the deployed service only needs to provide
+chat, scheduling, and call-record APIs.
 Caveat: the service **sleeps after 15 min without HTTP traffic** and wakes in
 ~30s on the next request (keep it awake with a free UptimeRobot ping).
 
-### Backend + agent worker on Render
+### Backend API on Render
 
 1. Sign up at [dashboard.render.com](https://dashboard.render.com) with GitHub
 2. **New → Web Service** → connect the repo `khitousanis8-rgb/hvac-receptionist`
@@ -16,9 +17,9 @@ Caveat: the service **sleeps after 15 min without HTTP traffic** and wakes in
 4. Add **environment variables** (from your `.env`):
    - `APP_ENV=production`
    - `BUSINESS_*` values (company name, phone, address, timezone, hours JSON, services)
-   - `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`
-   - `LLM_API_KEY`, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL`
-   - `CORS_ORIGINS=https://<your-vercel-app>.vercel.app` (add after Vercel deploy)
+    - `LLM_API_KEY`, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL`
+    - `CORS_ORIGINS=https://<your-vercel-app>.vercel.app` (add after Vercel deploy)
+    - Leave `ENABLE_LIVEKIT_WORKER` unset or `false` for the Kokoro flow.
 5. Deploy → your API URL: `https://hvac-receptionist.onrender.com`
 6. Verify: open `https://<your-render-url>/health` → `{"status": "ok"}`
 
@@ -38,7 +39,8 @@ Create a free monitor at [uptimerobot.com](https://uptimerobot.com) pinging
 
 ### After both are live
 - Set `CORS_ORIGINS` on Render to your Vercel URL and redeploy the service
-- Test: make a call from the LiveKit Playground → watch it appear on the dashboard
+- Test: start the browser voice demo, allow microphone access, and verify the
+  greeting and transcript appear in the dashboard.
 
 ---
 

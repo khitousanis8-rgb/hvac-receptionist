@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { kokoroTTS } from "@/lib/kokoro-tts";
 import { KokoroCallSession } from "./kokoro-call-session";
 
 type CallPhase = "idle" | "in-call" | "ended" | "error";
@@ -77,6 +78,9 @@ export function LiveCallPage({
   }, [phase, onCallStateChange]);
 
   const startCall = () => {
+    // This must happen synchronously in the click handler. Otherwise browsers
+    // can keep the audio context suspended after Kokoro finishes loading.
+    kokoroTTS.unlockAudio();
     setErrorMessage(null);
     setLastRoom("In-Browser Kokoro");
     setPhase("in-call");

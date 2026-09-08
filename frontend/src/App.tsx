@@ -261,7 +261,13 @@ function SkeletonRows({ cols }: { cols: number }) {
  */
 function CallsTable({ calls, loading }: { calls: CallRecord[]; loading?: boolean }) {
   const [expanded, setExpanded] = useState<number | null>(null);
-  if (loading) return <SkeletonRows cols={4} />;
+  if (loading) {
+    return (
+      <table className="w-full min-w-[540px] text-left">
+        <tbody><SkeletonRows cols={4} /></tbody>
+      </table>
+    );
+  }
   if (calls.length === 0) return <Empty text="No call records yet." />;
 
   return (
@@ -460,7 +466,13 @@ function AppointmentsTable({
   appointments: Appointment[];
   loading?: boolean;
 }) {
-  if (loading) return <SkeletonRows cols={4} />;
+  if (loading) {
+    return (
+      <table className="w-full min-w-[540px] text-left">
+        <tbody><SkeletonRows cols={4} /></tbody>
+      </table>
+    );
+  }
   if (appointments.length === 0)
     return <Empty text="No appointments scheduled yet." />;
 

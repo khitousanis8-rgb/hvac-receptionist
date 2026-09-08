@@ -30,6 +30,20 @@ interface KokoroCallSessionProps {
   onError: (msg: string) => void;
 }
 
+const CHAT_REQUEST_TIMEOUT_MS = 45_000;
+
+async function readChatError(response: Response): Promise<string> {
+  try {
+    const payload = await response.json();
+    if (typeof payload?.detail === "string" && payload.detail.trim()) {
+      return payload.detail;
+    }
+  } catch {
+    // The API may return an empty or non-JSON response when an upstream proxy fails.
+  }
+  return `The assistant service returned HTTP ${response.status}.`;
+}
+
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
@@ -48,7 +62,6 @@ export function KokoroCallSession({
   const [isAgentSpeaking, setIsAgentSpeaking] = useState<boolean>(false);
   const [isAgentThinking, setIsAgentThinking] = useState<boolean>(false);
   const [activeTool, setActiveTool] = useState<string | null>(null);
-  const [transcriptHistory, setTranscriptHistory] = useState<ChatMessage[]>([]);
   const [currentCallerText, setCurrentCallerText] = useState<string>("");
   const [currentAssistantText, setCurrentAssistantText] = useState<string>("");
 
@@ -58,6 +71,7 @@ export function KokoroCallSession({
   const callOutcomeRef = useRef<string>("info_only");
   const speechRecRef = useRef<BrowserSpeechRecognition | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const transcriptHistoryRef = useRef<ChatMessage[]>([]);
   const activeUtteranceQueue = useRef<string[]>([]);
   const isProcessingQueue = useRef<boolean>(false);
 
@@ -122,8 +136,16 @@ export function KokoroCallSession({
       // Interrupt any current speech
       kokoroTTS.stop();
 
+      // Only one model response may be active. This prevents overlapping
+      // streams from speaking out of order after a rapid follow-up utterance.
+      abortControllerRef.current?.abort();
       const controller = new AbortController();
       abortControllerRef.current = controller;
+      let timedOut = false;
+      const timeoutId = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, CHAT_REQUEST_TIMEOUT_MS);
 
       try {
         const response = await fetch(apiUrl("/v1/calls/chat"), {
@@ -138,7 +160,7 @@ export function KokoroCallSession({
         });
 
         if (!response.ok) {
-          throw new Error(`Chat request failed with HTTP ${response.status}`);
+          throw new Error(await readChatError(response));
         }
 
         const reader = response.body?.getReader();
@@ -209,16 +231,25 @@ export function KokoroCallSession({
 
         setIsAgentThinking(false);
         if (accumulatedAssistantReply.trim()) {
-          setTranscriptHistory((prev) => [
-            ...prev,
+          transcriptHistoryRef.current = [
+            ...transcriptHistoryRef.current,
             { role: "assistant", content: accumulatedAssistantReply.trim() },
-          ]);
+          ];
         }
       } catch (err: any) {
-        if (err.name !== "AbortError") {
+        if (err.name !== "AbortError" || timedOut) {
           console.error("[KokoroCall] chat error:", err);
           setIsAgentThinking(false);
-          onError(err?.message || "Failed to communicate with receptionist");
+          onError(
+            timedOut
+              ? "The assistant did not respond within 45 seconds. Please try again."
+              : err?.message || "Failed to communicate with receptionist"
+          );
+        }
+      } finally {
+        window.clearTimeout(timeoutId);
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
         }
       }
     },
@@ -252,11 +283,12 @@ export function KokoroCallSession({
             if (isCancelled) return;
             if (isFinal) {
               setCurrentCallerText("");
-              setTranscriptHistory((prev) => {
-                const nextHistory: ChatMessage[] = [...prev, { role: "user", content: text }];
-                sendMessageToAgent(text, prev);
-                return nextHistory;
-              });
+              const historyBefore = transcriptHistoryRef.current;
+              transcriptHistoryRef.current = [
+                ...historyBefore,
+                { role: "user", content: text },
+              ];
+              void sendMessageToAgent(text, historyBefore);
             } else {
               setCurrentCallerText(text);
             }
@@ -322,7 +354,9 @@ export function KokoroCallSession({
         session_id: sessionIdRef.current,
         call_id: callIdRef.current,
         outcome: callOutcomeRef.current,
-        summary: transcriptHistory.map((m) => `${m.role}: ${m.content}`).join("\n"),
+        summary: transcriptHistoryRef.current
+          .map((m) => `${m.role}: ${m.content}`)
+          .join("\n"),
       });
     } catch {
       // ignore
@@ -767,4 +801,3 @@ function KokoroAudioBars({ isSpeaking, compact = false }: { isSpeaking: boolean;
     </div>
   );
 }
-

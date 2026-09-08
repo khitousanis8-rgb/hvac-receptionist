@@ -38,6 +38,20 @@ def test_initial_greeting_stream() -> None:
     assert "event: delta" in text
     assert "Acme Cooling" in text
     assert "event: done" in text
+    assert res.headers["cache-control"] == "no-cache"
+
+
+def test_chat_requires_llm_credentials() -> None:
+    app = create_app(Settings(_env_file=None))
+    client = TestClient(app)
+
+    res = client.post(
+        "/v1/calls/chat",
+        json={"session_id": "test-session-456", "message": "Can you help me?"},
+    )
+
+    assert res.status_code == 503
+    assert res.json()["detail"] == "LLM credentials are not configured on the server."
 
 
 def test_tool_execution_check_appointments() -> None:

@@ -4,9 +4,6 @@
  * zero WebRTC packet loss, and zero clipping distortion.
  */
 
-// @ts-ignore
-import { KokoroTTS } from "kokoro-js";
-
 export type TTSProgressCallback = (progress: number, message: string) => void;
 export type PlaybackStateCallback = (isPlaying: boolean) => void;
 
@@ -43,6 +40,15 @@ class KokoroTTSService {
   }
 
   /**
+   * Create and resume the audio context while a user gesture is still active.
+   * Calling this from the Start button prevents autoplay policies from
+   * silently suppressing the assistant's first reply.
+   */
+  public unlockAudio(): void {
+    this.getAudioContext();
+  }
+
+  /**
    * Return the Web Audio AnalyserNode for visualizing speech energy in real time.
    */
   public getAnalyserNode(): AnalyserNode | null {
@@ -72,6 +78,9 @@ class KokoroTTSService {
         onProgress?.(5, "Initializing voice synthesis engine…");
         const model_id = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
+        // Keep the ONNX runtime out of the initial dashboard bundle. It is
+        // loaded only after the visitor explicitly starts a voice demo.
+        const { KokoroTTS } = await import("kokoro-js");
         const instance = await KokoroTTS.from_pretrained(model_id, {
           dtype: "q8",
           progress_callback: (item: any) => {

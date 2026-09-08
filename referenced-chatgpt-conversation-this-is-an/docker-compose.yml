@@ -7,10 +7,3 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
-
-  agent:
-    build:
-      context: ./backend
-    command: python -m app.agent.worker start
-    env_file: .env
-    restart: unless-stopped
