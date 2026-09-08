@@ -73,6 +73,11 @@ export function KokoroCallSession({
   const speechRecRef = useRef<BrowserSpeechRecognition | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptHistoryRef = useRef<ChatMessage[]>([]);
+  
+  const onErrorRef = useRef(onError);
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
 
   // Cold-start detection: if backend takes >3.5s to respond (e.g. Render spinning up), show helpful hint
   useEffect(() => {
@@ -215,7 +220,7 @@ export function KokoroCallSession({
                   }
                   setActiveTool(null);
                 } else if (currentEvent === "error") {
-                  onError(data.error || "Streaming error from assistant");
+                  onErrorRef.current(data.error || "Streaming error from assistant");
                 }
               } catch {
                 // Ignore parse errors on partial frames
@@ -243,7 +248,7 @@ export function KokoroCallSession({
         if (err.name !== "AbortError" || timedOut) {
           console.error("[KokoroCall] chat error:", err);
           setIsAgentThinking(false);
-          onError(
+          onErrorRef.current(
             timedOut
               ? "The assistant did not respond within 45 seconds. Please try again."
               : err?.message || "Failed to communicate with receptionist"
@@ -256,11 +261,16 @@ export function KokoroCallSession({
         }
       }
     },
-    [onError]
+    []
   );
 
   // 4. Initialize Engine & Speech Recognition on mount
+  const hasInitialized = useRef<boolean>(false);
+
   useEffect(() => {
+    if (hasInitialized.current) return;
+    hasInitialized.current = true;
+
     let isCancelled = false;
 
     async function initCall() {
@@ -309,7 +319,7 @@ export function KokoroCallSession({
       } catch (err: any) {
         if (!isCancelled) {
           console.error("[KokoroCall] init failed:", err);
-          onError(err?.message || "Failed to initialize in-browser voice engine");
+          onErrorRef.current(err?.message || "Failed to initialize in-browser voice engine");
         }
       }
     }
@@ -326,7 +336,7 @@ export function KokoroCallSession({
         speechRecRef.current.stop();
       }
     };
-  }, [onError, sendMessageToAgent]);
+  }, [sendMessageToAgent]);
 
   // 5. User Controls
   const toggleMute = () => {

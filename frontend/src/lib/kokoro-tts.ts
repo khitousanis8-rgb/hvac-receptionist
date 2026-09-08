@@ -197,6 +197,17 @@ class KokoroTTSService {
   public flushText(): void {
     if (this.splitter && !this.splitter._closed) {
       this.splitter.close();
+      this._checkTurnCompletion();
+    }
+  }
+
+  private _checkTurnCompletion(): void {
+    if (this.isTurnActive && !this.isPlaying && this.playbackQueue.length === 0) {
+      const splitterDone = !this.splitter || this.splitter._closed;
+      if (splitterDone) {
+        this.isTurnActive = false;
+        this.onTurnStateChange?.(false);
+      }
     }
   }
 
@@ -237,6 +248,11 @@ class KokoroTTSService {
         if (!this.isPlaying) {
           this._playNextInQueue();
         }
+      }
+      
+      // When the stream iterator finishes, check if we're done
+      if (turnId === this.streamAbortId) {
+        this._checkTurnCompletion();
       }
     } catch (err: any) {
       if (turnId !== this.streamAbortId) return; // cancelled — not an error
@@ -299,16 +315,7 @@ class KokoroTTSService {
       this.onPlaybackStateChange?.(false);
 
       // Turn ends when the queue is empty and no more chunks are coming
-      if (this.isTurnActive) {
-        // Check if the splitter is closed (all input consumed)
-        const splitterDone =
-          !this.splitter || this.splitter._closed;
-        if (splitterDone) {
-          this.isTurnActive = false;
-          this.onTurnStateChange?.(false);
-        }
-        // If splitter is still open, more chunks may arrive — don't end the turn yet.
-      }
+      this._checkTurnCompletion();
       return;
     }
 
