@@ -446,7 +446,7 @@ function ActiveCallSession({
       }}
       className="w-full"
     >
-      <RoomAudioRenderer volume={0.85} />
+      <RoomAudioRenderer />
       <ActiveCallInner
         tokenData={tokenData}
         onCallEnded={onCallEnded}
@@ -474,13 +474,6 @@ function ActiveCallInner({
 
   const [duration, setDuration] = useState<number>(0);
   const durationRef = useRef<number>(0);
-
-  // Echo Guard for built-in laptop/monitor speakers & microphone:
-  // Automatically mutes the mic while the assistant is speaking through open speakers.
-  // This physically breaks the acoustic feedback loop that causes loud buzzing/static
-  // and prevents the assistant from hearing and repeating its own speech.
-  const [echoGuard, setEchoGuard] = useState<boolean>(true);
-  const userManuallyMutedRef = useRef<boolean>(false);
 
   // Timer
   useEffect(() => {
@@ -511,9 +504,7 @@ function ActiveCallInner({
 
   const toggleMic = async () => {
     try {
-      const nextState = !isMicrophoneEnabled;
-      userManuallyMutedRef.current = !nextState;
-      await localParticipant.setMicrophoneEnabled(nextState);
+      await localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled);
     } catch {
       // ignore
     }
@@ -523,23 +514,15 @@ function ActiveCallInner({
   const isAgentSpeaking = agentState === "speaking";
   const isAgentThinking = agentState === "thinking";
 
-  // Echo Guard Auto Muting effect:
-  // When assistant starts speaking on laptop speakers, temporarily pause mic to prevent screech/feedback.
-  useEffect(() => {
-    if (!echoGuard || !localParticipant) return;
-
-    if (isAgentSpeaking) {
-      localParticipant.setMicrophoneEnabled(false).catch(() => {});
-    } else {
-      if (!userManuallyMutedRef.current) {
-        localParticipant.setMicrophoneEnabled(true).catch(() => {});
-      }
-    }
-  }, [isAgentSpeaking, echoGuard, localParticipant]);
-
+  // Explicit interrupt triggered by user clicking button or pressing Space
   const handleInterrupt = async () => {
-    userManuallyMutedRef.current = false;
-    await localParticipant.setMicrophoneEnabled(true).catch(() => {});
+    try {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(JSON.stringify({ action: "interrupt" }));
+      await room.localParticipant.publishData(data, { reliable: true });
+    } catch {
+      // ignore
+    }
   };
 
   // Keyboard shortcuts: M for mute, Space for interrupt, Escape for end call
@@ -628,19 +611,19 @@ function ActiveCallInner({
               : "Listening to your voice…"}
           </div>
 
-          {/* Echo Guard indicator for open laptop speakers */}
-          {echoGuard && isAgentSpeaking && (
+          {/* Speaking and Interrupt indicator */}
+          {isAgentSpeaking && (
             <div className="flex flex-col items-center gap-1">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#ecfdf5] border border-[#a7f3d0] text-[#059669] text-[10px] font-medium">
-                <ShieldCheck className="w-3 h-3" aria-hidden="true" />
-                Mic auto-paused (Echo Guard)
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#eff6ff] border border-[#bfdbfe] text-[#1d4ed8] text-[10px] font-medium">
+                <Volume2 className="w-3 h-3 animate-pulse" aria-hidden="true" />
+                Assistant Speaking
               </span>
               <button
                 type="button"
                 onClick={handleInterrupt}
                 className="text-[11px] font-semibold text-[#0b5ed7] hover:underline cursor-pointer pt-0.5"
               >
-                Tap to interrupt &amp; speak
+                Tap to Interrupt [Space]
               </button>
             </div>
           )}
@@ -798,24 +781,31 @@ function ActiveCallInner({
 
             <div className="pt-2 border-t border-[#f4f4f5] text-[11px]">
               {isMicrophoneEnabled ? (
-                <span className="text-[#059669] flex items-center gap-1.5 font-medium">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#059669] animate-pulse" aria-hidden="true" />
-                  Microphone is active · Speak naturally to assistant.
-                </span>
-              ) : isAgentSpeaking && echoGuard ? (
-                <div className="flex items-center justify-between gap-2 p-1.5 rounded-md bg-[#ecfdf5] border border-[#a7f3d0]">
-                  <span className="text-[#059669] flex items-center gap-1 font-medium text-[11px]">
-                    <ShieldCheck className="w-3.5 h-3.5 text-[#059669]" aria-hidden="true" />
-                    Mic auto-paused to prevent speaker echo &amp; static
+                isAgentSpeaking ? (
+                  <div className="flex items-center justify-between gap-2 p-1.5 rounded-md bg-[#eff6ff] border border-[#bfdbfe]">
+                    <span className="text-[#1d4ed8] flex items-center gap-1.5 font-medium text-[11px]">
+                      <Volume2 className="w-3.5 h-3.5 text-[#1d4ed8] animate-pulse" aria-hidden="true" />
+                      Assistant speaking · Your turn next
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleInterrupt}
+                      className="text-[11px] font-semibold text-[#0b5ed7] hover:underline cursor-pointer"
+                    >
+                      Interrupt [Space]
+                    </button>
+                  </div>
+                ) : isAgentThinking ? (
+                  <span className="text-[#d97706] flex items-center gap-1.5 font-medium">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#d97706] animate-ping" aria-hidden="true" />
+                    Checking technician schedule…
                   </span>
-                  <button
-                    type="button"
-                    onClick={handleInterrupt}
-                    className="text-[11px] font-semibold text-[#0b5ed7] hover:underline cursor-pointer"
-                  >
-                    Interrupt [Space]
-                  </button>
-                </div>
+                ) : (
+                  <span className="text-[#059669] flex items-center gap-1.5 font-medium">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#059669] animate-pulse" aria-hidden="true" />
+                    Your Turn · Speak naturally to receptionist
+                  </span>
+                )
               ) : (
                 <span className="text-[#71717a]">
                   Microphone is muted. Press [M] or click unmute below.
@@ -850,22 +840,6 @@ function ActiveCallInner({
                   <span>Unmute Mic [M]</span>
                 </>
               )}
-            </button>
-
-            {/* Echo Guard Mode Toggle */}
-            <button
-              type="button"
-              onClick={() => setEchoGuard(!echoGuard)}
-              title={echoGuard ? "Echo Guard protects built-in laptop speakers from feedback" : "Headphones mode: microphone stays continuously open"}
-              className={cn(
-                "inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-medium border transition-colors cursor-pointer",
-                echoGuard
-                  ? "bg-[#ecfdf5] border-[#a7f3d0] text-[#059669] hover:bg-[#d1fae5]"
-                  : "bg-white border-[#e7e7e7] text-[#71717a] hover:bg-[#f4f4f5]"
-              )}
-            >
-              <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{echoGuard ? "Echo Guard: Speaker Mode" : "Headphones Mode"}</span>
             </button>
 
             {isAgentSpeaking && (

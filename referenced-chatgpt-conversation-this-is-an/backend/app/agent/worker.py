@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import structlog
 from dotenv import load_dotenv
+from livekit import rtc
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext, JobExecutorType, cli, inference
-from livekit.plugins import openai, silero
+from livekit.plugins import openai
 
 from app.agent.prompts import receptionist_instructions
 from app.agent.tools import build_receptionist_tools
@@ -44,7 +46,7 @@ def build_agent_session(settings: Settings) -> AgentSession[None]:
     base_url = str(settings.llm_base_url)
 
     return AgentSession(
-        # Speech-to-text: LiveKit Cloud streaming STT (Deepgram) — transcribes
+        # Speech-to-text: LiveKit Cloud streaming STT (Deepgram Nova-3) — transcribes
         # while the caller speaks, removing the batch-transcription delay.
         stt=inference.STT("deepgram/nova-3"),
         llm=openai.LLM(
@@ -54,43 +56,25 @@ def build_agent_session(settings: Settings) -> AgentSession[None]:
             # Skip most hidden reasoning tokens for faster first response.
             reasoning_effort="low",
         ),
-        # Text-to-speech: LiveKit Cloud inference (Cartesia Sonic).
-        # Calibrated volume (0.75) provides -4dB to -6dB headroom, preventing
-        # raw 16-bit integer clipping (+-32767) that causes harsh static and noise bursts.
+        # Text-to-speech: LiveKit Cloud inference (Cartesia Sonic-3).
         tts=inference.TTS(
             "cartesia/sonic-3",
             voice=settings.tts_voice,
-            extra_kwargs={"volume": settings.tts_volume},
         ),
-        # Robust voice-activity detection:
-        # min_speech_duration=0.25 ignores room clicks, transient echo, and initial speaker bleed.
-        # activation_threshold=0.65 requires confident user speech so speaker playback isn't treated as user talk.
-        vad=silero.VAD.load(
-            min_speech_duration=0.25,
-            activation_threshold=0.65,
-        ),
-        # Stable turn handling:
-        # - endpointing min_delay 0.5s prevents cutting off callers prematurely
-        # - interruption min_duration 1.0s requires sustained intentional caller speech, preventing
-        #   the agent from interrupting itself on laptop speaker acoustic echo leak
+        # Cloud-native turn handling:
+        # - Uses LiveKit Cloud TurnDetector & VAD (0% local CPU on Render free tier).
+        # - Disables automatic acoustic interruption & discards mic audio while agent speaks:
+        #   Prevents speaker feedback loops, audio packet buffer underruns, and speech cuts.
+        # - Enables preemptive generation so responses start streaming immediately (sub-second latency).
         turn_handling={
-            "turn_detection": "vad",
-            "endpointing": {
-                "mode": "fixed",
-                "min_delay": 0.5,
-                "max_delay": 2.5,
-            },
             "interruption": {
-                "enabled": True,
-                "min_duration": 1.0,
-                "resume_false_interruption": False,
+                "enabled": False,
+                "discard_audio_if_uninterruptible": True,
             },
             "preemptive_generation": {
-                "enabled": False,
+                "enabled": True,
             },
         },
-        # Ignore caller mic audio during first 5 seconds of agent speech to prevent speaker feedback loop
-        aec_warmup_duration=5.0,
     )
 
 
@@ -112,6 +96,18 @@ async def receptionist_session(ctx: JobContext) -> None:
     ctx.log_context_fields = {"room": ctx.room.name}
     call_id = start_call(ctx.room.name)
     session = build_agent_session(settings)
+
+    # Listen for explicit user interruption signal from the frontend
+    @ctx.room.on("data_received")
+    def on_data_received(data_packet: rtc.DataPacket) -> None:
+        try:
+            payload = json.loads(data_packet.data.decode("utf-8"))
+            if payload.get("action") == "interrupt":
+                logger.info("manual_interruption_requested", room=ctx.room.name)
+                session.interrupt(force=True)
+        except Exception as e:
+            logger.warning("data_packet_processing_failed", error=str(e))
+
     await session.start(agent=HVACReceptionist(settings), room=ctx.room)
     await ctx.connect()
     logger.info("agent_session_started", room=ctx.room.name, call_id=call_id)
