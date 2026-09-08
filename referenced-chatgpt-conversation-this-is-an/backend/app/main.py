@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.agent.dispatch import CredentialsMissingError, DispatchError, create_room_and_token
+from app.chat_api import router as chat_router
 from app.config import Settings, get_settings
 from app.dashboard import router as dashboard_router
 from app.db import Appointment, CallRecord, Customer, init_db, new_session
@@ -87,6 +88,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    app.state.settings = runtime_settings
     app.add_middleware(
         CORSMiddleware,
         allow_origins=runtime_settings.cors_origin_list,
@@ -96,6 +98,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(dashboard_router)
+    app.include_router(chat_router)
 
     @app.middleware("http")
     async def log_request(

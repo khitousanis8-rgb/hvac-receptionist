@@ -33,6 +33,9 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { KokoroCallSession } from "./kokoro-call-session";
+
+export type VoiceEngine = "browser" | "cloud";
 
 interface TokenResponse {
   url: string;
@@ -89,6 +92,7 @@ export function LiveCallPage({
   companyName,
 }: LiveCallPageProps) {
   const [phase, setPhase] = useState<CallPhase>("idle");
+  const [engine, setEngine] = useState<VoiceEngine>("browser");
   const [tokenData, setTokenData] = useState<TokenResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lastDuration, setLastDuration] = useState<number>(0);
@@ -100,8 +104,14 @@ export function LiveCallPage({
 
   const startCall = async () => {
     try {
-      setPhase("connecting");
       setErrorMessage(null);
+      if (engine === "browser") {
+        setTokenData(null);
+        setLastRoom("In-Browser Kokoro");
+        setPhase("in-call");
+        return;
+      }
+      setPhase("connecting");
       const res = await apiPost<TokenResponse>("/v1/calls/token", {});
       setTokenData(res);
       setLastRoom(res.room);
@@ -182,11 +192,29 @@ export function LiveCallPage({
       </div>
 
       {/* Screen States */}
-      {phase === "idle" && <IdleState onStart={startCall} companyName={companyName} />}
+      {phase === "idle" && (
+        <IdleState
+          onStart={startCall}
+          companyName={companyName}
+          engine={engine}
+          onEngineChange={setEngine}
+        />
+      )}
 
       {phase === "connecting" && <ConnectingState companyName={companyName} />}
 
-      {phase === "in-call" && tokenData && (
+      {phase === "in-call" && engine === "browser" && (
+        <KokoroCallSession
+          companyName={companyName}
+          onCallEnded={handleCallEnded}
+          onError={(msg) => {
+            setErrorMessage(msg);
+            setPhase("error");
+          }}
+        />
+      )}
+
+      {phase === "in-call" && engine === "cloud" && tokenData && (
         <ActiveCallSession
           tokenData={tokenData}
           companyName={companyName}
@@ -224,9 +252,13 @@ export function LiveCallPage({
 function IdleState({
   onStart,
   companyName,
+  engine,
+  onEngineChange,
 }: {
   onStart: () => void;
   companyName?: string;
+  engine: VoiceEngine;
+  onEngineChange: (engine: VoiceEngine) => void;
 }) {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
 
@@ -266,8 +298,46 @@ function IdleState({
           </motion.button>
         </div>
 
+        {/* Engine Selector Bar */}
+        <div className="pt-4 mt-5 border-t border-[#f4f4f5] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-[12px]">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-medium text-[#71717a]">Voice Engine:</span>
+            <div className="inline-flex rounded-lg border border-[#e7e7e7] p-0.5 bg-[#f4f4f5]">
+              <button
+                type="button"
+                onClick={() => onEngineChange("browser")}
+                className={cn(
+                  "px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer",
+                  engine === "browser"
+                    ? "bg-white text-[#0a0a0a] shadow-xs font-semibold"
+                    : "text-[#71717a] hover:text-[#0a0a0a]"
+                )}
+              >
+                In-Browser (Kokoro-82M · $0 Cost)
+              </button>
+              <button
+                type="button"
+                onClick={() => onEngineChange("cloud")}
+                className={cn(
+                  "px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer",
+                  engine === "cloud"
+                    ? "bg-white text-[#0a0a0a] shadow-xs font-semibold"
+                    : "text-[#71717a] hover:text-[#0a0a0a]"
+                )}
+              >
+                Cloud WebRTC (LiveKit)
+              </button>
+            </div>
+          </div>
+          <span className="text-[11px] font-mono text-[#059669]">
+            {engine === "browser"
+              ? "✓ Zero WebRTC clipping · Free local TTS"
+              : "LiveKit Cloud audio streaming"}
+          </span>
+        </div>
+
         {/* 3 Core Business Value Pillars */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-5 mt-5 border-t border-[#f4f4f5]">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-5 mt-4 border-t border-[#f4f4f5]">
           <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa] space-y-1">
             <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0a0a0a]">
               <Zap className="w-3.5 h-3.5 text-[#0b5ed7]" aria-hidden="true" />
