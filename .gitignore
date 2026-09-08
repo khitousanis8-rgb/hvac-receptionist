@@ -38,3 +38,6 @@ tsconfig.tsbuildinfo
 # Fly.io token (secret!)
 fly_token.txt
 fly_auth_*.txt
+
+# Cloned reference repos
+agent-skills/

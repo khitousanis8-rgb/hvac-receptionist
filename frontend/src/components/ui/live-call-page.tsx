@@ -41,6 +41,7 @@ type CallPhase = "idle" | "connecting" | "in-call" | "ended" | "error";
 interface LiveCallPageProps {
   onNavigateToCalls?: () => void;
   onCallStateChange?: (inCall: boolean) => void;
+  companyName?: string;
 }
 
 function formatDuration(seconds: number): string {
@@ -52,28 +53,32 @@ function formatDuration(seconds: number): string {
 const TEST_SCENARIOS = [
   {
     title: "Appointment Booking",
-    phrase: "My AC is blowing warm air in this Austin heat, can I schedule a technician for tomorrow morning?",
+    phrase: "My AC is blowing warm air today, can I schedule a technician visit for tomorrow morning?",
     badge: "Booking",
   },
   {
     title: "Check Upcoming Visit",
-    phrase: "Can you look up my upcoming maintenance appointment for 512-555-0144?",
+    phrase: "Can you look up my upcoming maintenance appointment for 555-0144?",
     badge: "Lookup",
   },
   {
     title: "Services & Hours",
-    phrase: "What are McCullough's operating hours and do you service heat pumps in North Austin?",
+    phrase: "What are your standard operating hours and do you service residential heat pumps?",
     badge: "Info",
   },
   {
     title: "Emergency Safety",
-    phrase: "I smell strong gas near my furnace on Buell Ave and hear a loud hissing sound.",
+    phrase: "I smell strong gas near my furnace and hear a loud hissing sound.",
     badge: "Emergency",
     urgent: true,
   },
 ];
 
-export function LiveCallPage({ onNavigateToCalls, onCallStateChange }: LiveCallPageProps) {
+export function LiveCallPage({
+  onNavigateToCalls,
+  onCallStateChange,
+  companyName,
+}: LiveCallPageProps) {
   const [phase, setPhase] = useState<CallPhase>("idle");
   const [tokenData, setTokenData] = useState<TokenResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -163,11 +168,12 @@ export function LiveCallPage({ onNavigateToCalls, onCallStateChange }: LiveCallP
       {/* Screen States */}
       {phase === "idle" && <IdleState onStart={startCall} />}
 
-      {phase === "connecting" && <ConnectingState />}
+      {phase === "connecting" && <ConnectingState companyName={companyName} />}
 
       {phase === "in-call" && tokenData && (
         <ActiveCallSession
           tokenData={tokenData}
+          companyName={companyName}
           onCallEnded={handleCallEnded}
           onError={(msg) => {
             setErrorMessage(msg);
@@ -329,7 +335,8 @@ function IdleState({ onStart }: { onStart: () => void }) {
 /**
  * 2. CONNECTING STATE
  */
-function ConnectingState() {
+function ConnectingState({ companyName }: { companyName?: string }) {
+  const displayName = companyName || "HVAC Receptionist";
   return (
     <div
       role="status"
@@ -343,15 +350,15 @@ function ConnectingState() {
           className="absolute inset-0 rounded-full bg-[#0b5ed7]/15"
         />
         <div className="w-12 h-12 rounded-full bg-[#eff6ff] border border-[#bfdbfe] flex items-center justify-center text-[#0b5ed7]">
-          <PhoneCall className="w-5 h-5 animate-pulse" />
+          <PhoneCall className="w-5 h-5 animate-pulse" aria-hidden="true" />
         </div>
       </div>
 
       <div className="space-y-1">
-        <h3 className="text-[15px] font-semibold text-[#0a0a0a]">
-          Connecting to HVAC Receptionist...
+        <h3 className="text-[15px] font-semibold text-[#0a0a0a] text-balance">
+          Connecting to {displayName}…
         </h3>
-        <p className="text-[12px] text-[#71717a] max-w-sm mx-auto">
+        <p className="text-[12px] text-[#71717a] max-w-sm mx-auto text-pretty">
           Negotiating WebRTC audio token with backend and launching live room session.
         </p>
       </div>
@@ -366,10 +373,12 @@ function ActiveCallSession({
   tokenData,
   onCallEnded,
   onError,
+  companyName,
 }: {
   tokenData: TokenResponse;
   onCallEnded: (duration: number) => void;
   onError: (msg: string) => void;
+  companyName?: string;
 }) {
   return (
     <LiveKitRoom
@@ -396,7 +405,11 @@ function ActiveCallSession({
       className="w-full"
     >
       <RoomAudioRenderer />
-      <ActiveCallInner tokenData={tokenData} onCallEnded={onCallEnded} />
+      <ActiveCallInner
+        tokenData={tokenData}
+        onCallEnded={onCallEnded}
+        companyName={companyName}
+      />
     </LiveKitRoom>
   );
 }
@@ -407,9 +420,11 @@ function ActiveCallSession({
 function ActiveCallInner({
   tokenData,
   onCallEnded,
+  companyName,
 }: {
   tokenData: TokenResponse;
   onCallEnded: (duration: number) => void;
+  companyName?: string;
 }) {
   const room = useRoomContext();
   const { isMicrophoneEnabled, localParticipant } = useLocalParticipant();
@@ -488,14 +503,14 @@ function ActiveCallInner({
         {/* Mobile Header: Duration and Status */}
         <div className="space-y-1">
           <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#ecfdf5] border border-[#a7f3d0] text-[#059669] text-[10px] font-mono uppercase tracking-wider font-semibold">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#059669] animate-pulse" />
+            <span className="w-1.5 h-1.5 rounded-full bg-[#059669] animate-pulse" aria-hidden="true" />
             <span>Call Connected</span>
           </div>
-          <div className="text-[34px] font-mono font-semibold tracking-wider text-[#0a0a0a] leading-none pt-1">
+          <div className="text-[34px] font-mono font-semibold tracking-wider text-[#0a0a0a] leading-none pt-1 tabular-nums">
             {formatDuration(duration)}
           </div>
-          <div className="text-[11px] font-mono text-[#71717a]">
-            Room: {tokenData.room.slice(0, 16)}...
+          <div className="text-[11px] font-mono text-[#71717a] tabular-nums">
+            Room: {tokenData.room.slice(0, 16)}…
           </div>
         </div>
 
@@ -526,7 +541,7 @@ function ActiveCallInner({
                 : "bg-white border-[#e7e7e7] text-[#0a0a0a]"
             )}
           >
-            <Bot className="w-12 h-12" />
+            <Bot className="w-12 h-12" aria-hidden="true" />
           </div>
         </div>
 
@@ -534,10 +549,10 @@ function ActiveCallInner({
         <div className="space-y-2 w-full max-w-xs">
           <div className="text-[15px] font-semibold text-[#0a0a0a] tracking-tight">
             {isAgentSpeaking
-              ? "Receptionist Speaking..."
+              ? "Receptionist Speaking…"
               : isAgentThinking
-              ? "AI Processing Response..."
-              : "Listening to your voice..."}
+              ? "AI Processing Response…"
+              : "Listening to your voice…"}
           </div>
 
           {/* Mini Audio Bar */}
@@ -566,9 +581,9 @@ function ActiveCallInner({
                 )}
               >
                 {isMicrophoneEnabled ? (
-                  <Mic className="w-6 h-6" />
+                  <Mic className="w-6 h-6" aria-hidden="true" />
                 ) : (
-                  <MicOff className="w-6 h-6" />
+                  <MicOff className="w-6 h-6" aria-hidden="true" />
                 )}
               </motion.button>
               <span className="text-[11px] font-medium text-[#71717a]">
@@ -583,9 +598,9 @@ function ActiveCallInner({
                 whileTap={{ scale: 0.9 }}
                 onClick={handleEndCall}
                 aria-label="Hang up call"
-                className="flex items-center justify-center w-16 h-16 rounded-full bg-[#dc2626] text-white shadow-md shadow-red-500/25 hover:bg-[#b91c1c] active:bg-[#991b1b] cursor-pointer"
+                className="flex items-center justify-center w-16 h-16 rounded-full bg-[#dc2626] text-white shadow-md shadow-red-500/25 hover:bg-[#b91c1c] active:bg-[#991b1b] cursor-pointer transition-transform active:scale-95"
               >
-                <PhoneOff className="w-6 h-6" />
+                <PhoneOff className="w-6 h-6" aria-hidden="true" />
               </motion.button>
               <span className="text-[11px] font-medium text-[#dc2626]">
                 End Call
@@ -603,15 +618,15 @@ function ActiveCallInner({
         <div className="px-5 py-3.5 flex items-center justify-between gap-3 bg-[#fafafa]">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1.5 text-[11px] font-semibold text-[#059669] uppercase tracking-wider">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#059669] animate-pulse" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#059669] animate-pulse" aria-hidden="true" />
               Session Active
             </span>
-            <span className="text-[11px] font-mono text-[#4e505b]">
+            <span className="text-[11px] font-mono text-[#4e505b] tabular-nums">
               Room: {tokenData.room}
             </span>
           </div>
 
-          <div className="flex items-center gap-2 text-[12px] font-mono font-semibold text-[#0a0a0a]">
+          <div className="flex items-center gap-2 text-[12px] font-mono font-semibold text-[#0a0a0a] tabular-nums">
             <Clock className="w-3.5 h-3.5 text-[#71717a]" aria-hidden="true" />
             <span>{formatDuration(duration)}</span>
           </div>
@@ -645,10 +660,10 @@ function ActiveCallInner({
 
             <div className="space-y-0.5">
               <div className="text-[13px] font-semibold text-[#0a0a0a]">
-                McCullough Receptionist
+                {companyName ? `${companyName} Receptionist` : "HVAC Receptionist"}
               </div>
               <div className="text-[11px] font-mono text-[#71717a]">
-                Identity: {voiceAssistant.agent?.identity || "mccullough-receptionist"}
+                Identity: {voiceAssistant.agent?.identity || "hvac-receptionist"}
               </div>
             </div>
 
@@ -751,9 +766,9 @@ function AudioActivityBars({ track, compact = false }: { track: any; compact?: b
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-[10px] font-mono text-[#71717a]">
         <span className="flex items-center gap-1">
-          <Volume2 className="w-3 h-3" /> Voice Energy
+          <Volume2 className="w-3 h-3" aria-hidden="true" /> Voice Energy
         </span>
-        <span>{Math.round(volume * 100)}%</span>
+        <span className="tabular-nums">{Math.round(volume * 100)}%</span>
       </div>
       <div className={cn("flex items-center gap-1", compact ? "h-2" : "h-3")}>
         {Array.from({ length: 8 }).map((_, i) => (
@@ -805,7 +820,7 @@ function EndedState({
           <div className="text-[10px] font-mono uppercase text-[#71717a]">
             Total Call Duration
           </div>
-          <div className="text-[15px] font-mono font-semibold text-[#0a0a0a] mt-0.5">
+          <div className="text-[15px] font-mono font-semibold text-[#0a0a0a] mt-0.5 tabular-nums">
             {formatDuration(duration)}
           </div>
         </div>
@@ -814,7 +829,7 @@ function EndedState({
           <div className="text-[10px] font-mono uppercase text-[#71717a]">
             Session Room
           </div>
-          <div className="text-[12px] font-mono text-[#0a0a0a] truncate mt-0.5">
+          <div className="text-[12px] font-mono text-[#0a0a0a] truncate mt-0.5 tabular-nums">
             {roomName || "—"}
           </div>
         </div>

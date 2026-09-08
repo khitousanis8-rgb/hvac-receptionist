@@ -216,13 +216,13 @@ function StatCard({
           {label}
         </span>
         {subtext && (
-          <span className="text-[10px] font-mono text-[#059669] bg-[#ecfdf5] border border-[#a7f3d0] px-1.5 py-0.2 rounded-full flex items-center gap-0.5">
-            <TrendingUp className="w-2.5 h-2.5" />
+          <span className="text-[10px] font-mono tabular-nums text-[#059669] bg-[#ecfdf5] border border-[#a7f3d0] px-1.5 py-0.2 rounded-full flex items-center gap-0.5">
+            <TrendingUp className="w-2.5 h-2.5" aria-hidden="true" />
             {subtext}
           </span>
         )}
       </div>
-      <div className="text-[22px] sm:text-[26px] font-semibold text-[#0a0a0a] tracking-tight leading-none mt-2">
+      <div className="text-[22px] sm:text-[26px] font-semibold text-[#0a0a0a] tracking-tight leading-none mt-2 font-mono tabular-nums">
         {value}
       </div>
     </div>
@@ -303,13 +303,13 @@ function CallRow({
         onClick={onToggle}
         className="cursor-pointer hover:bg-[#fafafa] transition-colors duration-150 text-[12px]"
       >
-        <td className="px-4 py-2.5 whitespace-nowrap text-[#0a0a0a] font-mono text-[11px]">
+        <td className="px-4 py-2.5 whitespace-nowrap text-[#0a0a0a] font-mono tabular-nums text-[11px]">
           {fmt(call.started_at)}
         </td>
         <td className="px-4 py-2.5">
           <OutcomeBadge outcome={call.outcome} />
         </td>
-        <td className="px-4 py-2.5 whitespace-nowrap font-mono text-[11px] text-[#4e505b]">
+        <td className="px-4 py-2.5 whitespace-nowrap font-mono tabular-nums text-[11px] text-[#4e505b]">
           {call.caller_phone ? (
             <a
               href={cleanTelHref(call.caller_phone)}
@@ -330,6 +330,7 @@ function CallRow({
                 "h-3.5 w-3.5 shrink-0 transition-transform duration-150 text-[#71717a]",
                 expanded && "rotate-180"
               )}
+              aria-hidden="true"
             />
           </span>
         </td>
@@ -337,10 +338,10 @@ function CallRow({
       {expanded && (
         <tr className="bg-[#fafafa] text-[12px]">
           <td colSpan={4} className="px-4 py-3">
-            <div className="text-[12px] text-[#0a0a0a] whitespace-pre-wrap break-words leading-relaxed">
+            <div className="text-[12px] text-[#0a0a0a] whitespace-pre-wrap break-words leading-relaxed text-pretty">
               {call.transcript_summary ?? "No summary recorded for this call."}
             </div>
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono text-[#71717a]">
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono tabular-nums text-[#71717a]">
               <span>Room: {call.room_name}</span>
               <span>Duration: {duration(call.started_at, call.ended_at)}</span>
               {call.ended_at && <span>Ended: {fmt(call.ended_at)}</span>}
@@ -372,20 +373,20 @@ function MobileCallsList({ calls }: { calls: CallRecord[] }) {
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <OutcomeBadge outcome={call.outcome} />
-                <span className="text-[10px] font-mono text-[#71717a]">
+                <span className="text-[10px] font-mono tabular-nums text-[#71717a]">
                   {fmt(call.started_at)}
                 </span>
               </div>
-              <span className="text-[10px] font-mono text-[#71717a]">
+              <span className="text-[10px] font-mono tabular-nums text-[#71717a]">
                 {duration(call.started_at, call.ended_at)}
               </span>
             </div>
 
             <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#f4f4f5]">
-              <div className="font-mono text-[12px] font-medium text-[#0a0a0a]">
+              <div className="font-mono tabular-nums text-[12px] font-medium text-[#0a0a0a]">
                 {call.caller_phone ? (
                   <span className="flex items-center gap-1">
-                    <Phone className="w-3 h-3 text-[#71717a]" />
+                    <Phone className="w-3 h-3 text-[#71717a]" aria-hidden="true" />
                     {call.caller_phone}
                   </span>
                 ) : (
@@ -398,7 +399,7 @@ function MobileCallsList({ calls }: { calls: CallRecord[] }) {
                   href={cleanTelHref(call.caller_phone)}
                   className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-[#eff6ff] text-[#0b5ed7] border border-[#bfdbfe]"
                 >
-                  <Phone className="w-3 h-3" />
+                  <Phone className="w-3 h-3" aria-hidden="true" />
                   <span>Call Back</span>
                 </a>
               )}
@@ -419,6 +420,7 @@ function MobileCallsList({ calls }: { calls: CallRecord[] }) {
                       "w-3.5 h-3.5 shrink-0 transition-transform duration-150",
                       isExpanded && "rotate-180"
                     )}
+                    aria-hidden="true"
                   />
                 </button>
 
@@ -430,9 +432,9 @@ function MobileCallsList({ calls }: { calls: CallRecord[] }) {
                       exit={{ opacity: 0, height: 0 }}
                       className="overflow-hidden"
                     >
-                      <div className="mt-2 p-2.5 rounded-lg bg-[#fafafa] border border-[#e7e7e7] text-[11px] text-[#4e505b] leading-relaxed">
+                      <div className="mt-2 p-2.5 rounded-lg bg-[#fafafa] border border-[#e7e7e7] text-[11px] text-[#4e505b] leading-relaxed text-pretty">
                         {call.transcript_summary}
-                        <div className="mt-2 pt-2 border-t border-[#e7e7e7] font-mono text-[10px] text-[#71717a]">
+                        <div className="mt-2 pt-2 border-t border-[#e7e7e7] font-mono tabular-nums text-[10px] text-[#71717a]">
                           Room: {call.room_name}
                         </div>
                       </div>
@@ -478,7 +480,7 @@ function AppointmentsTable({
             key={a.id}
             className="hover:bg-[#fafafa] transition-colors duration-150 text-[12px]"
           >
-            <td className="px-4 py-2.5 whitespace-nowrap text-[#0a0a0a] font-mono text-[11px]">
+            <td className="px-4 py-2.5 whitespace-nowrap text-[#0a0a0a] font-mono tabular-nums text-[11px]">
               {fmt(a.scheduled_for)}
             </td>
             <td className="px-4 py-2.5 text-[#0a0a0a]">
@@ -494,7 +496,7 @@ function AppointmentsTable({
             </td>
             <td className="px-4 py-2.5">
               <div className="text-[#0a0a0a] font-medium">{a.customer_name ?? "—"}</div>
-              <div className="text-[11px] font-mono text-[#71717a]">
+              <div className="text-[11px] font-mono tabular-nums text-[#71717a]">
                 <a
                   href={cleanTelHref(a.customer_phone)}
                   className="text-[#0b5ed7] hover:underline"
@@ -847,7 +849,7 @@ function DashboardPage({
       <div className="md:hidden rounded-2xl border border-[#bfdbfe] bg-[#eff6ff] p-4 flex items-center justify-between gap-3 shadow-2xs">
         <div className="space-y-0.5">
           <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0b5ed7]">
-            <Sparkles className="w-3.5 h-3.5" />
+            <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
             <span>AI Voice Receptionist</span>
           </div>
           <p className="text-[11px] text-[#4e505b]">
@@ -857,9 +859,10 @@ function DashboardPage({
         <motion.button
           whileTap={{ scale: 0.94 }}
           onClick={() => onNavigate("live-call")}
+          aria-label="Start live call"
           className="inline-flex items-center gap-1 px-3.5 py-2 rounded-xl text-[12px] font-semibold text-white bg-[#0b5ed7] shadow-xs cursor-pointer shrink-0"
         >
-          <PhoneCall className="w-3.5 h-3.5" />
+          <PhoneCall className="w-3.5 h-3.5" aria-hidden="true" />
           <span>Call</span>
         </motion.button>
       </div>
@@ -877,7 +880,7 @@ function DashboardPage({
               className="text-[11px] font-medium text-[#0b5ed7] hover:underline cursor-pointer flex items-center gap-0.5"
             >
               <span>View all calls</span>
-              <ArrowUpRight className="w-3 h-3" />
+              <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
             </button>
           </div>
 
@@ -902,7 +905,7 @@ function DashboardPage({
               className="text-[11px] font-medium text-[#0b5ed7] hover:underline cursor-pointer flex items-center gap-0.5"
             >
               <span>View schedule</span>
-              <ArrowUpRight className="w-3 h-3" />
+              <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
             </button>
           </div>
 
@@ -994,6 +997,7 @@ export default function App() {
                 setPage("dashboard");
                 setOpen(false);
               }}
+              companyName={config?.company_name}
             />
             <div className="mt-6 flex flex-col gap-1">
               {links.map((link) => (
@@ -1044,13 +1048,13 @@ export default function App() {
 
       {/* Mobile Top App Bar (Sticky Header on screens < md) */}
       <div className="md:hidden sticky top-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-b border-[#e7e7e7] px-4 py-2.5 pt-safe flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="h-7 w-7 rounded-lg bg-[#0b5ed7] text-white flex items-center justify-center font-bold text-[12px] shrink-0 shadow-xs">
-            MH
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="h-7 w-7 rounded-lg bg-[#0b5ed7] text-white flex items-center justify-center font-bold text-[11px] shrink-0 shadow-2xs tracking-tight">
+            {getInitials(config?.company_name)}
           </div>
-          <div>
-            <div className="text-[13px] font-semibold tracking-tight text-[#0a0a0a] leading-tight truncate max-w-[200px]">
-              {config?.company_name ?? "McCullough Heating & AC"}
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold tracking-tight text-[#0a0a0a] leading-tight truncate max-w-[210px]">
+              {config?.company_name ?? "HVAC Receptionist"}
             </div>
             <div className="flex items-center gap-1.5 text-[10px] font-mono text-[#71717a]">
               <span
@@ -1058,8 +1062,9 @@ export default function App() {
                   "w-1.5 h-1.5 rounded-full",
                   online === true ? "bg-emerald-500 animate-pulse" : "bg-rose-500"
                 )}
+                aria-hidden="true"
               />
-              <span>{online === true ? "Austin Dispatch Active" : "Connecting"}</span>
+              <span>{online === true ? "Online" : "Connecting…"}</span>
             </div>
           </div>
         </div>
@@ -1068,10 +1073,10 @@ export default function App() {
         {config?.emergency_phone && (
           <a
             href={cleanTelHref(config.emergency_phone)}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#fff1f2] border border-[#fecdd3] text-[#e11d48] text-[11px] font-semibold shadow-2xs active:scale-95"
+            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#fff1f2] border border-[#fecdd3] text-[#e11d48] text-[11px] font-semibold shadow-2xs active:scale-95 transition-transform"
             aria-label="Call Emergency Hotline"
           >
-            <ShieldAlert className="w-3.5 h-3.5" />
+            <ShieldAlert className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Emergency</span>
           </a>
         )}
@@ -1083,7 +1088,7 @@ export default function App() {
           {/* Desktop Top Header Bar */}
           <header className="hidden md:flex mb-6 pb-4 border-b border-[#e7e7e7] flex-wrap items-center justify-between gap-3">
             <div>
-              <h1 className="text-[18px] font-semibold tracking-tight text-[#0a0a0a] capitalize">
+              <h1 className="text-[18px] font-semibold tracking-tight text-[#0a0a0a] capitalize text-balance">
                 {page === "live-call" ? "Live Call Console" : page}
               </h1>
               <p className="text-[12px] text-[#71717a]">
@@ -1099,6 +1104,7 @@ export default function App() {
                     online === true && "bg-emerald-500 animate-pulse",
                     online === false && "bg-rose-500"
                   )}
+                  aria-hidden="true"
                 />
                 <span>
                   {online === null
@@ -1108,7 +1114,7 @@ export default function App() {
                     : "API offline"}
                 </span>
                 {updatedAt && (
-                  <span className="text-[#a1a1aa]">
+                  <span className="text-[#a1a1aa] font-mono tabular-nums">
                     · updated {updatedAt.toLocaleTimeString()}
                   </span>
                 )}
@@ -1132,6 +1138,7 @@ export default function App() {
           )}
           {page === "live-call" && (
             <LiveCallPage
+              companyName={config?.company_name}
               onNavigateToCalls={() => setPage("calls")}
               onCallStateChange={(inCall) => setIsInCall(inCall)}
             />
@@ -1154,7 +1161,26 @@ export default function App() {
   );
 }
 
-function Logo({ showText, onNavigate }: { showText: boolean; onNavigate: () => void }) {
+function getInitials(name?: string | null): string {
+  if (!name || name === "HVAC Receptionist") return "HR";
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length >= 2) {
+    return (words[0][0] + words[1][0]).toUpperCase();
+  }
+  return name.slice(0, 2).toUpperCase();
+}
+
+function Logo({
+  showText,
+  onNavigate,
+  companyName,
+}: {
+  showText: boolean;
+  onNavigate: () => void;
+  companyName?: string;
+}) {
+  const displayName = companyName || "HVAC Receptionist";
+  const initials = getInitials(companyName);
   return (
     <a
       href="#dashboard"
@@ -1162,17 +1188,18 @@ function Logo({ showText, onNavigate }: { showText: boolean; onNavigate: () => v
         e.preventDefault();
         onNavigate();
       }}
-      className="flex items-center gap-2.5 py-1 px-1 relative z-20 text-[13px] font-semibold text-[#0a0a0a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] rounded-md"
+      aria-label={`${displayName} Dashboard`}
+      className="flex items-center gap-2.5 py-1 px-1 relative z-20 text-[13px] font-semibold text-[#0a0a0a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] rounded-md transition-colors"
     >
-      <div className="h-6 w-6 rounded-md bg-[#0b5ed7] text-white flex items-center justify-center font-bold text-[10px] shrink-0 shadow-2xs">
-        MH
+      <div className="h-6 w-6 rounded-md bg-[#0b5ed7] text-white flex items-center justify-center font-bold text-[10px] shrink-0 shadow-2xs tracking-tight">
+        {initials}
       </div>
       <motion.span
         initial={{ opacity: 0 }}
         animate={{ opacity: showText ? 1 : 0 }}
         className="font-semibold tracking-tight text-[#0a0a0a] whitespace-pre truncate max-w-[170px]"
       >
-        McCullough HVAC
+        {displayName}
       </motion.span>
     </a>
   );

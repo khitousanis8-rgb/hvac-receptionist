@@ -97,7 +97,7 @@ export function MobileBottomNav({
                       className="absolute inset-0 rounded-full border-2 border-[#0b5ed7] pointer-events-none"
                     />
                   )}
-                  <Icon className="w-6 h-6 shrink-0" />
+                  <Icon className="w-6 h-6 shrink-0" aria-hidden="true" />
                   <span className="text-[9px] font-semibold tracking-tight mt-0.5 leading-none">
                     {isInCall ? "LIVE" : "CALL"}
                   </span>
@@ -120,11 +120,17 @@ export function MobileBottomNav({
               )}
             >
               <div className="relative">
-                <Icon className={cn("w-5 h-5 transition-transform duration-150", isActive && "scale-110")} />
+                <Icon
+                  className={cn(
+                    "w-5 h-5 transition-transform duration-150",
+                    isActive && "scale-110"
+                  )}
+                  aria-hidden="true"
+                />
                 {item.badge !== null && (
                   <span
                     className={cn(
-                      "absolute -top-1.5 -right-2 px-1 py-0.2 min-w-[14px] text-[9px] font-mono font-semibold rounded-full border leading-tight flex items-center justify-center",
+                      "absolute -top-1.5 -right-2 px-1 py-0.2 min-w-[14px] text-[9px] font-mono tabular-nums font-semibold rounded-full border leading-tight flex items-center justify-center",
                       isActive
                         ? "bg-[#0b5ed7] text-white border-white"
                         : "bg-[#f4f4f5] text-[#0a0a0a] border-[#e7e7e7]"

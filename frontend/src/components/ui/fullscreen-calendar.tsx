@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import * as React from "react";
 import {
@@ -120,7 +120,7 @@ export function FullScreenCalendar({
               <span className="text-[10px] font-mono uppercase tracking-wider text-[#4e505b]">
                 {format(today, "MMM")}
               </span>
-              <div className="flex items-center justify-center w-full rounded border border-[#e7e7e7] bg-white text-[15px] font-semibold text-[#0a0a0a] leading-none py-1 mt-0.5">
+              <div className="flex items-center justify-center w-full rounded border border-[#e7e7e7] bg-white text-[15px] font-semibold text-[#0a0a0a] leading-none py-1 mt-0.5 tabular-nums">
                 {format(today, "d")}
               </div>
             </div>
@@ -129,7 +129,7 @@ export function FullScreenCalendar({
               <h2 className="text-[16px] md:text-[18px] font-semibold text-[#0a0a0a] leading-tight">
                 {format(firstDayCurrentMonth, "MMMM yyyy")}
               </h2>
-              <p className="text-[11px] font-mono text-[#4e505b]">
+              <p className="text-[11px] font-mono tabular-nums text-[#4e505b]">
                 {format(firstDayCurrentMonth, "MMM d")} – {format(endOfMonth(firstDayCurrentMonth), "MMM d, yyyy")}
               </p>
             </div>
@@ -144,7 +144,7 @@ export function FullScreenCalendar({
                 aria-label="Previous month"
                 className="inline-flex items-center justify-center p-1.5 rounded-l-md border border-[#e7e7e7] bg-white hover:bg-[#fafafa] text-[#0a0a0a] transition-colors duration-150 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
               >
-                <ChevronLeft className="w-4 h-4 text-[#4e505b]" />
+                <ChevronLeft className="w-4 h-4 text-[#4e505b]" aria-hidden="true" />
               </button>
               <button
                 type="button"
@@ -159,7 +159,7 @@ export function FullScreenCalendar({
                 aria-label="Next month"
                 className="inline-flex items-center justify-center p-1.5 rounded-r-md border border-[#e7e7e7] bg-white hover:bg-[#fafafa] text-[#0a0a0a] transition-colors duration-150 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
               >
-                <ChevronRight className="w-4 h-4 text-[#4e505b]" />
+                <ChevronRight className="w-4 h-4 text-[#4e505b]" aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -200,7 +200,7 @@ export function FullScreenCalendar({
                 <div className="flex items-center justify-between">
                   <span
                     className={cn(
-                      "flex items-center justify-center w-6 h-6 rounded-full text-[12px] font-mono font-semibold transition-colors duration-150",
+                      "flex items-center justify-center w-6 h-6 rounded-full text-[12px] font-mono tabular-nums font-semibold transition-colors duration-150",
                       isTodayDay
                         ? "bg-[#0b5ed7] text-[#ffffff]"
                         : isSelected
@@ -214,7 +214,7 @@ export function FullScreenCalendar({
                   </span>
 
                   {dayEvents.length > 0 && (
-                    <span className="text-[10px] font-mono text-[#0b5ed7] font-semibold bg-[#eff6ff] border border-[#bfdbfe] px-1.5 py-0.5 rounded-full">
+                    <span className="text-[10px] font-mono tabular-nums text-[#0b5ed7] font-semibold bg-[#eff6ff] border border-[#bfdbfe] px-1.5 py-0.5 rounded-full">
                       {dayEvents.length} {dayEvents.length === 1 ? "appt" : "appts"}
                     </span>
                   )}
@@ -236,14 +236,14 @@ export function FullScreenCalendar({
                       <div className="text-[11px] font-medium text-[#0a0a0a] truncate leading-tight">
                         {event.name}
                       </div>
-                      <div className="text-[10px] font-mono text-[#4e505b] leading-tight mt-0.5">
+                      <div className="text-[10px] font-mono tabular-nums text-[#4e505b] leading-tight mt-0.5">
                         {event.time}
                       </div>
                     </div>
                   ))}
 
                   {dayEvents.length > 2 && (
-                    <div className="text-[10px] font-mono font-semibold text-[#0b5ed7] px-1 hover:underline">
+                    <div className="text-[10px] font-mono tabular-nums font-semibold text-[#0b5ed7] px-1 hover:underline">
                       + {dayEvents.length - 2} more
                     </div>
                   )}
@@ -275,7 +275,7 @@ export function FullScreenCalendar({
               >
                 <span
                   className={cn(
-                    "flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-mono font-semibold",
+                    "flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-mono tabular-nums font-semibold",
                     isTodayDay
                       ? "bg-[#0b5ed7] text-[#ffffff]"
                       : isSelected
@@ -306,12 +306,12 @@ export function FullScreenCalendar({
       <div className="rounded-lg border border-[#e7e7e7] bg-white overflow-hidden shadow-xs">
         <div className="px-4 py-2.5 border-b border-[#e7e7e7] bg-[#fafafa] flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <CalendarIcon className="w-4 h-4 text-[#4e505b]" />
+            <CalendarIcon className="w-4 h-4 text-[#4e505b]" aria-hidden="true" />
             <h3 className="text-[12px] font-semibold text-[#0a0a0a]">
               Appointments for {format(selectedDay, "EEEE, MMMM d, yyyy")}
             </h3>
           </div>
-          <span className="text-[11px] font-mono text-[#4e505b]">
+          <span className="text-[11px] font-mono tabular-nums text-[#4e505b]">
             {selectedDayEvents.length} {selectedDayEvents.length === 1 ? "booking" : "bookings"}
           </span>
         </div>
@@ -347,19 +347,19 @@ export function FullScreenCalendar({
 
                 <div className="flex flex-wrap items-center gap-4 text-[11px] font-mono text-[#4e505b]">
                   <div className="flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>{evt.time}</span>
+                    <Clock className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span className="tabular-nums">{evt.time}</span>
                   </div>
                   {evt.customerName && (
                     <div className="flex items-center gap-1.5">
-                      <User className="w-3.5 h-3.5" />
+                      <User className="w-3.5 h-3.5" aria-hidden="true" />
                       <span className="font-sans text-[#0a0a0a] font-medium">{evt.customerName}</span>
                     </div>
                   )}
                   {evt.customerPhone && (
                     <div className="flex items-center gap-1.5">
-                      <Phone className="w-3.5 h-3.5" />
-                      <span>{evt.customerPhone}</span>
+                      <Phone className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span className="tabular-nums">{evt.customerPhone}</span>
                     </div>
                   )}
                 </div>
