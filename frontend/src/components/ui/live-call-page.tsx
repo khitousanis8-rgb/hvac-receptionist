@@ -25,6 +25,10 @@ import {
   Volume2,
   Check,
   Copy,
+  Zap,
+  CalendarCheck2,
+  ShieldCheck,
+  Headphones,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiPost } from "@/lib/api";
@@ -52,24 +56,29 @@ function formatDuration(seconds: number): string {
 
 const TEST_SCENARIOS = [
   {
-    title: "Appointment Booking",
-    phrase: "My AC is blowing warm air today, can I schedule a technician visit for tomorrow morning?",
-    badge: "Booking",
+    title: "Urgent AC Repair Booking",
+    phrase: "My AC stopped blowing cold air today and it's over 90° outside. Can I schedule a technician for tomorrow morning?",
+    badge: "Revenue Protection",
+    roi: "Captures a high-ticket $1,500+ repair or replacement job before the caller dials a competitor.",
+    urgent: true,
   },
   {
-    title: "Check Upcoming Visit",
-    phrase: "Can you look up my upcoming maintenance appointment for 555-0144?",
-    badge: "Lookup",
+    title: "Upcoming Service Verification",
+    phrase: "Can you look up my upcoming maintenance appointment for phone number 555-0144?",
+    badge: "Office Efficiency",
+    roi: "Eliminates 30+ repetitive daily inquiry calls so your front office stays focused on technician dispatch.",
   },
   {
-    title: "Services & Hours",
-    phrase: "What are your standard operating hours and do you service residential heat pumps?",
-    badge: "Info",
+    title: "High-Margin Equipment Inquiry",
+    phrase: "What are your standard operating hours and do you install residential heat pumps or ductless mini-splits?",
+    badge: "System Sales",
+    roi: "Instantly qualifies lucrative $8,000+ new equipment installations and heat pump replacements.",
   },
   {
-    title: "Emergency Safety",
-    phrase: "I smell strong gas near my furnace and hear a loud hissing sound.",
-    badge: "Emergency",
+    title: "Gas Leak & Emergency Triage",
+    phrase: "I smell strong gas near my furnace in the utility closet and hear a loud hissing sound.",
+    badge: "Safety Triage",
+    roi: "Provides immediate life-safety evacuation guidance while alerting your on-call emergency technician.",
     urgent: true,
   },
 ];
@@ -119,19 +128,19 @@ export function LiveCallPage({
 
   return (
     <div className="w-full max-w-4xl space-y-5 font-sans pb-12 md:pb-6">
-      {/* Top Console Bar */}
+      {/* Top Value Header Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e7e7e7] pb-3.5">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
             <span className="text-[14px] font-semibold text-[#0a0a0a] tracking-tight">
-              Live Receptionist Console
+              Interactive Voice Demo
             </span>
-            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border border-[#e7e7e7] bg-[#fafafa] text-[#4e505b]">
-              WebRTC Voice
+            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border border-[#bfdbfe] bg-[#eff6ff] text-[#0b5ed7] font-semibold">
+              24/7 Dispatch Assistant
             </span>
           </div>
-          <p className="text-[12px] text-[#71717a]">
-            Low-latency bidirectional audio channel connected directly to the voice worker.
+          <p className="text-[12px] text-[#71717a] text-pretty">
+            Experience how your callers get booked on the 1st ring — zero hold times, no voicemails, and zero lost jobs.
           </p>
         </div>
 
@@ -159,14 +168,21 @@ export function LiveCallPage({
                   ? "bg-[#e11d48]"
                   : "bg-[#a1a1aa]"
               )}
+              aria-hidden="true"
             />
-            {phase.toUpperCase()}
+            {phase === "in-call"
+              ? "CALL IN PROGRESS"
+              : phase === "connecting"
+              ? "ANSWERING…"
+              : phase === "ended"
+              ? "CALL LOGGED"
+              : "ASSISTANT READY"}
           </span>
         </div>
       </div>
 
       {/* Screen States */}
-      {phase === "idle" && <IdleState onStart={startCall} />}
+      {phase === "idle" && <IdleState onStart={startCall} companyName={companyName} />}
 
       {phase === "connecting" && <ConnectingState companyName={companyName} />}
 
@@ -203,9 +219,15 @@ export function LiveCallPage({
 }
 
 /**
- * 1. IDLE STATE
+ * 1. IDLE STATE - Framed for HVAC Business Owners & ROI
  */
-function IdleState({ onStart }: { onStart: () => void }) {
+function IdleState({
+  onStart,
+  companyName,
+}: {
+  onStart: () => void;
+  companyName?: string;
+}) {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
 
   const copyPhrase = (text: string, idx: number) => {
@@ -220,15 +242,15 @@ function IdleState({ onStart }: { onStart: () => void }) {
       <div className="rounded-2xl border border-[#e7e7e7] bg-white p-5 sm:p-7 shadow-xs">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-5">
           <div className="space-y-1.5 max-w-xl">
-            <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#eff6ff] text-[#0b5ed7] text-[11px] font-medium border border-[#bfdbfe]">
-              <Sparkles className="w-3 h-3" />
-              <span>AI Voice Agent Ready</span>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-[#eff6ff] text-[#0b5ed7] text-[11px] font-medium border border-[#bfdbfe]">
+              <Sparkles className="w-3 h-3" aria-hidden="true" />
+              <span>Never Miss Another HVAC Job</span>
             </div>
-            <h2 className="text-[17px] sm:text-[20px] font-semibold text-[#0a0a0a] tracking-tight">
-              Initiate In-Browser Receptionist Call
+            <h2 className="text-[18px] sm:text-[21px] font-semibold text-[#0a0a0a] tracking-tight text-balance">
+              Test Drive Your 24/7 Voice Receptionist
             </h2>
-            <p className="text-[12px] sm:text-[13px] text-[#4e505b] leading-relaxed">
-              Test natural voice booking, service questions, or emergency triage through your microphone. All calls are transcribed and saved in real time.
+            <p className="text-[12px] sm:text-[13px] text-[#4e505b] leading-relaxed text-pretty">
+              Click below to speak as a customer. Hear how naturally she answers questions, diagnoses AC or heating problems, and books confirmed appointments directly into your dispatch schedule.
             </p>
           </div>
 
@@ -236,47 +258,59 @@ function IdleState({ onStart }: { onStart: () => void }) {
             type="button"
             whileTap={{ scale: 0.96 }}
             onClick={onStart}
+            aria-label="Start Voice Demo"
             className="inline-flex items-center justify-center gap-2.5 px-6 py-3.5 sm:py-3 rounded-xl text-[13px] font-semibold text-white bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] focus-visible:ring-offset-2 cursor-pointer whitespace-nowrap shadow-sm shadow-blue-500/20 w-full md:w-auto shrink-0"
           >
             <PhoneCall className="w-4 h-4" aria-hidden="true" />
-            <span>Connect &amp; Start Call</span>
+            <span>Start Voice Demo (Talk to AI)</span>
           </motion.button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-5 mt-5 border-t border-[#f4f4f5]">
-          <div className="p-3 rounded-lg border border-[#e7e7e7] bg-[#fafafa]">
-            <div className="text-[10px] font-mono uppercase text-[#71717a]">
-              Transport
+        {/* 3 Core Business Value Pillars */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-5 mt-5 border-t border-[#f4f4f5]">
+          <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa] space-y-1">
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0a0a0a]">
+              <Zap className="w-3.5 h-3.5 text-[#0b5ed7]" aria-hidden="true" />
+              <span>Instant 1st-Ring Answer</span>
             </div>
-            <div className="text-[12px] font-semibold text-[#0a0a0a] mt-0.5">
-              LiveKit Cloud WebRTC
-            </div>
+            <p className="text-[11px] text-[#71717a] leading-relaxed">
+              Zero hold times. Captures urgent repair calls before frustrated homeowners hang up to dial a competitor.
+            </p>
           </div>
-          <div className="p-3 rounded-lg border border-[#e7e7e7] bg-[#fafafa]">
-            <div className="text-[10px] font-mono uppercase text-[#71717a]">
-              Audio Processing
+
+          <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa] space-y-1">
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0a0a0a]">
+              <CalendarCheck2 className="w-3.5 h-3.5 text-[#059669]" aria-hidden="true" />
+              <span>Direct Calendar Booking</span>
             </div>
-            <div className="text-[12px] font-semibold text-[#0a0a0a] mt-0.5">
-              Deepgram STT + Cartesia TTS
-            </div>
+            <p className="text-[11px] text-[#71717a] leading-relaxed">
+              Qualifies the job, collects address &amp; phone, and reserves the dispatch directly on your technician board.
+            </p>
           </div>
-          <div className="p-3 rounded-lg border border-[#e7e7e7] bg-[#fafafa]">
-            <div className="text-[10px] font-mono uppercase text-[#71717a]">
-              Dispatch Storage
+
+          <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa] space-y-1">
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0a0a0a]">
+              <ShieldCheck className="w-3.5 h-3.5 text-[#d97706]" aria-hidden="true" />
+              <span>24/7 After-Hours Revenue</span>
             </div>
-            <div className="text-[12px] font-semibold text-[#0a0a0a] mt-0.5">
-              SQLite Appointments &amp; Calls
-            </div>
+            <p className="text-[11px] text-[#71717a] leading-relaxed">
+              Secures lucrative weekend and evening emergency calls with $0 in overtime receptionist payroll.
+            </p>
           </div>
         </div>
       </div>
 
-      {/* Suggested Testing Prompts */}
+      {/* Suggested Testing Scenarios */}
       <div className="rounded-2xl border border-[#e7e7e7] bg-white overflow-hidden shadow-xs">
-        <div className="flex items-center gap-2 px-4 sm:px-5 py-3 border-b border-[#e7e7e7] bg-[#fafafa]">
-          <Terminal className="w-3.5 h-3.5 text-[#71717a]" aria-hidden="true" />
-          <span className="text-[12px] font-semibold text-[#0a0a0a]">
-            Suggested Voice Test Scenarios (Tap to copy)
+        <div className="flex items-center justify-between px-4 sm:px-5 py-3 border-b border-[#e7e7e7] bg-[#fafafa]">
+          <div className="flex items-center gap-2">
+            <Headphones className="w-3.5 h-3.5 text-[#0b5ed7]" aria-hidden="true" />
+            <span className="text-[12px] font-semibold text-[#0a0a0a]">
+              Simulate Real Customer Scenarios (Tap any to copy prompt)
+            </span>
+          </div>
+          <span className="text-[10px] font-mono text-[#71717a] hidden sm:inline-block">
+            4 Core Business Inquiries
           </span>
         </div>
 
@@ -285,10 +319,10 @@ function IdleState({ onStart }: { onStart: () => void }) {
             <div
               key={item.title}
               onClick={() => copyPhrase(item.phrase, idx)}
-              className="p-3 sm:p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-[#fafafa] transition-colors cursor-pointer group"
+              className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#fafafa] transition-colors cursor-pointer group"
             >
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-2">
+              <div className="space-y-1 max-w-2xl">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span
                     className={cn(
                       "font-semibold",
@@ -299,10 +333,10 @@ function IdleState({ onStart }: { onStart: () => void }) {
                   </span>
                   <span
                     className={cn(
-                      "text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.2 rounded border",
+                      "text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.2 rounded border font-medium",
                       item.urgent
                         ? "bg-[#fff1f2] border-[#fecdd3] text-[#e11d48]"
-                        : "bg-[#fafafa] border-[#e7e7e7] text-[#71717a]"
+                        : "bg-[#eff6ff] border-[#bfdbfe] text-[#0b5ed7]"
                     )}
                   >
                     {item.badge}
@@ -311,16 +345,24 @@ function IdleState({ onStart }: { onStart: () => void }) {
                 <p className="font-mono text-[#4e505b] text-[11px]">
                   &ldquo;{item.phrase}&rdquo;
                 </p>
+                {item.roi && (
+                  <p className="text-[11px] text-[#059669] flex items-center gap-1.5 pt-0.5">
+                    <span className="font-semibold text-[9px] uppercase font-mono tracking-wider bg-[#ecfdf5] border border-[#a7f3d0] px-1 py-0.2 rounded text-[#059669] shrink-0">
+                      Why It Matters
+                    </span>
+                    <span className="text-[#059669]">{item.roi}</span>
+                  </p>
+                )}
               </div>
 
               <div className="flex items-center gap-1 text-[10px] font-mono text-[#71717a] shrink-0 self-end sm:self-auto">
                 {copiedIdx === idx ? (
                   <span className="text-[#059669] flex items-center gap-1 font-semibold">
-                    <Check className="w-3 h-3" /> Copied
+                    <Check className="w-3 h-3" aria-hidden="true" /> Copied
                   </span>
                 ) : (
                   <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
-                    <Copy className="w-3 h-3" /> Copy
+                    <Copy className="w-3 h-3" aria-hidden="true" /> Copy Prompt
                   </span>
                 )}
               </div>
@@ -359,7 +401,7 @@ function ConnectingState({ companyName }: { companyName?: string }) {
           Connecting to {displayName}…
         </h3>
         <p className="text-[12px] text-[#71717a] max-w-sm mx-auto text-pretty">
-          Negotiating WebRTC audio token with backend and launching live room session.
+          Simulating an incoming homeowner call. Answers in under 2 seconds with zero hold time.
         </p>
       </div>
     </div>
@@ -509,8 +551,8 @@ function ActiveCallInner({
           <div className="text-[34px] font-mono font-semibold tracking-wider text-[#0a0a0a] leading-none pt-1 tabular-nums">
             {formatDuration(duration)}
           </div>
-          <div className="text-[11px] font-mono text-[#71717a] tabular-nums">
-            Room: {tokenData.room.slice(0, 16)}…
+          <div className="text-[11px] font-mono text-[#71717a]">
+            Inbound Dispatch Line Active
           </div>
         </div>
 
@@ -551,7 +593,7 @@ function ActiveCallInner({
             {isAgentSpeaking
               ? "Receptionist Speaking…"
               : isAgentThinking
-              ? "AI Processing Response…"
+              ? "Checking Technician Schedule…"
               : "Listening to your voice…"}
           </div>
 
@@ -619,10 +661,10 @@ function ActiveCallInner({
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1.5 text-[11px] font-semibold text-[#059669] uppercase tracking-wider">
               <span className="w-1.5 h-1.5 rounded-full bg-[#059669] animate-pulse" aria-hidden="true" />
-              Session Active
+              Live Call Connected
             </span>
-            <span className="text-[11px] font-mono text-[#4e505b] tabular-nums">
-              Room: {tokenData.room}
+            <span className="text-[11px] text-[#4e505b]">
+              Automatic Call Qualification &amp; Scheduling
             </span>
           </div>
 
@@ -638,7 +680,7 @@ function ActiveCallInner({
           <div className="rounded-xl border border-[#e7e7e7] bg-white p-4 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-mono uppercase text-[#71717a]">
-                Remote Agent
+                Virtual Receptionist
               </span>
               <span
                 className={cn(
@@ -653,17 +695,17 @@ function ActiveCallInner({
                 {isAgentSpeaking
                   ? "Speaking"
                   : isAgentThinking
-                  ? "Processing"
+                  ? "Checking Schedule"
                   : "Listening"}
               </span>
             </div>
 
             <div className="space-y-0.5">
               <div className="text-[13px] font-semibold text-[#0a0a0a]">
-                {companyName ? `${companyName} Receptionist` : "HVAC Receptionist"}
+                {companyName ? `${companyName} Assistant` : "HVAC Voice Assistant"}
               </div>
-              <div className="text-[11px] font-mono text-[#71717a]">
-                Identity: {voiceAssistant.agent?.identity || "hvac-receptionist"}
+              <div className="text-[11px] text-[#71717a]">
+                Active: Inbound Qualification &amp; Booking
               </div>
             </div>
 
@@ -673,7 +715,7 @@ function ActiveCallInner({
                 <AudioActivityBars track={voiceAssistant.audioTrack} />
               ) : (
                 <div className="text-[11px] text-[#71717a]">
-                  Waiting for agent audio stream...
+                  Connecting assistant voice audio…
                 </div>
               )}
             </div>
@@ -683,7 +725,7 @@ function ActiveCallInner({
           <div className="rounded-xl border border-[#e7e7e7] bg-white p-4 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-mono uppercase text-[#71717a]">
-                Local Participant
+                Customer Simulation
               </span>
               <span
                 className={cn(
@@ -693,23 +735,23 @@ function ActiveCallInner({
                     : "bg-[#fff1f2] border-[#fecdd3] text-[#e11d48]"
                 )}
               >
-                {isMicrophoneEnabled ? "Mic Active" : "Mic Muted"}
+                {isMicrophoneEnabled ? "Microphone Live" : "Microphone Muted"}
               </span>
             </div>
 
             <div className="space-y-0.5">
               <div className="text-[13px] font-semibold text-[#0a0a0a]">
-                Caller (Browser Audio)
+                Your Voice (Homeowner / Caller)
               </div>
-              <div className="text-[11px] font-mono text-[#71717a]">
-                Identity: {localParticipant.identity}
+              <div className="text-[11px] text-[#71717a]">
+                Speak naturally about your AC or furnace problem
               </div>
             </div>
 
             <div className="pt-2 border-t border-[#f4f4f5] text-[11px] text-[#71717a]">
               {isMicrophoneEnabled
-                ? "Microphone is transmitting to LiveKit."
-                : "Microphone is muted. Press [M] to unmute."}
+                ? "Microphone is transmitting live audio to assistant."
+                : "Microphone is muted. Press [M] or click unmute below."}
             </div>
           </div>
         </div>
@@ -786,7 +828,7 @@ function AudioActivityBars({ track, compact = false }: { track: any; compact?: b
 }
 
 /**
- * 4. ENDED STATE
+ * 4. ENDED STATE - Business Call Outcome
  */
 function EndedState({
   duration,
@@ -802,60 +844,67 @@ function EndedState({
   return (
     <div className="rounded-2xl border border-[#e7e7e7] bg-white p-6 space-y-5 shadow-xs">
       <div className="flex items-center gap-3">
-        <div className="w-9 h-9 rounded-full border border-[#a7f3d0] bg-[#ecfdf5] flex items-center justify-center text-[#059669]">
+        <div className="w-10 h-10 rounded-full border border-[#a7f3d0] bg-[#ecfdf5] flex items-center justify-center text-[#059669] shrink-0">
           <CheckCircle2 className="w-5 h-5" aria-hidden="true" />
         </div>
         <div>
-          <h3 className="text-[15px] font-semibold text-[#0a0a0a]">
-            Call Session Terminated
+          <h3 className="text-[15px] font-semibold text-[#0a0a0a] text-balance">
+            Customer Call Completed &amp; Saved to Dispatch Log
           </h3>
-          <p className="text-[12px] text-[#71717a]">
-            Audio session closed cleanly and recorded to the CallRecord database.
+          <p className="text-[12px] text-[#71717a] text-pretty">
+            The assistant summarized the customer's issue, categorized the outcome, and recorded the dispatch in your dashboard for technician assignment.
           </p>
         </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className="p-3 rounded-xl border border-[#e7e7e7] bg-[#fafafa]">
+        <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa]">
           <div className="text-[10px] font-mono uppercase text-[#71717a]">
-            Total Call Duration
+            Customer Conversation Time
           </div>
-          <div className="text-[15px] font-mono font-semibold text-[#0a0a0a] mt-0.5 tabular-nums">
+          <div className="text-[16px] font-mono font-semibold text-[#0a0a0a] mt-0.5 tabular-nums">
             {formatDuration(duration)}
           </div>
+          <p className="text-[11px] text-[#71717a] mt-1">
+            Fast resolution keeps lines open for other paying callers.
+          </p>
         </div>
 
-        <div className="p-3 rounded-xl border border-[#e7e7e7] bg-[#fafafa]">
+        <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa]">
           <div className="text-[10px] font-mono uppercase text-[#71717a]">
-            Session Room
+            Status &amp; Next Action
           </div>
-          <div className="text-[12px] font-mono text-[#0a0a0a] truncate mt-0.5 tabular-nums">
-            {roomName || "—"}
+          <div className="text-[14px] font-semibold text-[#059669] mt-0.5 flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-[#059669]" />
+            Logged &amp; Ready for Dispatch
           </div>
+          <p className="text-[11px] text-[#71717a] mt-1">
+            Recorded in Call Records and Dispatch Schedule.
+          </p>
         </div>
       </div>
 
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 pt-1">
-        <motion.button
+        {onViewCalls && (
+          <motion.button
+            type="button"
+            whileTap={{ scale: 0.96 }}
+            onClick={onViewCalls}
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
+          >
+            <span>View Call In Dashboard</span>
+            <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+          </motion.button>
+        )}
+
+        <button
           type="button"
-          whileTap={{ scale: 0.96 }}
           onClick={onStartAgain}
-          className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
+          className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12px] font-semibold bg-white border border-[#e7e7e7] text-[#0a0a0a] hover:bg-[#fafafa] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
         >
           <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-          <span>Start Another Call</span>
-        </motion.button>
-
-        {onViewCalls && (
-          <button
-            type="button"
-            onClick={onViewCalls}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12px] font-semibold bg-white border border-[#e7e7e7] text-[#0a0a0a] hover:bg-[#fafafa] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
-          >
-            <span>Open Calls Log</span>
-            <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
-        )}
+          <span>Test Another Scenario</span>
+        </button>
       </div>
     </div>
   );
