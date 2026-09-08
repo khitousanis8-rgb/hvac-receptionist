@@ -33,7 +33,8 @@ class KokoroTTSService {
   private streamAbortId: number = 0; // incremented to cancel in-flight streams
   private isTurnActive: boolean = false;
 
-  public voice: string = "af_sky";
+  // af_heart is the official Grade-A flagship voice (natural pacing, clear diction)
+  public voice: string = "af_heart";
 
   // ─── AudioContext ────────────────────────────────────────────────────
 
@@ -85,53 +86,31 @@ class KokoroTTSService {
     this.isInitializing = true;
     this.initPromise = (async () => {
       try {
-        onProgress?.(5, "Initializing voice synthesis engine…");
+        onProgress?.(5, "Initializing neural voice engine…");
         const model_id = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
         const { KokoroTTS } = await import("kokoro-js");
 
-        // Try WebGPU first (5-10x faster), fall back to WASM.
-        let instance: any;
-        try {
-          instance = await KokoroTTS.from_pretrained(model_id, {
-            dtype: "q8",
-            device: "webgpu",
-            progress_callback: (item: any) => {
-              if (
-                item?.status === "progress" &&
-                typeof item.progress === "number"
-              ) {
-                const pct = Math.min(Math.round(item.progress * 100), 100);
-                onProgress?.(pct, `Downloading voice model (${pct}%)…`);
-              } else if (item?.status === "done") {
-                onProgress?.(100, "Voice model loaded and ready!");
-              }
-            },
-          });
-          console.log("[KokoroTTS] Loaded with WebGPU acceleration");
-        } catch (gpuErr) {
-          console.warn(
-            "[KokoroTTS] WebGPU unavailable, falling back to WASM:",
-            gpuErr,
-          );
-          onProgress?.(15, "WebGPU unavailable — loading WASM engine…");
-          instance = await KokoroTTS.from_pretrained(model_id, {
-            dtype: "q8",
-            device: "wasm",
-            progress_callback: (item: any) => {
-              if (
-                item?.status === "progress" &&
-                typeof item.progress === "number"
-              ) {
-                const pct = Math.min(Math.round(item.progress * 100), 100);
-                onProgress?.(pct, `Downloading voice model (${pct}%)…`);
-              } else if (item?.status === "done") {
-                onProgress?.(100, "Voice model loaded and ready!");
-              }
-            },
-          });
-          console.log("[KokoroTTS] Loaded with WASM fallback");
-        }
+        // Force WASM backend with q8 quantization.
+        // NOTE: WebGPU with q8 suffers from a known ONNX Runtime Web kernel bug
+        // (softmax numerical overflow) that produces alien/garbled/hyper-speed audio.
+        // WASM runs CPU SIMD which is 100% mathematically stable and artifact-free.
+        const instance = await KokoroTTS.from_pretrained(model_id, {
+          dtype: "q8",
+          device: "wasm",
+          progress_callback: (item: any) => {
+            if (
+              item?.status === "progress" &&
+              typeof item.progress === "number"
+            ) {
+              const pct = Math.min(Math.round(item.progress * 100), 100);
+              onProgress?.(pct, `Downloading voice model (${pct}%)…`);
+            } else if (item?.status === "done") {
+              onProgress?.(100, "Voice model loaded and ready!");
+            }
+          },
+        });
+        console.log("[KokoroTTS] Loaded with WASM engine (artifact-free)");
 
         this.tts = instance;
         onProgress?.(100, "Ready");
@@ -152,12 +131,6 @@ class KokoroTTSService {
   }
 
   // ─── Streaming TTS ───────────────────────────────────────────────────
-  //
-  // Instead of generate() which blocks the main thread for entire
-  // sentences, we use tts.stream(TextSplitterStream):
-  //   1. startStreaming() — creates splitter + starts background consumer
-  //   2. pushText(chunk) — feeds each LLM token delta into the splitter
-  //   3. flushText()     — signals end-of-input, plays remaining audio
 
   /**
    * Begin a new streaming TTS turn. Any in-flight turn is cancelled.
@@ -185,11 +158,16 @@ class KokoroTTSService {
 
   /**
    * Push an LLM token delta into the active streaming turn.
-   * No-op if no turn is active.
+   * Sanitizes markdown symbols and non-ASCII chars to prevent phonemizer glitches.
    */
   public pushText(chunk: string): void {
     if (this.splitter && !this.splitter._closed) {
-      this.splitter.push(chunk);
+      const cleanChunk = chunk
+        .replace(/[*_~`#]/g, "") // strip markdown emphasis, code, headers
+        .replace(/[^\x00-\x7F]/g, " "); // strip non-ascii/emojis that corrupt phonemization
+      if (cleanChunk) {
+        this.splitter.push(cleanChunk);
+      }
     }
   }
 
@@ -232,6 +210,12 @@ class KokoroTTSService {
         // If the turn was cancelled (user interrupted or new turn started), stop.
         if (turnId !== this.streamAbortId) return;
 
+        // Skip chunks with no pronounceable alphanumeric characters
+        // (prevents synthesizing lone trailing punctuation or whitespace flushed at turn end)
+        if (!chunk?.text || !/[a-zA-Z0-9]/.test(chunk.text)) {
+          continue;
+        }
+
         if (!chunk?.audio || !chunk.audio.audio) continue;
 
         const rawAudio: Float32Array = chunk.audio.audio;
@@ -264,8 +248,8 @@ class KokoroTTSService {
    * only — for multi-sentence LLM replies, use the streaming API.
    */
   public async speak(text: string): Promise<void> {
-    const trimmed = text.trim();
-    if (!trimmed) return;
+    const trimmed = text.replace(/[*_~`#]/g, "").trim();
+    if (!trimmed || !/[a-zA-Z0-9]/.test(trimmed)) return;
 
     if (!this.tts) {
       await this.init();
