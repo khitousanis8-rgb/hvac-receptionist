@@ -55,11 +55,24 @@ def build_agent_session(settings: Settings) -> AgentSession[None]:
             reasoning_effort="low",
         ),
         # Text-to-speech: LiveKit Cloud inference (Cartesia Sonic).
-        # Explicit stable receptionist voice eliminates clipping and initial audio bursts.
-        tts=inference.TTS("cartesia/sonic-3", voice=settings.tts_voice),
-        # Local voice-activity detection so the agent knows when the caller stops talking.
-        vad=silero.VAD.load(),
-        # Stable turn handling: prevent false interruptions and audio buffer underrun/clicks
+        # Calibrated volume (0.75) provides -4dB to -6dB headroom, preventing
+        # raw 16-bit integer clipping (+-32767) that causes harsh static and noise bursts.
+        tts=inference.TTS(
+            "cartesia/sonic-3",
+            voice=settings.tts_voice,
+            extra_kwargs={"volume": settings.tts_volume},
+        ),
+        # Robust voice-activity detection:
+        # min_speech_duration=0.25 ignores room clicks, transient echo, and initial speaker bleed.
+        # activation_threshold=0.65 requires confident user speech so speaker playback isn't treated as user talk.
+        vad=silero.VAD.load(
+            min_speech_duration=0.25,
+            activation_threshold=0.65,
+        ),
+        # Stable turn handling:
+        # - endpointing min_delay 0.5s prevents cutting off callers prematurely
+        # - interruption min_duration 0.8s requires sustained caller speech, preventing
+        #   the agent from interrupting itself on speaker acoustic echo leak
         turn_handling={
             "turn_detection": "vad",
             "endpointing": {
@@ -69,9 +82,8 @@ def build_agent_session(settings: Settings) -> AgentSession[None]:
             },
             "interruption": {
                 "enabled": True,
-                "min_duration": 0.5,
-                "resume_false_interruption": True,
-                "false_interruption_timeout": 1.5,
+                "min_duration": 0.8,
+                "resume_false_interruption": False,
             },
             "preemptive_generation": {
                 "enabled": False,

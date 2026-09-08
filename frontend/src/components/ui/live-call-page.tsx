@@ -446,7 +446,7 @@ function ActiveCallSession({
       }}
       className="w-full"
     >
-      <RoomAudioRenderer />
+      <RoomAudioRenderer volume={0.85} />
       <ActiveCallInner
         tokenData={tokenData}
         onCallEnded={onCallEnded}
