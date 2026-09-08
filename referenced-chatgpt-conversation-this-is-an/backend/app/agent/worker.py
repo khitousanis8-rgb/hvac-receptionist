@@ -71,8 +71,8 @@ def build_agent_session(settings: Settings) -> AgentSession[None]:
         ),
         # Stable turn handling:
         # - endpointing min_delay 0.5s prevents cutting off callers prematurely
-        # - interruption min_duration 0.8s requires sustained caller speech, preventing
-        #   the agent from interrupting itself on speaker acoustic echo leak
+        # - interruption min_duration 1.0s requires sustained intentional caller speech, preventing
+        #   the agent from interrupting itself on laptop speaker acoustic echo leak
         turn_handling={
             "turn_detection": "vad",
             "endpointing": {
@@ -82,13 +82,15 @@ def build_agent_session(settings: Settings) -> AgentSession[None]:
             },
             "interruption": {
                 "enabled": True,
-                "min_duration": 0.8,
+                "min_duration": 1.0,
                 "resume_false_interruption": False,
             },
             "preemptive_generation": {
                 "enabled": False,
             },
         },
+        # Ignore caller mic audio during first 5 seconds of agent speech to prevent speaker feedback loop
+        aec_warmup_duration=5.0,
     )
 
 
