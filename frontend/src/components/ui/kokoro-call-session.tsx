@@ -61,6 +61,7 @@ export function KokoroCallSession({
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isAgentSpeaking, setIsAgentSpeaking] = useState<boolean>(false);
   const [isAgentThinking, setIsAgentThinking] = useState<boolean>(false);
+  const [isSlowServer, setIsSlowServer] = useState<boolean>(false);
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [currentCallerText, setCurrentCallerText] = useState<string>("");
   const [currentAssistantText, setCurrentAssistantText] = useState<string>("");
@@ -72,8 +73,18 @@ export function KokoroCallSession({
   const speechRecRef = useRef<BrowserSpeechRecognition | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptHistoryRef = useRef<ChatMessage[]>([]);
-  const activeUtteranceQueue = useRef<string[]>([]);
-  const isProcessingQueue = useRef<boolean>(false);
+
+  // Cold-start detection: if backend takes >3.5s to respond (e.g. Render spinning up), show helpful hint
+  useEffect(() => {
+    if (!isAgentThinking) {
+      setIsSlowServer(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setIsSlowServer(true);
+    }, 3500);
+    return () => window.clearTimeout(timer);
+  }, [isAgentThinking]);
 
   // 1. Duration Timer
   useEffect(() => {
@@ -87,43 +98,27 @@ export function KokoroCallSession({
     return () => clearInterval(timer);
   }, [isModelReady]);
 
-  // 2. Playback state listener
+  // 2. Turn-level playback state listener
+  //    The per-sentence playbackStateCallback drives the UI energy bars.
+  //    The turn-level callback gates speech recognition (pause once per
+  //    assistant turn instead of thrashing between every sentence).
   useEffect(() => {
     kokoroTTS.setPlaybackStateCallback((playing) => {
       setIsAgentSpeaking(playing);
-      speechRecRef.current?.pauseForAgentPlayback(playing);
+    });
+    kokoroTTS.setTurnStateCallback((turnActive) => {
+      speechRecRef.current?.pauseForAgentPlayback(turnActive);
     });
     return () => {
       kokoroTTS.setPlaybackStateCallback(null);
+      kokoroTTS.setTurnStateCallback(null);
     };
   }, []);
 
-  // Helper to split text stream into complete speakable sentences
-  const queueSentenceAndSpeak = useCallback((text: string) => {
-    activeUtteranceQueue.current.push(text);
-    if (!isProcessingQueue.current) {
-      processNextSentence();
-    }
-  }, []);
-
-  const processNextSentence = async () => {
-    if (activeUtteranceQueue.current.length === 0) {
-      isProcessingQueue.current = false;
-      return;
-    }
-    isProcessingQueue.current = true;
-    const nextText = activeUtteranceQueue.current.shift();
-    if (nextText) {
-      try {
-        await kokoroTTS.speak(nextText);
-      } catch (err) {
-        console.error("[KokoroCall] speak error:", err);
-      }
-    }
-    processNextSentence();
-  };
-
   // 3. Send message to backend chat streaming endpoint
+  //    Uses the streaming TTS pipeline: each SSE token delta is pushed
+  //    directly into the Kokoro TextSplitterStream, which yields audio
+  //    chunks for immediate playback as they are synthesized.
   const sendMessageToAgent = useCallback(
     async (userMessage: string, currentHistory: ChatMessage[]) => {
       if (!userMessage.trim()) return;
@@ -131,13 +126,10 @@ export function KokoroCallSession({
       setIsAgentThinking(true);
       setCurrentCallerText("");
       setCurrentAssistantText("");
-      activeUtteranceQueue.current = [];
 
-      // Interrupt any current speech
+      // Interrupt any current speech and cancel any in-flight stream
       kokoroTTS.stop();
 
-      // Only one model response may be active. This prevents overlapping
-      // streams from speaking out of order after a rapid follow-up utterance.
       abortControllerRef.current?.abort();
       const controller = new AbortController();
       abortControllerRef.current = controller;
@@ -147,6 +139,10 @@ export function KokoroCallSession({
         controller.abort();
       }, CHAT_REQUEST_TIMEOUT_MS);
 
+      // Limit history to the last 6 messages to keep Groq input short
+      // and avoid free-tier rate limits (12K TPM).
+      const recentHistory = currentHistory.slice(-6);
+
       try {
         const response = await fetch(apiUrl("/v1/calls/chat"), {
           method: "POST",
@@ -154,7 +150,7 @@ export function KokoroCallSession({
           body: JSON.stringify({
             session_id: sessionIdRef.current,
             message: userMessage,
-            history: currentHistory.map((m) => ({ role: m.role, content: m.content })),
+            history: recentHistory.map((m) => ({ role: m.role, content: m.content })),
           }),
           signal: controller.signal,
         });
@@ -166,10 +162,18 @@ export function KokoroCallSession({
         const reader = response.body?.getReader();
         if (!reader) throw new Error("No readable stream in response");
 
+        // Start the streaming TTS pipeline — creates a TextSplitterStream
+        // and begins the background async iterator that synthesizes audio.
+        const isGreeting = userMessage === "__GREETING__";
+        let useStreamingTTS = !isGreeting;
+
+        if (useStreamingTTS) {
+          await kokoroTTS.startStreaming();
+        }
+
         const decoder = new TextDecoder();
         let buffer = "";
         let accumulatedAssistantReply = "";
-        let sentenceBuffer = "";
 
         while (true) {
           const { done, value } = await reader.read();
@@ -197,17 +201,13 @@ export function KokoroCallSession({
                 } else if (currentEvent === "delta" && data.text) {
                   setIsAgentThinking(false);
                   accumulatedAssistantReply += data.text;
-                  sentenceBuffer += data.text;
                   setCurrentAssistantText(accumulatedAssistantReply);
 
-                  // Chunk by natural speech pauses: . ? ! \n
-                  const match = sentenceBuffer.match(/^(.*?[.?!:\n])\s+(.*)$/s);
-                  if (match) {
-                    const completeSentence = match[1].trim();
-                    sentenceBuffer = match[2];
-                    if (completeSentence) {
-                      queueSentenceAndSpeak(completeSentence);
-                    }
+                  if (useStreamingTTS) {
+                    // Push each token directly into the Kokoro splitter.
+                    // The background stream consumer synthesizes audio
+                    // and queues it for playback as chunks complete.
+                    kokoroTTS.pushText(data.text);
                   }
                 } else if (currentEvent === "done") {
                   if (data.outcome) {
@@ -224,9 +224,12 @@ export function KokoroCallSession({
           }
         }
 
-        // Speak remaining sentence buffer if any
-        if (sentenceBuffer.trim()) {
-          queueSentenceAndSpeak(sentenceBuffer.trim());
+        if (useStreamingTTS) {
+          // Signal end-of-input so the splitter flushes remaining text
+          kokoroTTS.flushText();
+        } else if (accumulatedAssistantReply.trim()) {
+          // Greeting: use speak() for the single short sentence
+          await kokoroTTS.speak(accumulatedAssistantReply.trim());
         }
 
         setIsAgentThinking(false);
@@ -253,7 +256,7 @@ export function KokoroCallSession({
         }
       }
     },
-    [onError, queueSentenceAndSpeak]
+    [onError]
   );
 
   // 4. Initialize Engine & Speech Recognition on mount
@@ -334,14 +337,12 @@ export function KokoroCallSession({
 
   const handleInterrupt = () => {
     kokoroTTS.stop();
-    activeUtteranceQueue.current = [];
     setIsAgentSpeaking(false);
     speechRecRef.current?.pauseForAgentPlayback(false);
   };
 
   const handleEndCall = async () => {
     kokoroTTS.stop();
-    activeUtteranceQueue.current = [];
     if (speechRecRef.current) {
       speechRecRef.current.stop();
     }
@@ -480,7 +481,7 @@ export function KokoroCallSession({
             {isAgentSpeaking
               ? "Receptionist Speaking…"
               : isAgentThinking
-              ? (activeTool ? `Dispatch: ${activeTool}…` : "Checking Technician Schedule…")
+              ? (isSlowServer ? "Waking up cloud service…" : activeTool ? `Dispatch: ${activeTool}…` : "Checking Technician Schedule…")
               : "Listening to your voice…"}
           </div>
 
@@ -599,7 +600,7 @@ export function KokoroCallSession({
                 {isAgentSpeaking
                   ? "Speaking (Kokoro)"
                   : isAgentThinking
-                  ? (activeTool ? `Running ${activeTool}` : "Checking Schedule")
+                  ? (isSlowServer ? "Waking Cloud Service" : activeTool ? `Running ${activeTool}` : "Checking Schedule")
                   : "Listening"}
               </span>
             </div>
@@ -670,7 +671,11 @@ export function KokoroCallSession({
                 ) : isAgentThinking ? (
                   <span className="text-[#d97706] flex items-center gap-1.5 font-medium">
                     <span className="w-1.5 h-1.5 rounded-full bg-[#d97706] animate-ping" aria-hidden="true" />
-                    {activeTool ? `Executing ${activeTool}…` : "Checking technician schedule…"}
+                    {isSlowServer
+                      ? "Connecting to cloud service (waking up free-tier host)…"
+                      : activeTool
+                      ? `Executing ${activeTool}…`
+                      : "Checking technician schedule…"}
                   </span>
                 ) : (
                   <span className="text-[#059669] flex items-center gap-1.5 font-medium">

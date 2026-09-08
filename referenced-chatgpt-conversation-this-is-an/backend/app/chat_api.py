@@ -182,7 +182,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
     system_content = receptionist_instructions(settings)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
-    for msg in req.history:
+    # Cap history to the last 10 messages (~5 turns) to keep Groq input
+    # short and avoid free-tier rate limits (12K TPM, 30 RPM).
+    recent_history = req.history[-10:] if len(req.history) > 10 else req.history
+    for msg in recent_history:
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": req.message})
 
