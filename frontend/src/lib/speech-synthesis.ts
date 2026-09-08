@@ -47,15 +47,21 @@ class BrowserSpeechSynthesisService {
       v.lang.toLowerCase().startsWith("en")
     );
 
-    // Score voices by quality keywords
+    // Score voices by naturalness and quality
     const scoreVoice = (v: SpeechSynthesisVoice): number => {
       const name = v.name.toLowerCase();
-      if (name.includes("natural") || name.includes("online")) return 100;
-      if (name.includes("neural") || name.includes("premium")) return 90;
-      if (name.includes("enhanced") || name.includes("siri")) return 80;
-      if (name.includes("google") && !name.includes("espeak")) return 70;
-      if (name.includes("jenny") || name.includes("aria") || name.includes("samantha")) return 60;
-      if (v.lang === "en-US") return 50;
+      // Microsoft Natural Online voices (Edge & Windows 11) are broadcast-grade
+      if (name.includes("natural") && (name.includes("jenny") || name.includes("aria") || name.includes("guy"))) return 150;
+      if (name.includes("natural") || name.includes("online")) return 130;
+      if (name.includes("neural") || name.includes("premium")) return 120;
+      // Google US English (Chrome)
+      if (name.includes("google") && name.includes("us english")) return 110;
+      if (name.includes("google") && !name.includes("espeak")) return 95;
+      // Apple Siri / Enhanced (Safari / iOS)
+      if (name.includes("siri") || name.includes("enhanced")) return 90;
+      if (name.includes("samantha") || name.includes("victoria")) return 85;
+      if (v.lang === "en-US") return 60;
+      if (v.lang.toLowerCase().startsWith("en")) return 40;
       return 10;
     };
 
@@ -99,9 +105,13 @@ class BrowserSpeechSynthesisService {
 
   /** Queue a single sentence for sequential playback. */
   public speakSentence(sentence: string): void {
+    // Smooth out punctuation pauses: eliminate ellipses and collapse double punctuation
     const clean = sentence
       .replace(/[*_~`#]/g, "")
       .replace(/[^\x00-\x7F]/g, " ")
+      .replace(/\.{2,}/g, ".")
+      .replace(/[,;—–-]+/g, ", ")
+      .replace(/\s+/g, " ")
       .trim();
 
     if (!clean || !/[a-zA-Z0-9]/.test(clean)) return;
@@ -140,8 +150,9 @@ class BrowserSpeechSynthesisService {
       utterance.voice = this.selectedVoice;
     }
     utterance.lang = this.selectedVoice?.lang || "en-US";
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
+    // 1.08x rate provides crisp, energetic, human conversational cadence
+    utterance.rate = 1.08;
+    utterance.pitch = 1.01;
 
     utterance.onstart = () => {
       this.isSpeaking = true;
@@ -212,3 +223,4 @@ class BrowserSpeechSynthesisService {
 }
 
 export const speechTTS = new BrowserSpeechSynthesisService();
+

@@ -197,9 +197,10 @@ export function KokoroCallSession({
                   sentenceBuffer += data.text;
                   setCurrentAssistantText(accumulatedAssistantReply);
 
-                  // Chunk by natural sentence pauses (. ! ? : \n)
+                  // Accumulate into natural conversational breath groups (at least 35 chars
+                  // or long buffer) before emitting an utterance to eliminate choppy inter-sentence pauses
                   const match = sentenceBuffer.match(/^(.*?[.?!:\n])\s+(.*)$/s);
-                  if (match) {
+                  if (match && (match[1].trim().length >= 35 || sentenceBuffer.length > 90)) {
                     const completeSentence = match[1].trim();
                     sentenceBuffer = match[2];
                     if (completeSentence) {
