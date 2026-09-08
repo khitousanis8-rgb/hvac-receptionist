@@ -55,19 +55,42 @@ def has_conflict(session: Session, when: datetime) -> bool:
     return existing is not None
 
 
+def normalize_phone_number(raw: str) -> str:
+    """Normalize phone number to digits or standard format (+1XXXXXXXXXX)."""
+    if not raw:
+        return ""
+    digits = "".join(c for c in raw if c.isdigit())
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    if raw.startswith("+"):
+        return f"+{digits}"
+    return digits or raw.strip()
+
+
 def get_or_create_customer(
     session: Session,
     phone_number: str,
     name: str | None = None,
 ) -> Customer:
     """Find a customer by phone number, creating a record when unknown."""
-    customer = session.query(Customer).filter_by(phone_number=phone_number).one_or_none()
+    normalized = normalize_phone_number(phone_number)
+    customer = (
+        session.query(Customer)
+        .filter(
+            (Customer.phone_number == normalized)
+            | (Customer.phone_number == phone_number)
+        )
+        .one_or_none()
+    )
+    safe_name = name[:100].strip() if name else None
     if customer is None:
-        customer = Customer(phone_number=phone_number, name=name)
+        customer = Customer(phone_number=normalized or phone_number, name=safe_name)
         session.add(customer)
         session.flush()
-    elif name and not customer.name:
-        customer.name = name
+    elif safe_name and not customer.name:
+        customer.name = safe_name
     return customer
 
 
@@ -96,11 +119,12 @@ def book_appointment(
         return None, "That slot is already taken. Please choose another time."
 
     customer = get_or_create_customer(session, phone_number, name)
+    safe_notes = notes[:500].strip() if notes else None
     appointment = Appointment(
         customer_id=customer.id,
-        service=service,
+        service=service[:100].strip(),
         scheduled_for=when,
-        notes=notes,
+        notes=safe_notes,
     )
     session.add(appointment)
     session.flush()
@@ -110,12 +134,13 @@ def book_appointment(
 def list_upcoming(session: Session, phone_number: str) -> list[Appointment]:
     """Return future active appointments for a customer phone number."""
     now = datetime.now(UTC)
+    normalized = normalize_phone_number(phone_number)
     return list(
         session.execute(
             select(Appointment)
             .join(Customer)
             .where(
-                Customer.phone_number == phone_number,
+                (Customer.phone_number == normalized) | (Customer.phone_number == phone_number),
                 Appointment.scheduled_for >= now,
                 Appointment.status == "booked",
             )

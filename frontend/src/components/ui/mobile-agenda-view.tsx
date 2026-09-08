@@ -17,7 +17,7 @@ import {
   FileText,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { cn } from "@/lib/utils";
+import { cn, cleanTelHref } from "@/lib/utils";
 
 export interface MobileAppointment {
   id: number;
@@ -229,7 +229,7 @@ export function MobileAgendaView({
 
                   {/* 1-Tap Call Customer Button */}
                   <a
-                    href={`tel:${appt.customer_phone}`}
+                    href={cleanTelHref(appt.customer_phone)}
                     className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-semibold bg-[#eff6ff] hover:bg-[#dbeafe] text-[#0b5ed7] border border-[#bfdbfe] transition-colors duration-150 cursor-pointer shrink-0 shadow-2xs active:scale-95"
                     aria-label={`Call customer ${appt.customer_name || ""}`}
                   >

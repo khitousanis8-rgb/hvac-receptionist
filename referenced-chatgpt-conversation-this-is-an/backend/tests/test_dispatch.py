@@ -114,3 +114,40 @@ def test_token_endpoint_rejects_active_call_in_same_room(
 
     assert response.status_code == 409
     assert "already in progress" in response.json()["detail"]
+
+
+def test_token_endpoint_rejects_invalid_room_or_identity(livekit_settings: Settings) -> None:
+    with TestClient(create_app(livekit_settings)) as client:
+        # Invalid characters in room_name
+        res1 = client.post("/v1/calls/token", json={"room_name": "room!@#$%^"})
+        assert res1.status_code == 422
+
+        # Invalid characters in identity
+        res2 = client.post("/v1/calls/token", json={"identity": "<script>alert(1)</script>"})
+        assert res2.status_code == 422
+
+        # Overly long room_name
+        res3 = client.post("/v1/calls/token", json={"room_name": "a" * 65})
+        assert res3.status_code == 422
+
+
+def test_token_endpoint_rate_limit(livekit_settings: Settings) -> None:
+    from app.main import _IP_REQUEST_TIMESTAMPS
+
+    _IP_REQUEST_TIMESTAMPS.clear()
+
+    with patch("app.agent.dispatch.LiveKitAPI") as mock_livekit:
+        mock_instance = AsyncMock()
+        mock_livekit.return_value.__aenter__.return_value = mock_instance
+
+        with TestClient(create_app(livekit_settings)) as client:
+            for _ in range(15):
+                resp = client.post("/v1/calls/token", json={})
+                assert resp.status_code == 200
+
+            blocked = client.post("/v1/calls/token", json={})
+            assert blocked.status_code == 429
+            assert "Rate limit exceeded" in blocked.json()["detail"]
+
+    _IP_REQUEST_TIMESTAMPS.clear()
+

@@ -26,7 +26,7 @@ async def create_room_and_token(
     settings: Settings,
     room_name: str | None = None,
     identity: str | None = None,
-    ttl: int = 3600,
+    ttl: int = 900,
     agent_name: str = "hvac-receptionist",
 ) -> tuple[str, str, str]:
     """Generate a LiveKit JWT token for a room and dispatch the receptionist agent.
@@ -47,12 +47,30 @@ async def create_room_and_token(
     api_secret = settings.livekit_api_secret.get_secret_value()
 
     room = room_name or f"hvac-{uuid.uuid4().hex[:12]}"
-    user_identity = identity or f"caller-{uuid.uuid4().hex[:8]}"
+    if identity:
+        clean_id = "".join(c for c in identity if c.isalnum() or c in "-_")[:32]
+        if clean_id.lower() == agent_name.lower() or not clean_id:
+            user_identity = f"caller-{uuid.uuid4().hex[:8]}"
+        elif clean_id.startswith("caller-"):
+            user_identity = clean_id
+        else:
+            user_identity = f"caller-{clean_id}"
+    else:
+        user_identity = f"caller-{uuid.uuid4().hex[:8]}"
 
     token = (
         AccessToken(api_key=api_key, api_secret=api_secret)
         .with_identity(user_identity)
-        .with_grants(VideoGrants(room_join=True, room=room))
+        .with_grants(
+            VideoGrants(
+                room_join=True,
+                room=room,
+                can_publish=True,
+                can_subscribe=True,
+                can_publish_data=True,
+                room_record=False,
+            )
+        )
         .with_ttl(timedelta(seconds=ttl))
         .to_jwt()
     )

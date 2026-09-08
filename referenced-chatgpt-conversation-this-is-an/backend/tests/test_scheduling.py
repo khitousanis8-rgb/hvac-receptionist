@@ -69,3 +69,17 @@ def test_customer_deduplicated_by_phone(db) -> None:
         second = get_or_create_customer(session, "+15550001")
 
     assert first.id == second.id
+
+
+def test_phone_normalization_and_deduplication(db) -> None:
+    from app.scheduling import normalize_phone_number
+
+    assert normalize_phone_number("5551234567") == "+15551234567"
+    assert normalize_phone_number("(555) 123-4567") == "+15551234567"
+    assert normalize_phone_number("+1 (555) 123-4567") == "+15551234567"
+
+    with new_session() as session:
+        c1 = get_or_create_customer(session, "(555) 123-4567", "Bob")
+        c2 = get_or_create_customer(session, "+15551234567")
+        assert c1.id == c2.id
+        assert c2.phone_number == "+15551234567"

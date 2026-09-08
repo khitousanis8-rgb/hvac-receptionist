@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Annotated
 from uuid import uuid4
 
 import structlog
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.agent.dispatch import CredentialsMissingError, DispatchError, create_room_and_token
 from app.config import Settings, get_settings
@@ -18,10 +20,46 @@ from app.dashboard import router as dashboard_router
 from app.db import Appointment, CallRecord, Customer, init_db, new_session
 from app.logging import configure_logging
 
+_RATE_LIMIT_LOCK = threading.Lock()
+_IP_REQUEST_TIMESTAMPS: dict[str, list[float]] = {}
+_RATE_LIMIT_WINDOW_SECONDS = 60.0
+_MAX_CALL_TOKENS_PER_WINDOW = 15
+
+
+def check_token_rate_limit(client_ip: str) -> None:
+    """Enforce sliding-window rate limit on token generation to prevent abuse."""
+    now = time.time()
+    cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
+    with _RATE_LIMIT_LOCK:
+        timestamps = _IP_REQUEST_TIMESTAMPS.get(client_ip, [])
+        timestamps = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= _MAX_CALL_TOKENS_PER_WINDOW:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Rate limit exceeded for call token generation. Please wait before trying again.",
+            )
+        timestamps.append(now)
+        _IP_REQUEST_TIMESTAMPS[client_ip] = timestamps
+        if len(_IP_REQUEST_TIMESTAMPS) > 1000:
+            for ip in list(_IP_REQUEST_TIMESTAMPS.keys()):
+                _IP_REQUEST_TIMESTAMPS[ip] = [t for t in _IP_REQUEST_TIMESTAMPS[ip] if t > cutoff]
+                if not _IP_REQUEST_TIMESTAMPS[ip]:
+                    del _IP_REQUEST_TIMESTAMPS[ip]
+
 
 class CallTokenRequest(BaseModel):
-    room_name: str | None = None
-    identity: str | None = None
+    room_name: str | None = Field(
+        default=None,
+        max_length=64,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+        description="Optional alphanumeric room identifier",
+    )
+    identity: str | None = Field(
+        default=None,
+        max_length=64,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+        description="Optional alphanumeric caller identity identifier",
+    )
 
 
 class CallTokenResponse(BaseModel):
@@ -35,6 +73,7 @@ class CallTokenResponse(BaseModel):
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
+    init_db()
     structlog.get_logger(__name__).info("api_started", environment=settings.app_env)
     yield
     structlog.get_logger(__name__).info("api_stopped")
@@ -51,7 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=runtime_settings.cors_origin_list,
-        allow_origin_regex=r"https://.*\.vercel\.app",
+        allow_origin_regex=r"^https://hvac-receptionist(-[a-z0-9]+)?\.vercel\.app$",
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
@@ -93,14 +132,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/v1/calls", tags=["dashboard"])
-    async def list_calls(limit: int = 50) -> list[dict[str, object]]:
+    async def list_calls(
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    ) -> list[dict[str, object]]:
         """Recent call records, newest first."""
-        init_db()
         with new_session() as session:
             records = (
                 session.query(CallRecord)
                 .order_by(CallRecord.started_at.desc())
-                .limit(min(limit, 200))
+                .limit(limit)
                 .all()
             )
             return [
@@ -117,15 +157,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ]
 
     @app.get("/v1/appointments", tags=["dashboard"])
-    async def list_appointments(limit: int = 50) -> list[dict[str, object]]:
+    async def list_appointments(
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    ) -> list[dict[str, object]]:
         """Upcoming appointments, soonest first."""
-        init_db()
         with new_session() as session:
             rows = (
                 session.query(Appointment, Customer)
                 .join(Customer, Appointment.customer_id == Customer.id)
                 .order_by(Appointment.scheduled_for)
-                .limit(min(limit, 200))
+                .limit(limit)
                 .all()
             )
             return [
@@ -147,14 +188,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         tags=["live-call"],
     )
     async def create_call_token(
+        request: Request,
         payload: CallTokenRequest | None = None,
     ) -> CallTokenResponse:
         """Create a LiveKit room token and dispatch the voice receptionist agent."""
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            client_ip = forwarded.split(",")[0].strip()
+        elif request.client:
+            client_ip = request.client.host
+        else:
+            client_ip = "127.0.0.1"
+
+        check_token_rate_limit(client_ip)
+
         room_name = payload.room_name if payload else None
         identity = payload.identity if payload else None
 
         if room_name:
-            init_db()
             with new_session() as session:
                 active_call = (
                     session.query(CallRecord)

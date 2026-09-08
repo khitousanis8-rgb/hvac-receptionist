@@ -69,6 +69,22 @@ async def book_appointment_tool(
         context: Injected run context.
     """
     settings = get_settings()
+    # Validate service against approved services list when configured
+    if settings.business_services:
+        normalized_requested = service.strip().lower()
+        matched_service: str | None = None
+        for approved in settings.business_services:
+            clean_app = approved.strip().lower()
+            if normalized_requested == clean_app or normalized_requested in clean_app or clean_app in normalized_requested:
+                matched_service = approved.strip()
+                break
+        if not matched_service:
+            return (
+                f"'{service}' is not on our approved services list. "
+                f"Approved services are: {', '.join(settings.business_services)}."
+            )
+        service = matched_service
+
     when = _parse_local_datetime(settings, date, time)
     if when is None:
         return "I could not understand that date or time. Please repeat it."

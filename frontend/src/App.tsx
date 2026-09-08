@@ -24,7 +24,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { cn } from "@/lib/utils";
+import { cn, cleanTelHref } from "@/lib/utils";
 import { apiUrl } from "@/lib/api";
 import { LiveCallPage } from "@/components/ui/live-call-page";
 import { FullScreenCalendar, CalendarData, Event as CalendarEvent } from "@/components/ui/fullscreen-calendar";
@@ -312,7 +312,7 @@ function CallRow({
         <td className="px-4 py-2.5 whitespace-nowrap font-mono text-[11px] text-[#4e505b]">
           {call.caller_phone ? (
             <a
-              href={`tel:${call.caller_phone}`}
+              href={cleanTelHref(call.caller_phone)}
               onClick={(e) => e.stopPropagation()}
               className="text-[#0b5ed7] hover:underline"
             >
@@ -395,7 +395,7 @@ function MobileCallsList({ calls }: { calls: CallRecord[] }) {
 
               {call.caller_phone && (
                 <a
-                  href={`tel:${call.caller_phone}`}
+                  href={cleanTelHref(call.caller_phone)}
                   className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-[#eff6ff] text-[#0b5ed7] border border-[#bfdbfe]"
                 >
                   <Phone className="w-3 h-3" />
@@ -496,7 +496,7 @@ function AppointmentsTable({
               <div className="text-[#0a0a0a] font-medium">{a.customer_name ?? "—"}</div>
               <div className="text-[11px] font-mono text-[#71717a]">
                 <a
-                  href={`tel:${a.customer_phone}`}
+                  href={cleanTelHref(a.customer_phone)}
                   className="text-[#0b5ed7] hover:underline"
                 >
                   {a.customer_phone}
@@ -558,7 +558,7 @@ function SettingsPage({ config }: { config: PublicConfig | null }) {
               <dt className="text-[#71717a]">Primary Phone</dt>
               <dd className="font-mono text-[#0a0a0a]">
                 {config.phone ? (
-                  <a href={`tel:${config.phone}`} className="text-[#0b5ed7] hover:underline">
+                  <a href={cleanTelHref(config.phone)} className="text-[#0b5ed7] hover:underline">
                     {config.phone}
                   </a>
                 ) : (
@@ -573,7 +573,7 @@ function SettingsPage({ config }: { config: PublicConfig | null }) {
               <dd className="font-mono text-[#e11d48] font-semibold">
                 {config.emergency_phone ? (
                   <a
-                    href={`tel:${config.emergency_phone}`}
+                    href={cleanTelHref(config.emergency_phone)}
                     className="underline hover:opacity-80 flex items-center gap-1"
                   >
                     {config.emergency_phone}
@@ -1067,7 +1067,7 @@ export default function App() {
         {/* Quick Emergency Call Button */}
         {config?.emergency_phone && (
           <a
-            href={`tel:${config.emergency_phone}`}
+            href={cleanTelHref(config.emergency_phone)}
             className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#fff1f2] border border-[#fecdd3] text-[#e11d48] text-[11px] font-semibold shadow-2xs active:scale-95"
             aria-label="Call Emergency Hotline"
           >
