@@ -31,6 +31,7 @@ import { FullScreenCalendar, CalendarData, Event as CalendarEvent } from "@/comp
 import { MobileBottomNav, Page } from "@/components/ui/mobile-bottom-nav";
 import { MobileAgendaView } from "@/components/ui/mobile-agenda-view";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Reveal } from "@/components/ui/reveal";
 
 interface CallRecord {
   id: number;
@@ -834,38 +835,64 @@ function DashboardPage({
 
   return (
     <div className="space-y-5 pb-8">
+      <Reveal>
+        <section className="rounded-xl border border-[#e7e7e7] bg-white px-4 py-4 sm:px-5 sm:py-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div className="max-w-2xl space-y-1.5">
+              <p className="app-kicker text-[10px] font-mono font-semibold uppercase tracking-[0.16em]">
+                Reception desk / today
+              </p>
+              <h2 className="text-[18px] font-semibold tracking-tight text-[#0a0a0a]">
+                A calm view of every customer conversation.
+              </h2>
+              <p className="app-lead text-[12px] leading-relaxed">
+                Review call outcomes, confirm bookings, or run the voice reception flow exactly as a customer would.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate("live-call")}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#0b5ed7] px-3.5 py-2 text-[12px] font-semibold text-white transition-colors cursor-pointer"
+            >
+              <PhoneCall className="h-3.5 w-3.5" aria-hidden="true" />
+              Run a voice demo
+            </button>
+          </div>
+        </section>
+      </Reveal>
+
       {/* Metrics Row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
+      <Reveal delay={0.04} className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
         <StatCard
           value={loading ? "—" : calls.data.length}
-          label="Total Calls"
-          subtext="Live Inbound"
+          label="Calls handled"
+          subtext="Inbound"
         />
         <StatCard
           value={loading ? "—" : bookedCount}
-          label="Appointments Booked"
+          label="Bookings confirmed"
           subtext="Confirmed"
         />
         <StatCard
           value={loading ? "—" : appointments.data.length}
-          label="Upcoming Visits"
+          label="Upcoming visits"
         />
         <StatCard
           value={loading ? "—" : `${rate}%`}
-          label="Booking Rate"
+          label="Booking rate"
           subtext="Conversion"
         />
-      </div>
+      </Reveal>
 
       {/* Mobile Quick Action Card */}
       <div className="md:hidden rounded-2xl border border-[#bfdbfe] bg-[#eff6ff] p-4 flex items-center justify-between gap-3 shadow-2xs">
         <div className="space-y-0.5">
           <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0b5ed7]">
             <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>AI Voice Receptionist</span>
+            <span>Voice reception</span>
           </div>
           <p className="text-[11px] text-[#4e505b]">
-            Start a live voice call directly from your phone.
+            Run the customer-facing voice flow from your phone.
           </p>
         </div>
         <motion.button
@@ -880,12 +907,12 @@ function DashboardPage({
       </div>
 
       {/* Two-Column Grid */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+      <Reveal delay={0.08} className="grid grid-cols-1 xl:grid-cols-2 gap-5">
         {/* Recent Calls */}
         <div className="space-y-2">
           <div className="flex items-center justify-between px-1">
             <span className="text-[12px] font-semibold text-[#0a0a0a]">
-              Recent Interactions
+              Conversation activity
             </span>
             <button
               onClick={() => onNavigate("calls")}
@@ -910,7 +937,7 @@ function DashboardPage({
         <div className="space-y-2">
           <div className="flex items-center justify-between px-1">
             <span className="text-[12px] font-semibold text-[#0a0a0a]">
-              Upcoming Appointments
+              Confirmed schedule
             </span>
             <button
               onClick={() => onNavigate("appointments")}
@@ -936,7 +963,7 @@ function DashboardPage({
             />
           </div>
         </div>
-      </div>
+      </Reveal>
     </div>
   );
 }
@@ -998,10 +1025,10 @@ export default function App() {
   ];
 
   return (
-    <div className="relative flex flex-col md:flex-row h-screen w-full overflow-hidden bg-white text-[#0a0a0a]">
+    <div className="app-shell relative flex flex-col md:flex-row h-screen w-full overflow-hidden">
       {/* Desktop Collapsible Sidebar (Hidden on mobile < md) */}
       <Sidebar open={open} setOpen={setOpen}>
-        <SidebarBody className="justify-between gap-6 border-r border-[#e7e7e7] bg-white">
+        <SidebarBody className="app-sidebar justify-between gap-6 border-r border-[#e7e7e7]">
           <div className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden">
             <Logo
               showText={open}
@@ -1052,14 +1079,14 @@ export default function App() {
               }}
               className="whitespace-pre"
             >
-              HVAC Receptionist
+              Demo workspace
             </motion.span>
           </div>
         </SidebarBody>
       </Sidebar>
 
       {/* Mobile Top App Bar (Sticky Header on screens < md) */}
-      <div className="md:hidden sticky top-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-b border-[#e7e7e7] px-4 py-2.5 pt-safe flex items-center justify-between">
+      <div className="app-sidebar md:hidden sticky top-0 inset-x-0 z-40 backdrop-blur-md border-b border-[#e7e7e7] px-4 py-2.5 pt-safe flex items-center justify-between">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="h-7 w-7 rounded-lg bg-[#0b5ed7] text-white flex items-center justify-center font-bold text-[11px] shrink-0 shadow-2xs tracking-tight">
             {getInitials(config?.company_name)}
@@ -1095,13 +1122,14 @@ export default function App() {
       </div>
 
       {/* Main Content Area */}
-      <main className="flex-1 min-h-0 min-w-0 overflow-y-auto bg-white">
-        <div className="p-3.5 sm:p-5 md:p-7 min-h-full bg-white border-l-0 md:border-l border-[#e7e7e7] pb-24 md:pb-8">
+      <main className="flex-1 min-h-0 min-w-0 overflow-y-auto">
+        <div className="p-3.5 sm:p-5 md:p-7 min-h-full border-l-0 md:border-l border-[#e7e7e7] pb-24 md:pb-8">
           {/* Desktop Top Header Bar */}
-          <header className="hidden md:flex mb-6 pb-4 border-b border-[#e7e7e7] flex-wrap items-center justify-between gap-3">
+          <header className="app-header hidden md:flex mb-6 pb-4 border-b border-[#e7e7e7] flex-wrap items-center justify-between gap-3">
             <div>
+              <p className="app-kicker mb-1 text-[10px] font-mono font-semibold uppercase tracking-[0.16em]">Operations console</p>
               <h1 className="text-[18px] font-semibold tracking-tight text-[#0a0a0a] capitalize text-balance">
-                {page === "live-call" ? "Live Call Console" : page}
+                {page === "live-call" ? "Voice demo" : page}
               </h1>
               <p className="text-[12px] text-[#71717a]">
                 {config?.company_name ?? "HVAC Receptionist"}

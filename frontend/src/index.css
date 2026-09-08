@@ -41,8 +41,8 @@
 body {
   margin: 0;
   padding: 0;
-  background-color: #ffffff;
-  color: #0a0a0a;
+  background-color: #010102;
+  color: #f7f8f8;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
   overscroll-behavior-y: none;
@@ -66,9 +66,46 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #e7e7e7;
+  background: #303238;
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #d4d4d8;
+  background: #444750;
 }
+
+/* The product surface is intentionally quiet: a near-black workspace, soft layers,
+   and one lavender signal color for actions and active navigation. */
+.app-shell {
+  --surface-0: #010102;
+  --surface-1: #0d0e10;
+  --surface-2: #141518;
+  --surface-3: #1b1d21;
+  --line: #292c33;
+  --ink: #f7f8f8;
+  --muted: #9a9fa8;
+  --signal: #9ba7ff;
+  background: var(--surface-0);
+  color: var(--ink);
+}
+
+.app-shell .app-sidebar { background: var(--surface-1); border-color: var(--line); }
+.app-shell .app-header { border-color: var(--line); }
+.app-shell .app-kicker { color: var(--signal); }
+.app-shell .app-lead { color: var(--muted); }
+.app-shell .bg-white { background-color: var(--surface-2); }
+.app-shell .bg-\[\#fafafa\] { background-color: var(--surface-2); }
+.app-shell .bg-\[\#f4f4f5\] { background-color: var(--surface-3); }
+.app-shell .bg-\[\#eff6ff\] { background-color: color-mix(in srgb, var(--signal) 12%, var(--surface-2)); }
+.app-shell .bg-\[\#0b5ed7\] { background-color: var(--signal); }
+.app-shell .hover\:bg-\[\#0a53be\]:hover { background-color: #7e8df2; }
+.app-shell .border-\[\#e7e7e7\],
+.app-shell .border-\[\#f4f4f5\] { border-color: var(--line); }
+.app-shell .border-\[\#bfdbfe\] { border-color: color-mix(in srgb, var(--signal) 40%, var(--line)); }
+.app-shell .text-\[\#0a0a0a\] { color: var(--ink); }
+.app-shell .text-\[\#4e505b\],
+.app-shell .text-\[\#71717a\],
+.app-shell .text-\[\#a1a1aa\] { color: var(--muted); }
+.app-shell .text-\[\#0b5ed7\] { color: var(--signal); }
+.app-shell .divide-\[\#f4f4f5\] > :not(:last-child) { border-color: var(--line); }
+.app-shell .hover\:bg-\[\#fafafa\]:hover { background-color: var(--surface-3); }
+.app-shell .shadow-xs, .app-shell .shadow-sm, .app-shell .shadow-2xs { box-shadow: none; }

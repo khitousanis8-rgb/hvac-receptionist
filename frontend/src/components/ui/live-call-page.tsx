@@ -36,29 +36,29 @@ function formatDuration(seconds: number): string {
 
 const TEST_SCENARIOS = [
   {
-    title: "Urgent AC Repair Booking",
+    title: "Urgent cooling repair",
     phrase: "My AC stopped blowing cold air today and it's over 90° outside. Can I schedule a technician for tomorrow morning?",
-    badge: "Revenue Protection",
-    roi: "Captures a high-ticket $1,500+ repair or replacement job before the caller dials a competitor.",
+    badge: "Priority",
+    roi: "Tests how the receptionist collects the key details and moves an urgent request toward a booking.",
     urgent: true,
   },
   {
-    title: "Upcoming Service Verification",
+    title: "Appointment check",
     phrase: "Can you look up my upcoming maintenance appointment for phone number 555-0144?",
-    badge: "Office Efficiency",
-    roi: "Eliminates 30+ repetitive daily inquiry calls so your front office stays focused on technician dispatch.",
+    badge: "Scheduling",
+    roi: "Tests a normal scheduling question without interrupting the front office.",
   },
   {
-    title: "High-Margin Equipment Inquiry",
+    title: "Equipment question",
     phrase: "What are your standard operating hours and do you install residential heat pumps or ductless mini-splits?",
-    badge: "System Sales",
-    roi: "Instantly qualifies lucrative $8,000+ new equipment installations and heat pump replacements.",
+    badge: "Service info",
+    roi: "Tests whether services and hours are explained clearly before a caller decides to book.",
   },
   {
-    title: "Gas Leak & Emergency Triage",
+    title: "Gas leak safety check",
     phrase: "I smell strong gas near my furnace in the utility closet and hear a loud hissing sound.",
-    badge: "Safety Triage",
-    roi: "Provides immediate life-safety evacuation guidance while alerting your on-call emergency technician.",
+    badge: "Safety",
+    roi: "Tests how an immediate safety concern is identified and handled first.",
     urgent: true,
   },
 ];
@@ -98,19 +98,19 @@ export function LiveCallPage({
 
   return (
     <div className="w-full max-w-4xl space-y-5 font-sans pb-12 md:pb-6">
-      {/* Top Value Header Bar */}
+      {/* Voice demo status */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e7e7e7] pb-3.5">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
             <span className="text-[14px] font-semibold text-[#0a0a0a] tracking-tight">
-              Interactive Voice Demo
+              Voice demo
             </span>
             <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border border-[#bfdbfe] bg-[#eff6ff] text-[#0b5ed7] font-semibold">
-              24/7 Dispatch Assistant
+              Reception simulation
             </span>
           </div>
           <p className="text-[12px] text-[#71717a] text-pretty">
-            Experience how your callers get booked on the 1st ring — zero hold times, no voicemails, and zero lost jobs.
+            Test the exact conversational flow a customer will experience when they call your business.
           </p>
         </div>
 
@@ -185,7 +185,7 @@ export function LiveCallPage({
 }
 
 /**
- * 1. IDLE STATE - Framed for HVAC Business Owners & ROI
+ * 1. IDLE STATE
  */
 function IdleState({
   onStart,
@@ -210,13 +210,13 @@ function IdleState({
           <div className="space-y-1.5 max-w-xl">
             <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-[#eff6ff] text-[#0b5ed7] text-[11px] font-medium border border-[#bfdbfe]">
               <Sparkles className="w-3 h-3" aria-hidden="true" />
-              <span>Never Miss Another HVAC Job</span>
+              <span>Customer-facing test</span>
             </div>
             <h2 className="text-[18px] sm:text-[21px] font-semibold text-[#0a0a0a] tracking-tight text-balance">
-              Test Drive Your 24/7 Voice Receptionist
+              Test the reception flow
             </h2>
             <p className="text-[12px] sm:text-[13px] text-[#4e505b] leading-relaxed text-pretty">
-              Click below to speak as a customer. Hear how naturally she answers questions, diagnoses AC or heating problems, and books confirmed appointments directly into your dispatch schedule.
+              Speak as a customer and test a realistic scheduling, service, or safety request. The conversation is logged here so you can inspect the handoff.
             </p>
           </div>
 
@@ -224,59 +224,59 @@ function IdleState({
             type="button"
             whileTap={{ scale: 0.96 }}
             onClick={onStart}
-            aria-label="Start Voice Demo"
+            aria-label="Start voice demo"
             className="inline-flex items-center justify-center gap-2.5 px-6 py-3.5 sm:py-3 rounded-xl text-[13px] font-semibold text-white bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] focus-visible:ring-offset-2 cursor-pointer whitespace-nowrap shadow-sm shadow-blue-500/20 w-full md:w-auto shrink-0"
           >
             <PhoneCall className="w-4 h-4" aria-hidden="true" />
-            <span>Start Voice Demo (Talk to AI)</span>
+            <span>Start voice demo</span>
           </motion.button>
         </div>
 
-        {/* 3 Core Business Value Pillars */}
+        {/* Demo capabilities */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-5 mt-5 border-t border-[#f4f4f5]">
           <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa] space-y-1">
             <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0a0a0a]">
               <Zap className="w-3.5 h-3.5 text-[#0b5ed7]" aria-hidden="true" />
-              <span>Instant 1st-Ring Answer</span>
+              <span>Clear handoff</span>
             </div>
             <p className="text-[11px] text-[#71717a] leading-relaxed">
-              Zero hold times. Captures urgent repair calls before frustrated homeowners hang up to dial a competitor.
+              The agent asks for the details needed to make the next step understandable to your team.
             </p>
           </div>
 
           <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa] space-y-1">
             <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0a0a0a]">
               <CalendarCheck2 className="w-3.5 h-3.5 text-[#059669]" aria-hidden="true" />
-              <span>Direct Calendar Booking</span>
+              <span>Schedule aware</span>
             </div>
             <p className="text-[11px] text-[#71717a] leading-relaxed">
-              Qualifies the job, collects address &amp; phone, and reserves the dispatch directly on your technician board.
+              Booking requests are placed into the same appointment view your dispatch team uses.
             </p>
           </div>
 
           <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa] space-y-1">
             <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0a0a0a]">
               <ShieldCheck className="w-3.5 h-3.5 text-[#d97706]" aria-hidden="true" />
-              <span>24/7 After-Hours Revenue</span>
+              <span>Safety first</span>
             </div>
             <p className="text-[11px] text-[#71717a] leading-relaxed">
-              Secures lucrative weekend and evening emergency calls with $0 in overtime receptionist payroll.
+              Emergency-style requests are recognized before ordinary service questions are handled.
             </p>
           </div>
         </div>
       </div>
 
-      {/* Suggested Testing Scenarios */}
+      {/* Suggested testing scenarios */}
       <div className="rounded-2xl border border-[#e7e7e7] bg-white overflow-hidden shadow-xs">
         <div className="flex items-center justify-between px-4 sm:px-5 py-3 border-b border-[#e7e7e7] bg-[#fafafa]">
           <div className="flex items-center gap-2">
             <Headphones className="w-3.5 h-3.5 text-[#0b5ed7]" aria-hidden="true" />
             <span className="text-[12px] font-semibold text-[#0a0a0a]">
-              Simulate Real Customer Scenarios (Tap any to copy prompt)
+              Suggested test prompts
             </span>
           </div>
           <span className="text-[10px] font-mono text-[#71717a] hidden sm:inline-block">
-            4 Core Business Inquiries
+            Copy any prompt
           </span>
         </div>
 
@@ -314,7 +314,7 @@ function IdleState({
                 {item.roi && (
                   <p className="text-[11px] text-[#059669] flex items-center gap-1.5 pt-0.5">
                     <span className="font-semibold text-[9px] uppercase font-mono tracking-wider bg-[#ecfdf5] border border-[#a7f3d0] px-1 py-0.2 rounded text-[#059669] shrink-0">
-                      Why It Matters
+                      Test focus
                     </span>
                     <span className="text-[#059669]">{item.roi}</span>
                   </p>
@@ -328,7 +328,7 @@ function IdleState({
                   </span>
                 ) : (
                   <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
-                    <Copy className="w-3 h-3" aria-hidden="true" /> Copy Prompt
+                    <Copy className="w-3 h-3" aria-hidden="true" /> Copy to test
                   </span>
                 )}
               </div>
@@ -362,10 +362,10 @@ function EndedState({
         </div>
         <div>
           <h3 className="text-[15px] font-semibold text-[#0a0a0a] text-balance">
-            Customer Call Completed &amp; Saved to Dispatch Log
+            Conversation complete and saved to the call log
           </h3>
           <p className="text-[12px] text-[#71717a] text-pretty">
-            The assistant summarized the customer's issue, categorized the outcome, and recorded the dispatch in your dashboard for technician assignment.
+            The conversation summary and outcome are available in the dashboard for follow-up.
           </p>
         </div>
       </div>
@@ -373,26 +373,26 @@ function EndedState({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa]">
           <div className="text-[10px] font-mono uppercase text-[#71717a]">
-            Customer Conversation Time
+            Conversation time
           </div>
           <div className="text-[16px] font-mono font-semibold text-[#0a0a0a] mt-0.5 tabular-nums">
             {formatDuration(duration)}
           </div>
           <p className="text-[11px] text-[#71717a] mt-1">
-            Fast resolution keeps lines open for other paying callers.
+            A concise test session is enough to evaluate the handoff.
           </p>
         </div>
 
         <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa]">
           <div className="text-[10px] font-mono uppercase text-[#71717a]">
-            Status &amp; Next Action
+            Log status
           </div>
           <div className="text-[14px] font-semibold text-[#059669] mt-0.5 flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-[#059669]" />
-            Logged &amp; Ready for Dispatch
+            Logged and ready to review
           </div>
           <p className="text-[11px] text-[#71717a] mt-1">
-            Recorded in Call Records and Dispatch Schedule.
+            Recorded in the calls view and schedule when applicable.
           </p>
         </div>
       </div>
@@ -405,7 +405,7 @@ function EndedState({
             onClick={onViewCalls}
             className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
           >
-            <span>View Call In Dashboard</span>
+            <span>View call log</span>
             <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
           </motion.button>
         )}
@@ -416,7 +416,7 @@ function EndedState({
           className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12px] font-semibold bg-white border border-[#e7e7e7] text-[#0a0a0a] hover:bg-[#fafafa] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
         >
           <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-          <span>Test Another Scenario</span>
+          <span>Try another prompt</span>
         </button>
       </div>
     </div>
