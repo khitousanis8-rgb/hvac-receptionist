@@ -27,6 +27,9 @@ export class BrowserSpeechRecognition {
   private onStateChange: SpeechStateCallback | null = null;
   private onError: SpeechErrorCallback | null = null;
 
+  private debounceTimer: number | null = null;
+  private accumulatedFinalText: string = "";
+
   // Fallback MediaRecorder state
   private mediaStream: MediaStream | null = null;
   private mediaRecorder: MediaRecorder | null = null;
@@ -72,10 +75,26 @@ export class BrowserSpeechRecognition {
           }
         }
 
-        if (finalText.trim() && this.onTranscript) {
-          this.onTranscript(finalText.trim(), true);
+        if (finalText.trim()) {
+          this.accumulatedFinalText = (this.accumulatedFinalText + " " + finalText).trim();
+          if (this.debounceTimer !== null) {
+            window.clearTimeout(this.debounceTimer);
+          }
+          // Show accumulated text in UI while waiting for pause
+          this.onTranscript?.(this.accumulatedFinalText, false);
+
+          // Wait 700ms of silence before declaring the caller's turn finished
+          this.debounceTimer = window.setTimeout(() => {
+            const full = this.accumulatedFinalText.trim();
+            this.accumulatedFinalText = "";
+            this.debounceTimer = null;
+            if (full && this.onTranscript && !this.isPausedForAgent && !this.isMuted) {
+              this.onTranscript(full, true);
+            }
+          }, 700);
         } else if (interimText.trim() && this.onTranscript) {
-          this.onTranscript(interimText.trim(), false);
+          const combined = (this.accumulatedFinalText + " " + interimText).trim();
+          this.onTranscript(combined, false);
         }
       };
 
@@ -183,6 +202,12 @@ export class BrowserSpeechRecognition {
     this.isPausedForAgent = isSpeaking;
 
     if (isSpeaking) {
+      if (this.debounceTimer !== null) {
+        window.clearTimeout(this.debounceTimer);
+        this.debounceTimer = null;
+      }
+      this.accumulatedFinalText = "";
+
       if (this.isListening && this.recognition) {
         try {
           this.recognition.stop();
@@ -195,17 +220,21 @@ export class BrowserSpeechRecognition {
     } else {
       // Resume listening when assistant finishes speaking
       if (this.shouldBeListening && !this.isMuted) {
-        setTimeout(() => {
+        window.setTimeout(() => {
           if (this.shouldBeListening && !this.isPausedForAgent && !this.isMuted) {
             try {
               this.recognition?.start();
               this.isListening = true;
               this.onStateChange?.(true);
-            } catch {
-              // ignore
+            } catch (err: any) {
+              // If already active or starting, sync state
+              if (err?.name === "InvalidStateError") {
+                this.isListening = true;
+                this.onStateChange?.(true);
+              }
             }
           }
-        }, 150);
+        }, 200);
       }
     }
   }

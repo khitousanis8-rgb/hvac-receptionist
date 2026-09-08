@@ -14,7 +14,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { kokoroTTS } from "@/lib/kokoro-tts";
+import { speechTTS } from "@/lib/speech-synthesis";
 import { BrowserSpeechRecognition } from "@/lib/speech-recognition";
 import { apiUrl, apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -104,26 +104,20 @@ export function KokoroCallSession({
   }, [isModelReady]);
 
   // 2. Turn-level playback state listener
-  //    The per-sentence playbackStateCallback drives the UI energy bars.
-  //    The turn-level callback gates speech recognition (pause once per
-  //    assistant turn instead of thrashing between every sentence).
   useEffect(() => {
-    kokoroTTS.setPlaybackStateCallback((playing) => {
+    speechTTS.setPlaybackStateCallback((playing) => {
       setIsAgentSpeaking(playing);
     });
-    kokoroTTS.setTurnStateCallback((turnActive) => {
+    speechTTS.setTurnStateCallback((turnActive) => {
       speechRecRef.current?.pauseForAgentPlayback(turnActive);
     });
     return () => {
-      kokoroTTS.setPlaybackStateCallback(null);
-      kokoroTTS.setTurnStateCallback(null);
+      speechTTS.setPlaybackStateCallback(null);
+      speechTTS.setTurnStateCallback(null);
     };
   }, []);
 
   // 3. Send message to backend chat streaming endpoint
-  //    Uses the streaming TTS pipeline: each SSE token delta is pushed
-  //    directly into the Kokoro TextSplitterStream, which yields audio
-  //    chunks for immediate playback as they are synthesized.
   const sendMessageToAgent = useCallback(
     async (userMessage: string, currentHistory: ChatMessage[]) => {
       if (!userMessage.trim()) return;
@@ -132,8 +126,8 @@ export function KokoroCallSession({
       setCurrentCallerText("");
       setCurrentAssistantText("");
 
-      // Interrupt any current speech and cancel any in-flight stream
-      kokoroTTS.stop();
+      // Interrupt any current speech and cancel any in-flight request
+      speechTTS.stop();
 
       abortControllerRef.current?.abort();
       const controller = new AbortController();
@@ -167,13 +161,12 @@ export function KokoroCallSession({
         const reader = response.body?.getReader();
         if (!reader) throw new Error("No readable stream in response");
 
-        // Start the streaming TTS pipeline — creates a TextSplitterStream
-        // and begins the background async iterator that synthesizes audio.
-        await kokoroTTS.startStreaming();
+        speechTTS.startTurn();
 
         const decoder = new TextDecoder();
         let buffer = "";
         let accumulatedAssistantReply = "";
+        let sentenceBuffer = "";
 
         while (true) {
           const { done, value } = await reader.read();
@@ -201,12 +194,18 @@ export function KokoroCallSession({
                 } else if (currentEvent === "delta" && data.text) {
                   setIsAgentThinking(false);
                   accumulatedAssistantReply += data.text;
+                  sentenceBuffer += data.text;
                   setCurrentAssistantText(accumulatedAssistantReply);
 
-                  // Push each token directly into the Kokoro splitter.
-                  // The background stream consumer synthesizes audio
-                  // and queues it for playback as chunks complete.
-                  kokoroTTS.pushText(data.text);
+                  // Chunk by natural sentence pauses (. ! ? : \n)
+                  const match = sentenceBuffer.match(/^(.*?[.?!:\n])\s+(.*)$/s);
+                  if (match) {
+                    const completeSentence = match[1].trim();
+                    sentenceBuffer = match[2];
+                    if (completeSentence) {
+                      speechTTS.speakSentence(completeSentence);
+                    }
+                  }
                 } else if (currentEvent === "done") {
                   if (data.outcome) {
                     callOutcomeRef.current = data.outcome;
@@ -222,8 +221,11 @@ export function KokoroCallSession({
           }
         }
 
-        // Signal end-of-input so the splitter flushes remaining text
-        kokoroTTS.flushText();
+        // Speak remaining sentence buffer if any
+        if (sentenceBuffer.trim()) {
+          speechTTS.speakSentence(sentenceBuffer.trim());
+        }
+        speechTTS.endTurnQueue();
 
         setIsAgentThinking(false);
         if (accumulatedAssistantReply.trim()) {
@@ -263,8 +265,8 @@ export function KokoroCallSession({
 
     async function initCall() {
       try {
-        setInitProgress({ pct: 10, msg: "Initializing neural voice engine…" });
-        await kokoroTTS.init((pct, msg) => {
+        setInitProgress({ pct: 50, msg: "Connecting to voice assistant…" });
+        await speechTTS.init((pct, msg) => {
           if (!isCancelled) {
             setInitProgress({ pct, msg });
           }
@@ -295,7 +297,7 @@ export function KokoroCallSession({
             }
           },
           onError: (err) => {
-            console.warn("[KokoroCall] speech error:", err);
+            console.warn("[VoiceCall] speech error:", err);
           },
         });
 
@@ -306,8 +308,8 @@ export function KokoroCallSession({
         speech.start();
       } catch (err: any) {
         if (!isCancelled) {
-          console.error("[KokoroCall] init failed:", err);
-          onErrorRef.current(err?.message || "Failed to initialize in-browser voice engine");
+          console.error("[VoiceCall] init failed:", err);
+          onErrorRef.current(err?.message || "Failed to initialize voice assistant");
         }
       }
     }
@@ -316,7 +318,7 @@ export function KokoroCallSession({
 
     return () => {
       isCancelled = true;
-      kokoroTTS.stop();
+      speechTTS.stop();
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -334,13 +336,13 @@ export function KokoroCallSession({
   };
 
   const handleInterrupt = () => {
-    kokoroTTS.stop();
+    speechTTS.stop();
     setIsAgentSpeaking(false);
     speechRecRef.current?.pauseForAgentPlayback(false);
   };
 
   const handleEndCall = async () => {
-    kokoroTTS.stop();
+    speechTTS.stop();
     if (speechRecRef.current) {
       speechRecRef.current.stop();
     }
@@ -756,37 +758,28 @@ function KokoroAudioBars({ isSpeaking, compact = false }: { isSpeaking: boolean;
   const [activeBars, setActiveBars] = useState<number>(0);
 
   useEffect(() => {
-    let animId: number;
-    const analyser = kokoroTTS.getAnalyserNode();
-
-    if (!isSpeaking || !analyser) {
+    if (!isSpeaking) {
       setActiveBars(0);
       return;
     }
 
-    const data = new Uint8Array(analyser.frequencyBinCount);
-
-    const checkVolume = () => {
-      analyser.getByteFrequencyData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i++) {
-        sum += data[i];
-      }
-      const avg = sum / (data.length || 1);
-      const bars = Math.min(8, Math.round((avg / 128) * 8));
+    let frame = 0;
+    const timer = window.setInterval(() => {
+      frame++;
+      // Natural undulating speech energy waveform (3-8 bars)
+      const base = Math.sin(frame * 0.5) * 2.2 + Math.cos(frame * 0.8) * 1.8 + 4.5;
+      const bars = Math.max(1, Math.min(8, Math.round(base)));
       setActiveBars(bars);
-      animId = requestAnimationFrame(checkVolume);
-    };
+    }, 80);
 
-    animId = requestAnimationFrame(checkVolume);
-    return () => cancelAnimationFrame(animId);
+    return () => window.clearInterval(timer);
   }, [isSpeaking]);
 
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-[10px] font-mono text-[#71717a]">
         <span className="flex items-center gap-1">
-          <Volume2 className="w-3 h-3" aria-hidden="true" /> Voice Energy (Kokoro-82M)
+          <Volume2 className="w-3 h-3" aria-hidden="true" /> Voice Energy (Neural Assistant)
         </span>
         <span className="tabular-nums">{Math.round((activeBars / 8) * 100)}%</span>
       </div>
