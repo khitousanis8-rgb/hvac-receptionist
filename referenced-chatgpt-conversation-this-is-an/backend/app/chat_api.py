@@ -22,6 +22,18 @@ from app.scheduling import book_appointment, list_upcoming
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/v1/calls", tags=["calls"])
 
+_client: AsyncOpenAI | None = None
+
+
+def _get_client(settings: Settings) -> AsyncOpenAI:
+    global _client
+    if _client is None:
+        _client = AsyncOpenAI(
+            api_key=settings.llm_api_key.get_secret_value(),
+            base_url=str(settings.llm_base_url),
+        )
+    return _client
+
 
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
@@ -175,10 +187,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             detail="LLM credentials are not configured on the server.",
         )
 
-    client = AsyncOpenAI(
-        api_key=settings.llm_api_key.get_secret_value(),
-        base_url=str(settings.llm_base_url),
-    )
+    client = _get_client(settings)
 
     system_content = receptionist_instructions(settings)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
@@ -320,10 +329,7 @@ async def transcribe_audio(req: TranscribeRequest) -> dict[str, str]:
     except Exception:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid base64 audio data")
 
-    client = AsyncOpenAI(
-        api_key=settings.llm_api_key.get_secret_value(),
-        base_url=str(settings.llm_base_url),
-    )
+    client = _get_client(settings)
 
     try:
         transcription = await client.audio.transcriptions.create(

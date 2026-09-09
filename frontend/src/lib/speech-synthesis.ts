@@ -124,6 +124,7 @@ class BrowserSpeechSynthesisService {
 
   /** Signal that all sentences for this turn have been queued. */
   public endTurnQueue(): void {
+    if (!this.isTurnActive) return;
     if (!this.isSpeaking && this.queue.length === 0) {
       this.finishTurn();
     }
@@ -182,6 +183,7 @@ class BrowserSpeechSynthesisService {
   }
 
   private finishTurn(): void {
+    if (!this.isTurnActive) return; // already finished
     this.isSpeaking = false;
     this.isTurnActive = false;
     this.onPlaybackStateChange?.(false);

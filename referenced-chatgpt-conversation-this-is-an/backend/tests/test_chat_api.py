@@ -109,3 +109,15 @@ def test_end_call_endpoint() -> None:
         assert updated is not None
         assert updated.outcome == "booked"
         assert updated.transcript_summary == "Customer booked AC repair."
+
+
+def test_get_client_singleton() -> None:
+    import app.chat_api as chat_api
+
+    settings = Settings(LLM_API_KEY="test-key", _env_file=None)
+    chat_api._client = None
+    client1 = chat_api._get_client(settings)
+    client2 = chat_api._get_client(settings)
+    assert client1 is client2
+    chat_api._client = None
+

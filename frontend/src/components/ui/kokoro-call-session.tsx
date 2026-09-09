@@ -411,7 +411,7 @@ export function KokoroCallSession({
             />
           </div>
           <div className="flex justify-between text-[11px] font-mono text-[#71717a] pt-1">
-            <span>Free Local Kokoro-82M TTS</span>
+            <span>Native Voice Engine</span>
             <span>{initProgress.pct}%</span>
           </div>
           <p className="text-[11px] text-[#059669] pt-2">
@@ -490,7 +490,7 @@ export function KokoroCallSession({
             <div className="flex flex-col items-center gap-1">
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#eff6ff] border border-[#bfdbfe] text-[#1d4ed8] text-[10px] font-medium">
                 <Volume2 className="w-3 h-3 animate-pulse" aria-hidden="true" />
-                Assistant Speaking (Kokoro)
+                Assistant Speaking
               </span>
               <button
                 type="button"
@@ -570,7 +570,7 @@ export function KokoroCallSession({
               Live In-Browser Receptionist
             </span>
             <span className="text-[10px] font-mono text-[#0b5ed7] bg-[#eff6ff] border border-[#bfdbfe] px-2 py-0.5 rounded">
-              Kokoro-82M Voice · 0ms WebRTC Delay · $0 Cost
+              Native Voice · Instant Start · $0 Cost
             </span>
           </div>
 
@@ -599,7 +599,7 @@ export function KokoroCallSession({
                 )}
               >
                 {isAgentSpeaking
-                  ? "Speaking (Kokoro)"
+                  ? "Speaking"
                   : isAgentThinking
                   ? (isSlowServer ? "Waking Cloud Service" : activeTool ? `Running ${activeTool}` : "Checking Schedule")
                   : "Listening"}
