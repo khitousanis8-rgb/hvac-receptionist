@@ -151,9 +151,10 @@ class BrowserSpeechSynthesisService {
       utterance.voice = this.selectedVoice;
     }
     utterance.lang = this.selectedVoice?.lang || "en-US";
-    // 1.08x rate provides crisp, energetic, human conversational cadence
-    utterance.rate = 1.08;
-    utterance.pitch = 1.01;
+    // Natural conversational cadence, warm and not rushed
+    utterance.rate = 1.05;
+    // Slightly warm, upbeat, friendly inflection
+    utterance.pitch = 1.02;
 
     utterance.onstart = () => {
       this.isSpeaking = true;

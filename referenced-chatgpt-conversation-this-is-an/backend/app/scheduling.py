@@ -115,10 +115,40 @@ def book_appointment(
         return None, (
             "That time is outside business hours. Please choose a time during opening hours."
         )
-    if has_conflict(session, when):
+    customer = get_or_create_customer(session, phone_number, name)
+
+    slot_end = when + timedelta(minutes=SLOT_MINUTES)
+    earliest_overlap = when - timedelta(minutes=SLOT_MINUTES)
+    existing_same_customer = (
+        session.query(Appointment)
+        .filter(
+            Appointment.customer_id == customer.id,
+            Appointment.status.in_(BOOKABLE_STATUSES),
+            Appointment.scheduled_for < slot_end,
+            Appointment.scheduled_for > earliest_overlap,
+        )
+        .first()
+    )
+    if existing_same_customer is not None:
+        local_time = when.astimezone(ZoneInfo(settings.business_timezone)).strftime("%I:%M %p").lstrip("0")
+        return (
+            existing_same_customer,
+            f"Appointment is already confirmed for {existing_same_customer.service} at {local_time}."
+        )
+
+    existing_other = (
+        session.query(Appointment)
+        .filter(
+            Appointment.customer_id != customer.id,
+            Appointment.status.in_(BOOKABLE_STATUSES),
+            Appointment.scheduled_for < slot_end,
+            Appointment.scheduled_for > earliest_overlap,
+        )
+        .first()
+    )
+    if existing_other is not None:
         return None, "That slot is already taken. Please choose another time."
 
-    customer = get_or_create_customer(session, phone_number, name)
     safe_notes = notes[:500].strip() if notes else None
     appointment = Appointment(
         customer_id=customer.id,

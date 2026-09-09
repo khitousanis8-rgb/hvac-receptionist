@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.chat_api import _execute_tool
+from app.chat_api import _execute_tool, _is_closing_or_polite_remark
 from app.config import Settings
 from app.db import CallRecord, Customer, init_db, new_session
 from app.main import create_app
@@ -120,4 +120,146 @@ def test_get_client_singleton() -> None:
     client2 = chat_api._get_client(settings)
     assert client1 is client2
     chat_api._client = None
+
+
+def test_is_closing_or_polite_remark() -> None:
+    positives = [
+        "thank you",
+        "thanks",
+        "thank you so much",
+        "thanks so much",
+        "thank you very much",
+        "thanks a lot",
+        "many thanks",
+        "bye",
+        "goodbye",
+        "bye bye",
+        "have a good day",
+        "have a great day",
+        "no",
+        "no that is all",
+        "no thats all",
+        "no thank you",
+        "no thanks",
+        "that is all",
+        "thats all",
+        "that is it",
+        "thats it",
+        "nope",
+        "nothing else",
+        "i am good",
+        "im good",
+        "all good",
+        "perfect thank you",
+        "great thank you",
+        "ok thank you",
+        "okay thank you",
+        "sounds good thank you",
+        "sounds great thank you",
+        "take care",
+        "Thank you!",
+        "Thanks!",
+        "Bye!",
+        "Okay, thanks!",
+        "No, thank you.",
+        "That's all, thanks!",
+        "thanks for your help",
+    ]
+    for text in positives:
+        assert _is_closing_or_polite_remark(text) is True, f"Expected True for {text!r}"
+
+    negatives = [
+        "I need to book an appointment for AC repair",
+        "Can you schedule a technician for tomorrow at 2pm?",
+        "My phone number is 555-123-4567",
+        "Furnace tune-up please",
+        "Hello, is anyone there?",
+        "Yes, 10:00 AM works for me",
+    ]
+    for text in negatives:
+        assert _is_closing_or_polite_remark(text) is False, f"Expected False for {text!r}"
+
+
+def test_chat_stream_disables_tools_on_polite_remark() -> None:
+    settings = Settings(LLM_API_KEY="test-key", _env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    async def fake_stream(*args, **kwargs):
+        class Chunk:
+            choices = [type("Choice", (), {"delta": type("Delta", (), {"content": "You're welcome!", "tool_calls": None})()})]
+        yield Chunk()
+
+    with patch("app.chat_api._get_client") as mock_get_client:
+        mock_openai = AsyncMock()
+        mock_openai.chat.completions.create = AsyncMock(side_effect=fake_stream)
+        mock_get_client.return_value = mock_openai
+
+        res = client.post(
+            "/v1/calls/chat",
+            json={"session_id": "polite-test", "message": "Thank you so much!"},
+        )
+        assert res.status_code == 200
+        assert mock_openai.chat.completions.create.called
+        call_kwargs = mock_openai.chat.completions.create.call_args.kwargs
+        assert call_kwargs.get("tools") is None
+        assert call_kwargs.get("tool_choice") is None
+
+        # When it's not a polite remark, tools should be provided
+        res2 = client.post(
+            "/v1/calls/chat",
+            json={"session_id": "polite-test", "message": "I want to schedule AC repair"},
+        )
+        assert res2.status_code == 200
+        call_kwargs2 = mock_openai.chat.completions.create.call_args.kwargs
+        assert call_kwargs2.get("tools") is not None
+        assert call_kwargs2.get("tool_choice") == "auto"
+
+
+def test_chat_stream_booking_outcome() -> None:
+    settings = Settings(
+        LLM_API_KEY="test-key",
+        BUSINESS_SERVICES="AC repair",
+        BUSINESS_OPENING_HOURS='{"monday":"08:00-18:00"}',
+        _env_file=None,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+
+    class ToolCall:
+        index = 0
+        id = "call_123"
+        function = type("Fn", (), {
+            "name": "book_appointment_tool",
+            "arguments": json.dumps({
+                "phone_number": "+15559876543",
+                "service": "AC repair",
+                "date": "2030-01-07",
+                "time": "10:00",
+            }),
+        })()
+
+    async def fake_first_call(*args, **kwargs):
+        class Chunk:
+            choices = [type("Choice", (), {"delta": type("Delta", (), {"content": None, "tool_calls": [ToolCall()]})()})]
+        yield Chunk()
+
+    async def fake_second_call(*args, **kwargs):
+        class Chunk:
+            choices = [type("Choice", (), {"delta": type("Delta", (), {"content": "Your appointment is booked.", "tool_calls": None})()})]
+        yield Chunk()
+
+    with patch("app.chat_api._get_client") as mock_get_client:
+        mock_openai = AsyncMock()
+        mock_openai.chat.completions.create = AsyncMock(side_effect=[fake_first_call(), fake_second_call()])
+        mock_get_client.return_value = mock_openai
+
+        res = client.post(
+            "/v1/calls/chat",
+            json={"session_id": "booking-test", "message": "Book AC repair for next Monday 10am"},
+        )
+        assert res.status_code == 200
+        text = res.text
+        assert 'event: done\ndata: {"outcome": "booked"}' in text
+
 

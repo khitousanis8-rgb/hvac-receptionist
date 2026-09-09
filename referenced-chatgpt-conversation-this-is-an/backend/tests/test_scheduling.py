@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.config import Settings
-from app.db import init_db, new_session, reset_engine
+from app.db import Appointment, init_db, new_session, reset_engine
 from app.scheduling import book_appointment, get_or_create_customer
 
 
@@ -61,6 +61,27 @@ def test_book_appointment_rejects_double_booking(db, settings) -> None:
 
     assert appointment is None
     assert "already taken" in message
+
+
+def test_book_appointment_same_customer_idempotent(db, settings) -> None:
+    when = datetime(2030, 6, 10, 10, 0, tzinfo=UTC)  # a Monday
+    with new_session() as session:
+        first_app, first_msg = book_appointment(
+            session, settings, phone_number="+15550001", service="AC repair", when=when
+        )
+        assert first_app is not None
+        first_id = first_app.id
+
+    with new_session() as session:
+        second_app, second_msg = book_appointment(
+            session, settings, phone_number="+15550001", service="AC repair", when=when
+        )
+        assert second_app is not None
+        assert second_app.id == first_id
+        assert "already confirmed" in second_msg
+
+        count = session.query(Appointment).count()
+        assert count == 1
 
 
 def test_customer_deduplicated_by_phone(db) -> None:

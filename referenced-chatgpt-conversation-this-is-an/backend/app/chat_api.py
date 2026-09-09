@@ -157,6 +157,33 @@ TOOLS = [
 ]
 
 
+def _is_closing_or_polite_remark(text: str) -> bool:
+    """Check if caller is merely expressing gratitude, acknowledging, or saying goodbye."""
+    cleaned = "".join(c for c in text.lower() if c.isalnum() or c.isspace()).strip()
+    polite_exact = {
+        "thank you", "thanks", "thank you so much", "thanks so much",
+        "thank you very much", "thanks a lot", "many thanks",
+        "bye", "goodbye", "bye bye", "have a good day", "have a great day",
+        "no", "no that is all", "no thats all", "no thank you", "no thanks",
+        "that is all", "thats all", "that is it", "thats it", "nope",
+        "nothing else", "i am good", "im good", "all good",
+        "perfect thank you", "great thank you", "ok thank you", "okay thank you",
+        "ok thanks", "okay thanks",
+        "sounds good thank you", "sounds great thank you", "take care",
+    }
+    if cleaned in polite_exact:
+        return True
+    if len(cleaned) < 30 and (
+        cleaned.startswith("thank")
+        or cleaned.startswith("bye")
+        or cleaned.startswith("no thank")
+        or cleaned.startswith("thats all")
+        or cleaned.startswith("that is all")
+    ):
+        return True
+    return False
+
+
 @router.post("/chat")
 async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     """Stream assistant response tokens via Server-Sent Events (SSE) with tool execution."""
@@ -198,6 +225,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": req.message})
 
+    is_polite_closing = _is_closing_or_polite_remark(req.message)
+    tools_to_use = None if is_polite_closing else TOOLS
+
     async def sse_generator():
         outcome = "info_only"
         try:
@@ -205,8 +235,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             response = await client.chat.completions.create(
                 model=settings.llm_model,
                 messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
+                tools=tools_to_use,
+                tool_choice="auto" if tools_to_use else None,
                 stream=True,
             )
 
@@ -268,7 +298,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
                     logger.info("executing_chat_tool", tool=name, args=args)
                     tool_result = _execute_tool(settings, name, args)
-                    if name == "book_appointment_tool" and "successfully booked" in tool_result.lower():
+                    if name == "book_appointment_tool" and ("booked" in tool_result.lower() or "confirmed" in tool_result.lower()):
                         outcome = "booked"
 
                     yield f"event: tool_call\ndata: {json.dumps({'name': name, 'result': tool_result})}\n\n"
