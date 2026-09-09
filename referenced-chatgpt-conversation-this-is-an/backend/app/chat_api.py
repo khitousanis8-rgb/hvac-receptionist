@@ -17,8 +17,10 @@ from pydantic import BaseModel, Field
 from app.agent.prompts import receptionist_instructions
 from app.call_tracking import (
     end_call,
+    end_call_by_session,
     get_or_create_session_slots,
     start_call,
+    update_call_outcome,
     update_call_phone,
     update_session_slots,
 )
@@ -60,21 +62,28 @@ class EndCallRequest(BaseModel):
     summary: str | None = Field(default=None, max_length=2000)
 
 
+def _is_assistant_echo(text: str) -> bool:
+    """Detect if caller input is actually an acoustic echo of assistant speech picked up by the microphone."""
+    clean = text.lower().strip()
+    echo_markers = [
+        "how can i assist you",
+        "how can i help you with your heating",
+        "thank you for calling",
+        "my name is sarah",
+        "heating or cooling today",
+        "example hvac",
+        "how can i assist you with",
+    ]
+    return any(marker in clean for marker in echo_markers)
+
+
 def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[str, Any]:
     """Lightweight rule-based extractor to update known slots from user utterances."""
     updates: dict[str, Any] = {}
     lower = text.lower().strip()
 
     # Reject acoustic mic echoes of assistant greeting and system phrases
-    system_phrases = [
-        "how can i assist you",
-        "thank you for calling",
-        "heating or cooling today",
-        "example hvac",
-        "let us get a technician",
-        "lets get that fixed",
-    ]
-    if any(p in lower for p in system_phrases):
+    if _is_assistant_echo(text):
         return updates
 
     # 1. Name extraction
@@ -342,6 +351,19 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    # Detect acoustic echo of assistant's greeting picked up by microphone
+    if _is_assistant_echo(req.message):
+        async def echo_recovery_generator():
+            recovery_text = "I'm right here! How can I assist you with your heating or cooling today?"
+            yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+        return StreamingResponse(
+            echo_recovery_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     if not settings.llm_api_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -363,6 +385,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     # Cap history to the last 30 messages (~15 turns) to retain deep conversational nuances
     recent_history = req.history[-30:] if len(req.history) > 30 else req.history
     for msg in recent_history:
+        if msg.role == "user" and _is_assistant_echo(msg.content):
+            continue
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": req.message})
 
@@ -486,6 +510,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     if name == "book_appointment_tool" and ("booked" in tool_result.lower() or "confirmed" in tool_result.lower()):
                         outcome = "booked"
                         update_session_slots(req.session_id, {"confirmed": True})
+                        update_call_outcome(req.session_id, "booked")
                         if args.get("phone_number"):
                             update_call_phone(req.session_id, str(args["phone_number"]))
 
@@ -605,4 +630,6 @@ async def end_call_record(req: EndCallRequest) -> dict[str, Any]:
     """Finalize call record in SQLite."""
     if req.call_id:
         end_call(req.call_id, req.outcome, req.summary)
-    return {"status": "ok", "call_id": req.call_id, "outcome": req.outcome}
+    elif req.session_id:
+        end_call_by_session(req.session_id, req.outcome, req.summary)
+    return {"status": "ok", "call_id": req.call_id, "session_id": req.session_id, "outcome": req.outcome}

@@ -371,5 +371,55 @@ def test_end_call_preserves_booked_outcome() -> None:
         assert record.outcome == "booked"
 
 
+def test_end_call_by_session_endpoint() -> None:
+    from app.call_tracking import start_call, update_call_outcome
+
+    settings = Settings(_env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+    room = "test-session-end-endpoint"
+    start_call(room)
+    update_call_outcome(room, "booked")
+
+    # Call /v1/calls/end with session_id only and info_only outcome
+    res = client.post(
+        "/v1/calls/end",
+        json={"session_id": room, "outcome": "info_only", "summary": "Caller hung up"},
+    )
+    assert res.status_code == 200
+
+    # Verify that 'booked' was preserved
+    with new_session() as session:
+        record = (
+            session.query(CallRecord)
+            .filter(CallRecord.room_name == room)
+            .order_by(CallRecord.id.desc())
+            .first()
+        )
+        assert record is not None
+        assert record.outcome == "booked"
+        assert record.ended_at is not None
+
+
+def test_assistant_echo_detection_and_recovery_stream() -> None:
+    from app.chat_api import _is_assistant_echo
+
+    echo_text = "Thank you for calling Example HVAC! My name is Sarah. How can I assist you with your heating or cooling today?"
+    assert _is_assistant_echo(echo_text) is True
+    assert _is_assistant_echo("My name is Sarah how can I assist you with your heating or cooling today") is True
+    assert _is_assistant_echo("My AC is not cooling well") is False
+
+    settings = Settings(_env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+    res = client.post(
+        "/v1/calls/chat",
+        json={"session_id": "echo-test-session", "message": echo_text},
+    )
+    assert res.status_code == 200
+    assert "I'm right here!" in res.text
+    assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
+
+
 
 

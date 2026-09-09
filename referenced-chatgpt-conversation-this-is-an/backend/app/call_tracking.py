@@ -67,7 +67,27 @@ def update_call_outcome(room_name: str, outcome: str) -> None:
             .first()
         )
         if record:
+            # A booked call is permanently booked — never downgrade to info_only
+            if record.outcome != "booked" or outcome == "booked":
+                record.outcome = outcome
+
+
+def end_call_by_session(room_name: str, outcome: str, transcript_summary: str | None = None) -> None:
+    """Finalize a CallRecord by session/room_name with its outcome and transcript summary."""
+    with new_session() as session:
+        record = (
+            session.query(CallRecord)
+            .filter(CallRecord.room_name == room_name)
+            .order_by(CallRecord.id.desc())
+            .first()
+        )
+        if record is None:
+            return
+        # A booked call is permanently booked — never downgrade to info_only on hangup
+        if record.outcome != "booked" or outcome == "booked":
             record.outcome = outcome
+        record.transcript_summary = transcript_summary
+        record.ended_at = datetime.now(UTC)
 
 
 def start_call(room_name: str) -> int:
