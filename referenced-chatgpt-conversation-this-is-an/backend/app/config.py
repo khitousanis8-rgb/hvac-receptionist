@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # Any OpenAI-compatible Chat Completions endpoint (Groq, Ollama, OpenRouter, ...).
     llm_api_key: SecretStr | None = None
     llm_base_url: AnyHttpUrl = AnyHttpUrl("https://api.groq.com/openai/v1")
-    llm_model: Annotated[str, Field(min_length=1)] = "llama-3.3-70b-versatile"
+    llm_model: Annotated[str, Field(min_length=1)] = "qwen/qwen3.8-27b"
 
     @field_validator("business_opening_hours", mode="before")
     @classmethod

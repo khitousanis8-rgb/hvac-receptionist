@@ -237,6 +237,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 messages=messages,
                 tools=tools_to_use,
                 tool_choice="auto" if tools_to_use else None,
+                temperature=0.3,
+                max_tokens=100,
+                stop=["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                 stream=True,
             )
 
@@ -315,6 +318,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 second_response = await client.chat.completions.create(
                     model=settings.llm_model,
                     messages=messages,
+                    temperature=0.3,
+                    max_tokens=100,
+                    stop=["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                     stream=True,
                 )
 
