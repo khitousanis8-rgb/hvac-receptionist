@@ -263,3 +263,73 @@ def test_chat_stream_booking_outcome() -> None:
         assert 'event: done\ndata: {"outcome": "booked"}' in text
 
 
+def test_extract_slots_from_text() -> None:
+    from app.chat_api import _extract_slots_from_text
+
+    slots = {}
+
+    # 1. Name extraction
+    u1 = _extract_slots_from_text("yes my name is Anis", slots)
+    assert u1.get("name") == "Anis"
+
+    # 2. Spoken phone number extraction
+    u2 = _extract_slots_from_text("yes it's plus 1 2 3 0 1 2 3 4 5 6 7", slots)
+    assert u2.get("phone") == "+12301234567"
+
+    # 3. Standard phone format
+    u3 = _extract_slots_from_text("you can call me at 555-432-8765", slots)
+    assert u3.get("phone") == "5554328765"
+
+    # 4. Service extraction
+    u4 = _extract_slots_from_text("my AC isn't cooling well", slots)
+    assert u4.get("service") == "AC repair"
+
+    # 5. Date/Time extraction
+    u5 = _extract_slots_from_text("where to go for tomorrow at 9:00 a.m. Maybe", slots)
+    assert "tomorrow at 9:00 a.m" in u5.get("time", "")
+
+
+def test_parse_local_datetime_relative_and_formats() -> None:
+    from app.chat_api import _parse_local_datetime
+
+    settings = Settings(_env_file=None)
+
+    dt1 = _parse_local_datetime(settings, "tomorrow", "9:00 a.m.")
+    assert dt1 is not None
+    assert dt1.hour == 9
+    assert dt1.minute == 0
+
+    dt2 = _parse_local_datetime(settings, "2030-05-15", "14:30")
+    assert dt2 is not None
+    assert dt2.year == 2030
+    assert dt2.month == 5
+    assert dt2.day == 15
+    assert dt2.hour == 14
+    assert dt2.minute == 30
+
+
+def test_session_slots_and_caller_phone_sync() -> None:
+    from app.call_tracking import (
+        get_or_create_session_slots,
+        start_call,
+        update_call_phone,
+        update_session_slots,
+    )
+
+    room = "test-room-slots-99"
+    call_id = start_call(room)
+
+    slots = get_or_create_session_slots(room)
+    assert slots["name"] is None
+
+    update_session_slots(room, {"name": "Anis", "phone": "+12301234567"})
+    assert slots["name"] == "Anis"
+    assert slots["phone"] == "+12301234567"
+
+    with new_session() as session:
+        record = session.get(CallRecord, call_id)
+        assert record is not None
+        assert record.caller_phone == "+12301234567"
+
+
+

@@ -8,6 +8,51 @@ from typing import Any
 from app.db import CallRecord, new_session
 
 
+_session_slots: dict[str, dict[str, Any]] = {}
+
+
+def get_or_create_session_slots(session_id: str) -> dict[str, Any]:
+    """Return active session slots, initializing if needed."""
+    if session_id not in _session_slots:
+        _session_slots[session_id] = {
+            "name": None,
+            "phone": None,
+            "service": None,
+            "date": None,
+            "time": None,
+            "confirmed": False,
+            "booking_result": None,
+        }
+    return _session_slots[session_id]
+
+
+def update_session_slots(session_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    """Update session slots and sync caller phone to CallRecord."""
+    slots = get_or_create_session_slots(session_id)
+    for k, v in updates.items():
+        if v is not None and str(v).strip():
+            slots[k] = v
+
+    phone = slots.get("phone")
+    if phone:
+        update_call_phone(session_id, phone)
+
+    return slots
+
+
+def update_call_phone(room_name: str, phone: str) -> None:
+    """Update caller_phone on the active CallRecord for this session."""
+    with new_session() as session:
+        record = (
+            session.query(CallRecord)
+            .filter(CallRecord.room_name == room_name)
+            .order_by(CallRecord.id.desc())
+            .first()
+        )
+        if record and not record.caller_phone:
+            record.caller_phone = str(phone).strip()[:32]
+
+
 def start_call(room_name: str) -> int:
     """Create an in-progress CallRecord and return its id."""
     with new_session() as session:

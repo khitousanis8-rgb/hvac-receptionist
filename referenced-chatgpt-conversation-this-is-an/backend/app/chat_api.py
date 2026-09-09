@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -14,7 +15,13 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from app.agent.prompts import receptionist_instructions
-from app.call_tracking import end_call, start_call
+from app.call_tracking import (
+    end_call,
+    get_or_create_session_slots,
+    start_call,
+    update_call_phone,
+    update_session_slots,
+)
 from app.config import Settings, get_settings
 from app.db import new_session
 from app.scheduling import book_appointment, list_upcoming
@@ -53,13 +60,99 @@ class EndCallRequest(BaseModel):
     summary: str | None = Field(default=None, max_length=2000)
 
 
-def _parse_local_datetime(settings: Settings, date_str: str, time_str: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(f"{date_str}T{time_str}").replace(
-            tzinfo=ZoneInfo(settings.business_timezone)
+def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[str, Any]:
+    """Lightweight rule-based extractor to update known slots from user utterances."""
+    updates: dict[str, Any] = {}
+    lower = text.lower().strip()
+
+    # 1. Name extraction
+    name_patterns = [
+        r"(?:my name is|i am|i'm|this is|call me|name's|name is)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
+        r"^([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+here",
+    ]
+    for pattern in name_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip()
+            if candidate.lower() not in {
+                "sarah", "calling", "good", "okay", "yes", "no", "looking",
+                "interested", "repair", "service", "ac", "heating", "cooling",
+            }:
+                updates["name"] = candidate
+                break
+
+    # 2. Phone extraction (handles spoken digit words: 'plus 1 2 3 0 ...' or '555-123-4567')
+    digit_map = {
+        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+        "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+        "plus": "+",
+    }
+    normalized_for_phone = lower
+    for word, digit in digit_map.items():
+        normalized_for_phone = re.sub(rf"\b{word}\b", digit, normalized_for_phone)
+
+    phone_match = re.search(r"(\+?\s*[\d\s\-\.\(\)]{8,}\d)", normalized_for_phone)
+    if phone_match:
+        matched_str = phone_match.group(1)
+        raw_digits = re.sub(r"[^\d]", "", matched_str)
+        if len(raw_digits) >= 10:
+            prefix = "+" if "+" in matched_str else ""
+            updates["phone"] = f"{prefix}{raw_digits}"
+
+    # 3. Service extraction
+    if any(k in lower for k in ["ac", "air condition", "cooling", "cool", "heat pump", "cold"]):
+        updates["service"] = "AC repair"
+    elif any(k in lower for k in ["furnace", "heating", "heater", "boiler", "warm"]):
+        updates["service"] = "Heating repair"
+    elif any(k in lower for k in ["tuneup", "tune up", "tune-up", "maintenance", "inspection"]):
+        updates["service"] = "HVAC tune-up"
+
+    # 4. Date/Time extraction heuristics
+    if any(k in lower for k in ["tomorrow", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]):
+        time_match = re.search(
+            r"(tomorrow|today|next \w+|\w+day)?\s*(?:at)?\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?|\b))",
+            lower,
         )
+        if time_match:
+            updates["time"] = time_match.group(0).strip()
+        elif "tomorrow" in lower:
+            updates["date"] = "tomorrow"
+
+    return updates
+
+
+def _parse_local_datetime(settings: Settings, date_str: str, time_str: str) -> datetime | None:
+    tz = ZoneInfo(settings.business_timezone)
+    now = datetime.now(tz)
+
+    clean_date = date_str.lower().strip()
+    clean_time = time_str.strip()
+
+    if clean_date == "tomorrow":
+        target_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    elif clean_date == "today":
+        target_date = now.strftime("%Y-%m-%d")
+    else:
+        target_date = clean_date
+
+    # Try direct ISO parsing first
+    try:
+        return datetime.fromisoformat(f"{target_date}T{clean_time}").replace(tzinfo=tz)
     except (ValueError, TypeError):
-        return None
+        pass
+
+    # Try common formats like "%I:%M %p", "%I %p", "%H:%M"
+    # Normalize clean_time (remove periods in a.m. / p.m.)
+    norm_time = clean_time.replace(".", "").strip()
+    for fmt in ("%I:%M %p", "%I:%M%p", "%I %p", "%I%p", "%H:%M", "%H:%M:%S"):
+        try:
+            parsed_t = datetime.strptime(norm_time, fmt).time()
+            dt_base = datetime.strptime(target_date, "%Y-%m-%d")
+            return datetime.combine(dt_base.date(), parsed_t, tzinfo=tz)
+        except ValueError:
+            continue
+
+    return None
 
 
 def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
@@ -231,17 +324,45 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
     client = _get_client(settings)
 
-    system_content = receptionist_instructions(settings)
+    # 1. Update and retrieve persistent session slots (immune to sliding window eviction)
+    slots = get_or_create_session_slots(req.session_id)
+    new_slots = _extract_slots_from_text(req.message, slots)
+    if new_slots:
+        slots = update_session_slots(req.session_id, new_slots)
+
+    # 2. Dynamic prompt grounding with verified slots
+    system_content = receptionist_instructions(settings, slots=slots)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
-    # Cap history to the last 10 messages (~5 turns) to keep Groq input
-    # short and avoid free-tier rate limits (12K TPM, 30 RPM).
-    recent_history = req.history[-10:] if len(req.history) > 10 else req.history
+
+    # Cap history to the last 30 messages (~15 turns) to retain deep conversational nuances
+    recent_history = req.history[-30:] if len(req.history) > 30 else req.history
     for msg in recent_history:
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": req.message})
 
+    # 3. Tool Choice & Gating
     is_polite_closing = _is_closing_or_polite_remark(req.message)
     tools_to_use = None if is_polite_closing else TOOLS
+
+    # Check if caller is confirming booking details and all prerequisites are known
+    cleaned_msg = "".join(c for c in req.message.lower() if c.isalnum() or c.isspace()).strip()
+    is_affirmative = any(
+        w in cleaned_msg.split()
+        for w in ["yes", "yeah", "yep", "correct", "perfect", "sure", "book", "booked"]
+    ) or any(
+        phrase in cleaned_msg
+        for phrase in ["sounds good", "sounds great", "please book", "go ahead", "that works"]
+    )
+    has_booking_prereqs = bool(
+        slots.get("phone")
+        and slots.get("service")
+        and (slots.get("time") or slots.get("date"))
+    )
+
+    if tools_to_use and has_booking_prereqs and is_affirmative and not slots.get("confirmed"):
+        tool_choice_to_use: Any = {"type": "function", "function": {"name": "book_appointment_tool"}}
+    else:
+        tool_choice_to_use = "auto" if tools_to_use else None
 
     async def sse_generator():
         outcome = "info_only"
@@ -252,8 +373,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 model=settings.llm_model,
                 messages=messages,
                 tools=tools_to_use,
-                tool_choice="auto" if tools_to_use else None,
-                temperature=0.3,
+                tool_choice=tool_choice_to_use,
+                temperature=0.1,
                 max_tokens=200,
                 stop=["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                 stream=True,
@@ -266,10 +387,6 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if not delta:
                     continue
-
-                if delta.content:
-                    streamed_content += delta.content
-                    yield f"event: delta\ndata: {json.dumps({'text': delta.content})}\n\n"
 
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
@@ -287,6 +404,11 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                                 tool_calls_accumulator[idx]["name"] = tc.function.name
                             if tc.function.arguments:
                                 tool_calls_accumulator[idx]["arguments"] += tc.function.arguments
+
+                # Stream conversational text only when not accumulating a tool call
+                elif delta.content and not tool_calls_accumulator:
+                    streamed_content += delta.content
+                    yield f"event: delta\ndata: {json.dumps({'text': delta.content})}\n\n"
 
             # If the model requested tools: execute them and stream the final answer
             if tool_calls_accumulator:
@@ -319,6 +441,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     tool_result = _execute_tool(settings, name, args)
                     if name == "book_appointment_tool" and ("booked" in tool_result.lower() or "confirmed" in tool_result.lower()):
                         outcome = "booked"
+                        update_session_slots(req.session_id, {"confirmed": True})
+                        if args.get("phone_number"):
+                            update_call_phone(req.session_id, str(args["phone_number"]))
 
                     yield f"event: tool_call\ndata: {json.dumps({'name': name, 'result': tool_result})}\n\n"
 
@@ -335,7 +460,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     client=client,
                     model=settings.llm_model,
                     messages=messages,
-                    temperature=0.3,
+                    temperature=0.1,
                     max_tokens=200,
                     stop=["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                     stream=True,

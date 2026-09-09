@@ -138,9 +138,9 @@ export function KokoroCallSession({
         controller.abort();
       }, CHAT_REQUEST_TIMEOUT_MS);
 
-      // Limit history to the last 6 messages to keep Groq input short
-      // and avoid free-tier rate limits (12K TPM).
-      const recentHistory = currentHistory.slice(-6);
+      // Maintain conversational context (up to last 30 messages) to prevent
+      // caller identity amnesia while staying comfortably within Groq TPM limits.
+      const recentHistory = currentHistory.length > 30 ? currentHistory.slice(-30) : currentHistory;
 
       try {
         const response = await fetch(apiUrl("/v1/calls/chat"), {
