@@ -85,7 +85,9 @@ def end_call(call_id: int, outcome: str, transcript_summary: str | None = None) 
         record = session.get(CallRecord, call_id)
         if record is None:
             return
-        record.outcome = outcome
+        # A booked call is permanently booked — never downgrade to info_only on hangup
+        if record.outcome != "booked" or outcome == "booked":
+            record.outcome = outcome
         record.transcript_summary = transcript_summary
         record.ended_at = datetime.now(UTC)
 

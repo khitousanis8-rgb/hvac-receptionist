@@ -204,11 +204,14 @@ export function KokoroCallSession({
                     const completeSentence = match[1].trim();
                     sentenceBuffer = match[2];
                     if (completeSentence) {
+                      speechRecRef.current?.registerAssistantSpeech(completeSentence);
                       speechTTS.speakSentence(completeSentence);
                     }
                   }
                 } else if (currentEvent === "done") {
-                  if (data.outcome) {
+                  if (data.outcome === "booked") {
+                    callOutcomeRef.current = "booked";
+                  } else if (callOutcomeRef.current !== "booked" && data.outcome) {
                     callOutcomeRef.current = data.outcome;
                   }
                   setActiveTool(null);
@@ -224,6 +227,7 @@ export function KokoroCallSession({
 
         // Speak remaining sentence buffer if any
         if (sentenceBuffer.trim()) {
+          speechRecRef.current?.registerAssistantSpeech(sentenceBuffer.trim());
           speechTTS.speakSentence(sentenceBuffer.trim());
         }
         speechTTS.endTurnQueue();

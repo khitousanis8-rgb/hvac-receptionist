@@ -39,6 +39,8 @@ export class BrowserSpeechRecognition {
   private analyser: AnalyserNode | null = null;
   private silenceTimer: number | null = null;
   private lastSpeechTime: number = 0;
+  private recentAssistantUtterances: string[] = [];
+  private lastAgentSpeechEndTime: number = 0;
 
   constructor() {
     const SpeechRecognitionClass =
@@ -62,6 +64,8 @@ export class BrowserSpeechRecognition {
 
       this.recognition.onresult = (event: any) => {
         if (this.isPausedForAgent || this.isMuted) return;
+        // Enforce acoustic cooldown: ignore microphone audio within 600ms of assistant speaking
+        if (Date.now() - this.lastAgentSpeechEndTime < 600) return;
 
         let interimText = "";
         let finalText = "";
@@ -76,6 +80,12 @@ export class BrowserSpeechRecognition {
         }
 
         if (finalText.trim()) {
+          // Check if finalized chunk is self-speech echo
+          if (this.isAcousticEcho(finalText.trim())) {
+            console.warn("[EchoGuard] Suppressed microphone acoustic echo chunk:", finalText.trim());
+            return;
+          }
+
           this.accumulatedFinalText = (this.accumulatedFinalText + " " + finalText).trim();
           if (this.debounceTimer !== null) {
             window.clearTimeout(this.debounceTimer);
@@ -89,10 +99,17 @@ export class BrowserSpeechRecognition {
             this.accumulatedFinalText = "";
             this.debounceTimer = null;
             if (full && this.onTranscript && !this.isPausedForAgent && !this.isMuted) {
+              if (this.isAcousticEcho(full)) {
+                console.warn("[EchoGuard] Suppressed full microphone acoustic echo:", full);
+                return;
+              }
               this.onTranscript(full, true);
             }
           }, 700);
         } else if (interimText.trim() && this.onTranscript) {
+          if (this.isAcousticEcho(interimText.trim())) {
+            return;
+          }
           const combined = (this.accumulatedFinalText + " " + interimText).trim();
           this.onTranscript(combined, false);
         }
@@ -141,9 +158,64 @@ export class BrowserSpeechRecognition {
     if (callbacks.onError) this.onError = callbacks.onError;
   }
 
+  public registerAssistantSpeech(text: string): void {
+    const clean = text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").trim();
+    if (clean.length > 5) {
+      this.recentAssistantUtterances.push(clean);
+      if (this.recentAssistantUtterances.length > 8) {
+        this.recentAssistantUtterances.shift();
+      }
+    }
+  }
+
+  private isAcousticEcho(transcript: string): boolean {
+    const clean = transcript.toLowerCase().replace(/[^a-z0-9\s]/g, " ").trim();
+    if (!clean || clean.length < 4) return false;
+
+    // Check against standard receptionist system phrases
+    const receptionistPhrases = [
+      "my name is sarah",
+      "this is sarah",
+      "thank you for calling",
+      "how can i assist you",
+      "heating or cooling today",
+      "heating and air conditioning",
+      "example hvac",
+      "welcome to example hvac",
+      "how can i help you with your heating",
+    ];
+    for (const phrase of receptionistPhrases) {
+      if (clean.includes(phrase)) {
+        return true;
+      }
+    }
+
+    // Check against recently queued assistant speech
+    for (const utterance of this.recentAssistantUtterances) {
+      if (utterance.includes(clean) || clean.includes(utterance)) {
+        return true;
+      }
+      // Check word overlap for acoustic partials
+      const cleanWords = clean.split(/\s+/).filter((w) => w.length > 3);
+      if (cleanWords.length >= 3) {
+        const matches = cleanWords.filter((w) => utterance.includes(w));
+        if (matches.length / cleanWords.length >= 0.65) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
   public async start() {
     this.shouldBeListening = true;
     this.isMuted = false;
+
+    if (this.isPausedForAgent) {
+      // Do not start microphone while assistant is speaking; will auto-resume on speech finish
+      return;
+    }
 
     if (this.isSupported && this.recognition) {
       try {
@@ -167,7 +239,7 @@ export class BrowserSpeechRecognition {
 
     if (this.recognition) {
       try {
-        this.recognition.stop();
+        this.recognition.abort();
       } catch {
         // ignore
       }
@@ -182,7 +254,7 @@ export class BrowserSpeechRecognition {
     if (muted) {
       if (this.isListening && this.recognition) {
         try {
-          this.recognition.stop();
+          this.recognition.abort();
         } catch {
           // ignore
         }
@@ -208,9 +280,10 @@ export class BrowserSpeechRecognition {
       }
       this.accumulatedFinalText = "";
 
-      if (this.isListening && this.recognition) {
+      if (this.recognition) {
         try {
-          this.recognition.stop();
+          // abort() immediately cancels recognition and dumps audio buffers without emitting onresult
+          this.recognition.abort();
         } catch {
           // ignore
         }
@@ -218,7 +291,8 @@ export class BrowserSpeechRecognition {
       this.isListening = false;
       this.onStateChange?.(false);
     } else {
-      // Resume listening when assistant finishes speaking
+      this.lastAgentSpeechEndTime = Date.now();
+      // Resume listening after 600ms acoustic room decay cooldown so speaker audio doesn't bleed into mic
       if (this.shouldBeListening && !this.isMuted) {
         window.setTimeout(() => {
           if (this.shouldBeListening && !this.isPausedForAgent && !this.isMuted) {
@@ -234,7 +308,7 @@ export class BrowserSpeechRecognition {
               }
             }
           }
-        }, 200);
+        }, 600);
       }
     }
   }

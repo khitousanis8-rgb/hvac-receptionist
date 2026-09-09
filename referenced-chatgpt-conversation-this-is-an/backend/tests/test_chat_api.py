@@ -332,4 +332,44 @@ def test_session_slots_and_caller_phone_sync() -> None:
         assert record.caller_phone == "+12301234567"
 
 
+def test_extract_slots_rejects_assistant_echo_and_names() -> None:
+    from app.chat_api import _extract_slots_from_text
+
+    # 1. Echo of assistant greeting must be rejected
+    echo_text = "my name is Sarah how can I assist you with your heating or cooling today"
+    slots = _extract_slots_from_text(echo_text, {})
+    assert "name" not in slots
+    assert "service" not in slots
+
+    # 2. Candidate named "Sarah how" must not be extracted
+    slots2 = _extract_slots_from_text("my name is Sarah how", {})
+    assert "name" not in slots2
+
+    # 3. Legitimate caller name must be extracted
+    slots3 = _extract_slots_from_text("yes my name is Anis Khitous", {})
+    assert slots3.get("name") == "Anis Khitous"
+
+
+def test_end_call_preserves_booked_outcome() -> None:
+    from app.call_tracking import end_call, start_call
+
+    room = "test-preserve-booked-outcome"
+    call_id = start_call(room)
+
+    # First mark as booked
+    end_call(call_id, "booked", "Customer booked appointment")
+    with new_session() as session:
+        record = session.get(CallRecord, call_id)
+        assert record is not None
+        assert record.outcome == "booked"
+
+    # Subsequent hangup call with info_only must NOT overwrite booked
+    end_call(call_id, "info_only", "Call ended")
+    with new_session() as session:
+        record = session.get(CallRecord, call_id)
+        assert record is not None
+        assert record.outcome == "booked"
+
+
+
 

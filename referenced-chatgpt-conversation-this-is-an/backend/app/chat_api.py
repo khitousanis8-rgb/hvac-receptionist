@@ -19,7 +19,6 @@ from app.call_tracking import (
     end_call,
     get_or_create_session_slots,
     start_call,
-    update_call_outcome,
     update_call_phone,
     update_session_slots,
 )
@@ -36,9 +35,8 @@ _client: AsyncOpenAI | None = None
 def _get_client(settings: Settings) -> AsyncOpenAI:
     global _client
     if _client is None:
-        api_key = settings.llm_api_key.get_secret_value() if settings.llm_api_key else ""
         _client = AsyncOpenAI(
-            api_key=api_key,
+            api_key=settings.llm_api_key.get_secret_value(),
             base_url=str(settings.llm_base_url),
         )
     return _client
@@ -67,6 +65,18 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
     updates: dict[str, Any] = {}
     lower = text.lower().strip()
 
+    # Reject acoustic mic echoes of assistant greeting and system phrases
+    system_phrases = [
+        "how can i assist you",
+        "thank you for calling",
+        "heating or cooling today",
+        "example hvac",
+        "let us get a technician",
+        "lets get that fixed",
+    ]
+    if any(p in lower for p in system_phrases):
+        return updates
+
     # 1. Name extraction
     name_patterns = [
         r"(?:my name is|i am|i'm|this is|call me|name's|name is)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
@@ -76,10 +86,12 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             candidate = match.group(1).strip()
-            if candidate.lower() not in {
+            first_word = candidate.lower().split()[0]
+            if first_word not in {
                 "sarah", "calling", "good", "okay", "yes", "no", "looking",
                 "interested", "repair", "service", "ac", "heating", "cooling",
-            }:
+                "this", "here", "just", "how",
+            } and candidate.lower() not in {"sarah how", "sarah here"}:
                 updates["name"] = candidate
                 break
 
@@ -474,7 +486,6 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     if name == "book_appointment_tool" and ("booked" in tool_result.lower() or "confirmed" in tool_result.lower()):
                         outcome = "booked"
                         update_session_slots(req.session_id, {"confirmed": True})
-                        update_call_outcome(req.session_id, "booked")
                         if args.get("phone_number"):
                             update_call_phone(req.session_id, str(args["phone_number"]))
 
@@ -503,6 +514,38 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta and delta.content:
                         yield f"event: delta\ndata: {json.dumps({'text': delta.content})}\n\n"
+
+            else:
+                # Deterministic Safety Interceptor:
+                # If the LLM claimed the appointment is booked/confirmed in conversational text
+                # without invoking book_appointment_tool, execute the booking deterministically
+                # so the caller's booking is never a phantom hallucination!
+                is_claiming_booked = any(
+                    phrase in streamed_content.lower()
+                    for phrase in [
+                        "is confirmed", "has been confirmed", "have confirmed",
+                        "is scheduled", "has been scheduled", "have scheduled",
+                        "is all set", "all set for", "we look forward to helping you tomorrow",
+                    ]
+                )
+                if is_claiming_booked and not slots.get("confirmed") and has_booking_prereqs:
+                    logger.warning("anti_hallucination_auto_booking", session_id=req.session_id, slots=slots)
+                    cust_name = slots.get("name") or "Caller"
+                    cust_phone = slots.get("phone") or ""
+                    cust_service = slots.get("service") or "AC repair"
+                    cust_time = slots.get("time") or slots.get("date") or "tomorrow 9:00 AM"
+                    booking_result = _execute_tool(settings, "book_appointment_tool", {
+                        "customer_name": cust_name,
+                        "phone_number": cust_phone,
+                        "service": cust_service,
+                        "preferred_datetime": cust_time,
+                    })
+                    if "booked" in booking_result.lower() or "confirmed" in booking_result.lower():
+                        outcome = "booked"
+                        update_session_slots(req.session_id, {"confirmed": True})
+                        update_call_outcome(req.session_id, "booked")
+                        if cust_phone:
+                            update_call_phone(req.session_id, cust_phone)
 
             yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
 
