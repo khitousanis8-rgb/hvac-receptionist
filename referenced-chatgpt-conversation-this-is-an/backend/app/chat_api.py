@@ -184,6 +184,21 @@ def _is_closing_or_polite_remark(text: str) -> bool:
     return False
 
 
+async def _create_stream_completion(
+    client: AsyncOpenAI,
+    **kwargs: Any,
+) -> Any:
+    """Create streaming completion with reasoning_effort='none' for fast voice latency, falling back if unsupported."""
+    try:
+        return await client.chat.completions.create(
+            **kwargs,
+            extra_body={"reasoning_effort": "none"},
+        )
+    except Exception as e:
+        logger.warning("completion_fallback_without_reasoning_effort", error=str(e))
+        return await client.chat.completions.create(**kwargs)
+
+
 @router.post("/chat")
 async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     """Stream assistant response tokens via Server-Sent Events (SSE) with tool execution."""
@@ -232,13 +247,14 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         outcome = "info_only"
         try:
             # First pass: request streaming chat completion with tools
-            response = await client.chat.completions.create(
+            response = await _create_stream_completion(
+                client=client,
                 model=settings.llm_model,
                 messages=messages,
                 tools=tools_to_use,
                 tool_choice="auto" if tools_to_use else None,
                 temperature=0.3,
-                max_tokens=100,
+                max_tokens=200,
                 stop=["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                 stream=True,
             )
@@ -315,11 +331,12 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     )
 
                 # Second stream: generate voice reply based on tool execution result
-                second_response = await client.chat.completions.create(
+                second_response = await _create_stream_completion(
+                    client=client,
                     model=settings.llm_model,
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=100,
+                    max_tokens=200,
                     stop=["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                     stream=True,
                 )
