@@ -14,7 +14,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { speechTTS } from "@/lib/speech-synthesis";
+import { neuralVoice } from "@/lib/neural-audio-player";
 import { BrowserSpeechRecognition } from "@/lib/speech-recognition";
 import { apiUrl, apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -105,15 +105,16 @@ export function KokoroCallSession({
 
   // 2. Turn-level playback state listener
   useEffect(() => {
-    speechTTS.setPlaybackStateCallback((playing) => {
+    neuralVoice.setPlaybackStateCallback((playing) => {
       setIsAgentSpeaking(playing);
     });
-    speechTTS.setTurnStateCallback((turnActive) => {
+    neuralVoice.setTurnStateCallback((turnActive) => {
       speechRecRef.current?.pauseForAgentPlayback(turnActive);
     });
     return () => {
-      speechTTS.setPlaybackStateCallback(null);
-      speechTTS.setTurnStateCallback(null);
+      neuralVoice.setPlaybackStateCallback(null);
+      neuralVoice.setTurnStateCallback(null);
+      neuralVoice.stop();
     };
   }, []);
 
@@ -127,7 +128,7 @@ export function KokoroCallSession({
       setCurrentAssistantText("");
 
       // Interrupt any current speech and cancel any in-flight request
-      speechTTS.stop();
+      neuralVoice.stop();
 
       abortControllerRef.current?.abort();
       const controller = new AbortController();
@@ -161,7 +162,7 @@ export function KokoroCallSession({
         const reader = response.body?.getReader();
         if (!reader) throw new Error("No readable stream in response");
 
-        speechTTS.startTurn();
+        neuralVoice.startTurn();
 
         const decoder = new TextDecoder();
         let buffer = "";
@@ -205,7 +206,7 @@ export function KokoroCallSession({
                     sentenceBuffer = match[2];
                     if (completeSentence) {
                       speechRecRef.current?.registerAssistantSpeech(completeSentence);
-                      speechTTS.speakSentence(completeSentence);
+                      neuralVoice.speakSentence(completeSentence);
                     }
                   }
                 } else if (currentEvent === "done") {
@@ -228,9 +229,9 @@ export function KokoroCallSession({
         // Speak remaining sentence buffer if any
         if (sentenceBuffer.trim()) {
           speechRecRef.current?.registerAssistantSpeech(sentenceBuffer.trim());
-          speechTTS.speakSentence(sentenceBuffer.trim());
+          neuralVoice.speakSentence(sentenceBuffer.trim());
         }
-        speechTTS.endTurnQueue();
+        neuralVoice.endTurnQueue();
 
         setIsAgentThinking(false);
         if (accumulatedAssistantReply.trim()) {
@@ -270,8 +271,8 @@ export function KokoroCallSession({
 
     async function initCall() {
       try {
-        setInitProgress({ pct: 50, msg: "Connecting to voice assistant…" });
-        await speechTTS.init((pct, msg) => {
+        setInitProgress({ pct: 50, msg: "Connecting to Jenny Neural Voice…" });
+        await neuralVoice.init((pct, msg) => {
           if (!isCancelled) {
             setInitProgress({ pct, msg });
           }
@@ -323,7 +324,7 @@ export function KokoroCallSession({
 
     return () => {
       isCancelled = true;
-      speechTTS.stop();
+      neuralVoice.stop();
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -341,13 +342,13 @@ export function KokoroCallSession({
   };
 
   const handleInterrupt = () => {
-    speechTTS.stop();
+    neuralVoice.stop();
     setIsAgentSpeaking(false);
     speechRecRef.current?.pauseForAgentPlayback(false);
   };
 
   const handleEndCall = async () => {
-    speechTTS.stop();
+    neuralVoice.stop();
     if (speechRecRef.current) {
       speechRecRef.current.stop();
     }
@@ -401,7 +402,7 @@ export function KokoroCallSession({
         </div>
         <div className="space-y-2 max-w-md mx-auto">
           <h3 className="text-[16px] font-semibold text-[#0a0a0a]">
-            Loading In-Browser Voice Engine
+            Connecting to Jenny Neural Voice
           </h3>
           <p className="text-[12px] text-[#71717a]">
             {initProgress.msg}
@@ -415,11 +416,11 @@ export function KokoroCallSession({
             />
           </div>
           <div className="flex justify-between text-[11px] font-mono text-[#71717a] pt-1">
-            <span>Native Voice Engine</span>
+            <span>Jenny Neural Voice</span>
             <span>{initProgress.pct}%</span>
           </div>
           <p className="text-[11px] text-[#059669] pt-2">
-            Cached in your browser for instant future load. Zero server audio streaming fees.
+            Studio-quality neural streaming synthesis with zero latency.
           </p>
         </div>
       </div>
@@ -439,13 +440,13 @@ export function KokoroCallSession({
         <div className="space-y-1">
           <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#ecfdf5] border border-[#a7f3d0] text-[#059669] text-[10px] font-mono uppercase tracking-wider font-semibold">
             <span className="w-1.5 h-1.5 rounded-full bg-[#059669] animate-pulse" aria-hidden="true" />
-            <span>Local Voice Engine Active</span>
+            <span>Jenny Neural Voice Active</span>
           </div>
           <div className="text-[34px] font-mono font-semibold tracking-wider text-[#0a0a0a] leading-none pt-1 tabular-nums">
             {formatDuration(duration)}
           </div>
           <div className="text-[11px] font-mono text-[#71717a]">
-            100% Free · Zero Audio Clicks
+            Jenny Neural Voice · Studio Quality · $0 Cost
           </div>
         </div>
 
@@ -574,7 +575,7 @@ export function KokoroCallSession({
               Live In-Browser Receptionist
             </span>
             <span className="text-[10px] font-mono text-[#0b5ed7] bg-[#eff6ff] border border-[#bfdbfe] px-2 py-0.5 rounded">
-              Native Voice · Instant Start · $0 Cost
+              Jenny Neural Voice · Studio Quality · $0 Cost
             </span>
           </div>
 
@@ -615,7 +616,7 @@ export function KokoroCallSession({
                 {companyName ? `${companyName} Assistant` : "HVAC Voice Assistant"}
               </div>
               <div className="text-[11px] text-[#71717a]">
-                Local Synthesis · Direct Calendar Booking
+                Jenny Neural Voice · Direct Calendar Booking
               </div>
             </div>
 
@@ -784,7 +785,7 @@ function KokoroAudioBars({ isSpeaking, compact = false }: { isSpeaking: boolean;
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-[10px] font-mono text-[#71717a]">
         <span className="flex items-center gap-1">
-          <Volume2 className="w-3 h-3" aria-hidden="true" /> Voice Energy (Neural Assistant)
+          <Volume2 className="w-3 h-3" aria-hidden="true" /> Voice Energy (Jenny Neural Assistant)
         </span>
         <span className="tabular-nums">{Math.round((activeBars / 8) * 100)}%</span>
       </div>

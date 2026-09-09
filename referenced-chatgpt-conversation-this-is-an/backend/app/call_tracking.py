@@ -8,12 +8,17 @@ from typing import Any
 from app.db import CallRecord, new_session
 
 
+_MAX_SESSION_SLOTS = 500
 _session_slots: dict[str, dict[str, Any]] = {}
 
 
 def get_or_create_session_slots(session_id: str) -> dict[str, Any]:
     """Return active session slots, initializing if needed."""
     if session_id not in _session_slots:
+        if len(_session_slots) >= _MAX_SESSION_SLOTS:
+            # Evict oldest entry to bound memory growth on Render 512MB RAM
+            oldest_key = next(iter(_session_slots))
+            del _session_slots[oldest_key]
         _session_slots[session_id] = {
             "name": None,
             "phone": None,

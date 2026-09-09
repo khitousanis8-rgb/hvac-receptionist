@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { speechTTS } from "@/lib/speech-synthesis";
+import { neuralVoice } from "@/lib/neural-audio-player";
 import { KokoroCallSession } from "./kokoro-call-session";
 
 type CallPhase = "idle" | "in-call" | "ended" | "error";
@@ -79,7 +79,7 @@ export function LiveCallPage({
 
   const startCall = () => {
     // This must happen synchronously in the click handler to unlock audio autoplay
-    speechTTS.unlockAudio();
+    neuralVoice.unlockAudio();
     setErrorMessage(null);
     setLastRoom("Voice Assistant Demo");
     setPhase("in-call");

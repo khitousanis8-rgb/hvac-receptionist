@@ -7,8 +7,8 @@
  *   the dashboard is hosted separately from the API (Vercel + Fly.io demo).
  */
 export const API_BASE: string = (
-  import.meta.env.VITE_API_BASE ??
-  (import.meta.env.DEV ? "" : "https://hvac-receptionist.onrender.com")
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE) ??
+  (typeof import.meta !== "undefined" && import.meta.env?.DEV ? "" : "https://hvac-receptionist.onrender.com")
 ).replace(
   /\/$/,
   ""

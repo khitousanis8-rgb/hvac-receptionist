@@ -225,5 +225,6 @@ class BrowserSpeechSynthesisService {
   }
 }
 
-export const speechTTS = new BrowserSpeechSynthesisService();
+export { BrowserSpeechSynthesisService };
+export { neuralVoice, speechTTS } from "./neural-audio-player";
 

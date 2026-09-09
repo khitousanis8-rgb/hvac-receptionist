@@ -586,9 +586,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
 
 class TranscribeRequest(BaseModel):
-    audio_base64: str = Field(description="Base64-encoded audio bytes")
-    content_type: str = Field(default="audio/webm")
-    filename: str = Field(default="audio.webm")
+    audio_base64: str = Field(max_length=5_000_000, description="Base64-encoded audio bytes")
+    content_type: str = Field(default="audio/webm", max_length=64)
+    filename: str = Field(default="audio.webm", max_length=64)
 
 
 @router.post("/transcribe")

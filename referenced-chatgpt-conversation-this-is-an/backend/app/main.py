@@ -20,11 +20,22 @@ from app.config import Settings, get_settings
 from app.dashboard import router as dashboard_router
 from app.db import Appointment, CallRecord, Customer, init_db, new_session
 from app.logging import configure_logging
+from app.tts_stream import router as tts_router
 
 _RATE_LIMIT_LOCK = threading.Lock()
 _IP_REQUEST_TIMESTAMPS: dict[str, list[float]] = {}
 _RATE_LIMIT_WINDOW_SECONDS = 60.0
 _MAX_CALL_TOKENS_PER_WINDOW = 15
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP safely from request headers or socket address."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "127.0.0.1"
 
 
 def check_token_rate_limit(client_ip: str) -> None:
@@ -46,6 +57,10 @@ def check_token_rate_limit(client_ip: str) -> None:
                 _IP_REQUEST_TIMESTAMPS[ip] = [t for t in _IP_REQUEST_TIMESTAMPS[ip] if t > cutoff]
                 if not _IP_REQUEST_TIMESTAMPS[ip]:
                     del _IP_REQUEST_TIMESTAMPS[ip]
+            if len(_IP_REQUEST_TIMESTAMPS) > 1000:
+                excess = len(_IP_REQUEST_TIMESTAMPS) - 1000
+                for old_ip in list(_IP_REQUEST_TIMESTAMPS.keys())[:excess]:
+                    del _IP_REQUEST_TIMESTAMPS[old_ip]
 
 
 class CallTokenRequest(BaseModel):
@@ -96,9 +111,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
+        expose_headers=["X-Request-ID", "X-Audio-Source", "X-Voice-Persona"],
     )
     app.include_router(dashboard_router)
     app.include_router(chat_router)
+    app.include_router(tts_router)
 
     @app.middleware("http")
     async def log_request(
@@ -195,14 +212,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: CallTokenRequest | None = None,
     ) -> CallTokenResponse:
         """Create a LiveKit room token and dispatch the voice receptionist agent."""
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            client_ip = forwarded.split(",")[0].strip()
-        elif request.client:
-            client_ip = request.client.host
-        else:
-            client_ip = "127.0.0.1"
-
+        client_ip = get_client_ip(request)
         check_token_rate_limit(client_ip)
 
         room_name = payload.room_name if payload else None
