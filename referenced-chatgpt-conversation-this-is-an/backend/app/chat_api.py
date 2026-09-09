@@ -254,6 +254,8 @@ def _is_closing_or_polite_remark(text: str) -> bool:
     """Check if caller is merely expressing gratitude, acknowledging, or saying goodbye."""
     cleaned = "".join(c for c in text.lower() if c.isalnum() or c.isspace()).strip()
     polite_exact = {
+        "ok", "okay", "alright", "all right", "got it", "perfect", "great",
+        "cool", "understood", "sounds good", "sounds great",
         "thank you", "thanks", "thank you so much", "thanks so much",
         "thank you very much", "thanks a lot", "many thanks",
         "bye", "goodbye", "bye bye", "have a good day", "have a great day",
@@ -272,6 +274,7 @@ def _is_closing_or_polite_remark(text: str) -> bool:
         or cleaned.startswith("no thank")
         or cleaned.startswith("thats all")
         or cleaned.startswith("that is all")
+        or cleaned in {"ok", "okay", "alright", "all right"}
     ):
         return True
     return False
@@ -342,7 +345,14 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
     # 3. Tool Choice & Gating
     is_polite_closing = _is_closing_or_polite_remark(req.message)
-    tools_to_use = None if is_polite_closing else TOOLS
+    is_reschedule_or_check = any(
+        kw in req.message.lower()
+        for kw in ["change", "reschedule", "cancel", "check", "different time", "another time", "update"]
+    )
+    if is_polite_closing or (slots.get("confirmed") and not is_reschedule_or_check):
+        tools_to_use = None
+    else:
+        tools_to_use = TOOLS
 
     # Check if caller is confirming booking details and all prerequisites are known
     cleaned_msg = "".join(c for c in req.message.lower() if c.isalnum() or c.isspace()).strip()
@@ -412,30 +422,37 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
             # If the model requested tools: execute them and stream the final answer
             if tool_calls_accumulator:
+                parsed_args: dict[int, dict[str, Any]] = {}
+                sanitized_tool_calls: list[dict[str, Any]] = []
+                for i, tc in tool_calls_accumulator.items():
+                    raw_args = tc.get("arguments", "")
+                    try:
+                        args = json.loads(raw_args) if raw_args.strip() else {}
+                    except Exception:
+                        args = {}
+                    parsed_args[i] = args
+                    sanitized_tool_calls.append(
+                        {
+                            "id": tc["id"] or f"call_{i}",
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(args),
+                            },
+                        }
+                    )
+
                 messages.append(
                     {
                         "role": "assistant",
                         "content": streamed_content or None,
-                        "tool_calls": [
-                            {
-                                "id": tc["id"] or f"call_{i}",
-                                "type": "function",
-                                "function": {
-                                    "name": tc["name"],
-                                    "arguments": tc["arguments"],
-                                },
-                            }
-                            for i, tc in tool_calls_accumulator.items()
-                        ],
+                        "tool_calls": sanitized_tool_calls,
                     }
                 )
 
                 for i, tc in tool_calls_accumulator.items():
                     name = tc["name"]
-                    try:
-                        args = json.loads(tc["arguments"])
-                    except Exception:
-                        args = {}
+                    args = parsed_args[i]
 
                     logger.info("executing_chat_tool", tool=name, args=args)
                     tool_result = _execute_tool(settings, name, args)
