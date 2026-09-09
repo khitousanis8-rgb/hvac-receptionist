@@ -158,14 +158,20 @@ def test_stream_voice_success_and_cache() -> None:
     app = create_app(settings)
     client = TestClient(app)
 
-    phrase = "Hello from Example HVAC receptionist."
-    res1 = client.get(f"/v1/voice/stream?text={phrase}")
-    assert res1.status_code == 200
-    assert "audio/mpeg" in res1.headers["content-type"]
-    assert len(res1.content) > 1000
+    fake_mp3 = b"ID3" + b"\xff\xfb\x90\x00" * 400
 
-    # Test cache on identical request
-    res2 = client.get(f"/v1/voice/stream?text={phrase}")
-    assert res2.status_code == 200
-    assert res2.headers.get("X-Audio-Source") == "cache"
-    assert res2.content == res1.content
+    async def mock_stream(self):
+        yield {"type": "audio", "data": fake_mp3}
+
+    with patch("edge_tts.Communicate.stream", side_effect=mock_stream, autospec=True):
+        phrase = "Hello from Example HVAC receptionist unique test."
+        res1 = client.get(f"/v1/voice/stream?text={phrase}")
+        assert res1.status_code == 200
+        assert "audio/mpeg" in res1.headers["content-type"]
+        assert len(res1.content) > 1000
+
+        # Test cache on identical request (served without calling stream again)
+        res2 = client.get(f"/v1/voice/stream?text={phrase}")
+        assert res2.status_code == 200
+        assert res2.headers.get("X-Audio-Source") == "cache"
+        assert res2.content == res1.content

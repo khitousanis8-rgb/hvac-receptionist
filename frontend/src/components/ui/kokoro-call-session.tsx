@@ -511,8 +511,16 @@ export function KokoroCallSession({
             <KokoroAudioBars isSpeaking={isAgentSpeaking} compact />
           </div>
 
+          {currentAssistantText && (
+            <div className="text-[12px] text-[#4e505b] bg-[#fafafa] p-2.5 rounded-xl border border-[#e7e7e7] text-left leading-relaxed">
+              <span className="text-[10px] font-mono text-[#0b5ed7] font-semibold uppercase block mb-0.5">Sarah (Receptionist)</span>
+              &ldquo;{currentAssistantText}&rdquo;
+            </div>
+          )}
+
           {currentCallerText && (
-            <div className="text-[11px] font-mono text-[#0b5ed7] bg-[#eff6ff] p-2 rounded-lg border border-[#bfdbfe] truncate">
+            <div className="text-[11px] font-mono text-[#059669] bg-[#ecfdf5] p-2 rounded-lg border border-[#a7f3d0] truncate text-left">
+              <span className="text-[9px] font-mono text-[#059669] font-semibold uppercase block mb-0.5">You</span>
               &ldquo;{currentCallerText}&rdquo;
             </div>
           )}

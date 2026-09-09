@@ -121,8 +121,19 @@ export class BrowserSpeechRecognition {
         if (event.error === "aborted") return;
 
         console.warn("[SpeechRecognition] Error:", event.error);
-        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-          this.onError?.("Microphone permission denied or speech service not allowed.");
+        if (event.error === "not-allowed" || event.error === "service-not-allowed" || event.error === "network") {
+          console.warn("[SpeechRecognition] Falling back to MediaRecorder + Whisper for mobile phone reliability");
+          this.isSupported = false;
+          try {
+            this.recognition?.abort();
+          } catch {
+            // ignore
+          }
+          this.recognition = null;
+          this.startMediaRecorderFallback().catch((fallbackErr) => {
+            console.error("[SpeechRecognition] Fallback failed:", fallbackErr);
+            this.onError?.("Microphone permission denied or speech service not allowed.");
+          });
         }
       };
 
@@ -335,9 +346,12 @@ export class BrowserSpeechRecognition {
 
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
-        : "audio/mp4";
+        : MediaRecorder.isTypeSupported("audio/mp4")
+        ? "audio/mp4"
+        : "";
 
-      this.mediaRecorder = new MediaRecorder(this.mediaStream, { mimeType });
+      const options = mimeType ? { mimeType } : undefined;
+      this.mediaRecorder = new MediaRecorder(this.mediaStream, options);
       this.audioChunks = [];
 
       this.mediaRecorder.ondataavailable = (event) => {
@@ -348,7 +362,8 @@ export class BrowserSpeechRecognition {
 
       this.mediaRecorder.onstop = async () => {
         if (this.audioChunks.length === 0) return;
-        const blob = new Blob(this.audioChunks, { type: mimeType });
+        const actualType = mimeType || "audio/webm";
+        const blob = new Blob(this.audioChunks, { type: actualType });
         this.audioChunks = [];
 
         if (blob.size < 1000) return; // Skip tiny clicks
@@ -360,9 +375,11 @@ export class BrowserSpeechRecognition {
             const result = reader.result as string;
             const base64 = result.split(",")[1];
             if (base64) {
+              const ext = actualType.includes("mp4") ? "mp4" : "webm";
               const res = await apiPost<{ text?: string; transcript?: string }>("/v1/calls/transcribe", {
                 audio_base64: base64,
-                content_type: mimeType,
+                content_type: actualType,
+                filename: `audio.${ext}`,
               });
               const text = res.text || res.transcript;
               if (text && text.trim()) {

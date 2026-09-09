@@ -1189,14 +1189,16 @@ export default function App() {
         </div>
       </main>
 
-      {/* Dedicated Mobile Bottom Navigation Bar (Screens < md) */}
-      <MobileBottomNav
-        currentPage={page}
-        onNavigate={(newPage) => setPage(newPage)}
-        callCount={calls.data.length}
-        appointmentCount={appointments.data.length}
-        isInCall={isInCall}
-      />
+      {/* Dedicated Mobile Bottom Navigation Bar (Screens < md) - Hidden during active call for full screen immersion */}
+      {!isInCall && (
+        <MobileBottomNav
+          currentPage={page}
+          onNavigate={(newPage) => setPage(newPage)}
+          callCount={calls.data.length}
+          appointmentCount={appointments.data.length}
+          isInCall={isInCall}
+        />
+      )}
     </div>
   );
 }

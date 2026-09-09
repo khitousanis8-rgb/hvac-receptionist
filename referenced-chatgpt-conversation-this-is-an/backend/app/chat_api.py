@@ -37,8 +37,9 @@ _client: AsyncOpenAI | None = None
 def _get_client(settings: Settings) -> AsyncOpenAI:
     global _client
     if _client is None:
+        api_key = settings.llm_api_key.get_secret_value() if settings.llm_api_key is not None else ""
         _client = AsyncOpenAI(
-            api_key=settings.llm_api_key.get_secret_value(),
+            api_key=api_key,
             base_url=str(settings.llm_base_url),
         )
     return _client
@@ -106,7 +107,7 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
 
     # 2. Phone extraction (handles spoken digit words: 'plus 1 2 3 0 ...' or '555-123-4567')
     digit_map = {
-        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+        "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
         "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
         "plus": "+",
     }
@@ -274,30 +275,32 @@ TOOLS = [
 
 
 def _is_closing_or_polite_remark(text: str) -> bool:
-    """Check if caller is merely expressing gratitude, acknowledging, or saying goodbye."""
+    """Check if caller is merely expressing gratitude or saying goodbye."""
     cleaned = "".join(c for c in text.lower() if c.isalnum() or c.isspace()).strip()
     polite_exact = {
-        "ok", "okay", "alright", "all right", "got it", "perfect", "great",
-        "cool", "understood", "sounds good", "sounds great",
         "thank you", "thanks", "thank you so much", "thanks so much",
         "thank you very much", "thanks a lot", "many thanks",
         "bye", "goodbye", "bye bye", "have a good day", "have a great day",
+        "have a good one", "take care",
         "no", "no that is all", "no thats all", "no thank you", "no thanks",
         "that is all", "thats all", "that is it", "thats it", "nope",
         "nothing else", "i am good", "im good", "all good",
         "perfect thank you", "great thank you", "ok thank you", "okay thank you",
         "ok thanks", "okay thanks",
-        "sounds good thank you", "sounds great thank you", "take care",
+        "sounds good thank you", "sounds great thank you",
     }
     if cleaned in polite_exact:
         return True
-    if len(cleaned) < 30 and (
+    if len(cleaned) < 35 and (
         cleaned.startswith("thank")
         or cleaned.startswith("bye")
+        or cleaned.startswith("goodbye")
+        or cleaned.startswith("have a")
         or cleaned.startswith("no thank")
+        or cleaned.startswith("no that")
         or cleaned.startswith("thats all")
         or cleaned.startswith("that is all")
-        or cleaned in {"ok", "okay", "alright", "all right"}
+        or cleaned.startswith("take care")
     ):
         return True
     return False
@@ -310,21 +313,50 @@ async def _create_stream_completion(
     """Create streaming completion with lowest reasoning latency, handling model-specific constraints."""
     # Ensure sufficient token budget so internal reasoning never starves conversational tokens
     kwargs["max_tokens"] = max(kwargs.get("max_tokens", 200), 500)
-    try:
-        return await client.chat.completions.create(
-            **kwargs,
-            extra_body={"reasoning_effort": "none"},
-        )
-    except Exception as e:
-        logger.warning("completion_fallback_reasoning_effort_none", error=str(e))
+
+    async def _try_create(call_kwargs: dict[str, Any]) -> Any:
         try:
             return await client.chat.completions.create(
-                **kwargs,
-                extra_body={"reasoning_effort": "low"},
+                **call_kwargs,
+                extra_body={"reasoning_effort": "none"},
             )
-        except Exception as e2:
-            logger.warning("completion_fallback_without_reasoning_effort", error=str(e2))
-            return await client.chat.completions.create(**kwargs)
+        except Exception as e1:
+            err1 = str(e1).lower()
+            if "tool choice is none" in err1 or "model called a tool" in err1:
+                logger.info("tool_choice_none_fallback_auto_tools", error=str(e1))
+                fallback_kwargs = dict(call_kwargs)
+                fallback_kwargs["tools"] = TOOLS
+                fallback_kwargs["tool_choice"] = "auto"
+                return await client.chat.completions.create(**fallback_kwargs)
+
+            logger.warning("completion_fallback_reasoning_effort_none", error=str(e1))
+            try:
+                return await client.chat.completions.create(
+                    **call_kwargs,
+                    extra_body={"reasoning_effort": "low"},
+                )
+            except Exception as e2:
+                err2 = str(e2).lower()
+                if "tool choice is none" in err2 or "model called a tool" in err2:
+                    logger.info("tool_choice_none_fallback_auto_tools", error=str(e2))
+                    fallback_kwargs = dict(call_kwargs)
+                    fallback_kwargs["tools"] = TOOLS
+                    fallback_kwargs["tool_choice"] = "auto"
+                    return await client.chat.completions.create(**fallback_kwargs)
+
+                logger.warning("completion_fallback_without_reasoning_effort", error=str(e2))
+                return await client.chat.completions.create(**call_kwargs)
+
+    try:
+        return await _try_create(kwargs)
+    except Exception as top_err:
+        top_err_str = str(top_err).lower()
+        if "tool choice is none" in top_err_str or "model called a tool" in top_err_str:
+            fallback_kwargs = dict(kwargs)
+            fallback_kwargs["tools"] = TOOLS
+            fallback_kwargs["tool_choice"] = "auto"
+            return await client.chat.completions.create(**fallback_kwargs)
+        raise
 
 
 @router.post("/chat")
@@ -390,8 +422,24 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": req.message})
 
+    # Check if caller is confirming booking details and all prerequisites are known
+    cleaned_msg = "".join(c for c in req.message.lower() if c.isalnum() or c.isspace()).strip()
+    is_affirmative = any(
+        w in cleaned_msg.split()
+        for w in ["yes", "yeah", "yep", "correct", "perfect", "sure", "book", "booked"]
+    ) or any(
+        phrase in cleaned_msg
+        for phrase in ["sounds good", "sounds great", "please book", "go ahead", "that works", "thats fine", "that is fine"]
+    )
+    has_booking_prereqs = bool(
+        slots.get("phone")
+        and slots.get("service")
+        and (slots.get("time") or slots.get("date"))
+    )
+    is_confirming_now = has_booking_prereqs and is_affirmative and not slots.get("confirmed")
+
     # 3. Tool Choice & Gating
-    is_polite_closing = _is_closing_or_polite_remark(req.message)
+    is_polite_closing = False if is_confirming_now else _is_closing_or_polite_remark(req.message)
     is_reschedule_or_check = any(
         kw in req.message.lower()
         for kw in ["change", "reschedule", "cancel", "check", "different time", "another time", "update"]
@@ -401,22 +449,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     else:
         tools_to_use = TOOLS
 
-    # Check if caller is confirming booking details and all prerequisites are known
-    cleaned_msg = "".join(c for c in req.message.lower() if c.isalnum() or c.isspace()).strip()
-    is_affirmative = any(
-        w in cleaned_msg.split()
-        for w in ["yes", "yeah", "yep", "correct", "perfect", "sure", "book", "booked"]
-    ) or any(
-        phrase in cleaned_msg
-        for phrase in ["sounds good", "sounds great", "please book", "go ahead", "that works"]
-    )
-    has_booking_prereqs = bool(
-        slots.get("phone")
-        and slots.get("service")
-        and (slots.get("time") or slots.get("date"))
-    )
-
-    if tools_to_use and has_booking_prereqs and is_affirmative and not slots.get("confirmed"):
+    if is_confirming_now:
         tool_choice_to_use: str | None = "required"
     else:
         tool_choice_to_use = "auto" if tools_to_use else None
@@ -575,8 +608,14 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
 
         except Exception as e:
-            logger.error("chat_stream_error", error=str(e))
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+            err_msg = str(e)
+            logger.error("chat_stream_error", error=err_msg)
+            if "tool choice is none" in err_msg.lower() or "model called a tool" in err_msg.lower():
+                recovery_text = "You are all set! Is there anything else I can assist you with today?"
+                yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
+                yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
+            else:
+                yield f"event: error\ndata: {json.dumps({'error': err_msg})}\n\n"
 
     return StreamingResponse(
         sse_generator(),

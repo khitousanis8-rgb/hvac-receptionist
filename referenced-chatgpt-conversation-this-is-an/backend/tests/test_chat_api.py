@@ -421,5 +421,26 @@ def test_assistant_echo_detection_and_recovery_stream() -> None:
     assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
 
 
+def test_closing_remark_vs_confirmation_delineation() -> None:
+    from app.chat_api import _is_closing_or_polite_remark
+
+    # True closing remarks
+    assert _is_closing_or_polite_remark("thank you so much") is True
+    assert _is_closing_or_polite_remark("thanks bye") is True
+    assert _is_closing_or_polite_remark("goodbye have a great day") is True
+    assert _is_closing_or_polite_remark("no that is all thank you") is True
+
+    # Booking affirmations must NOT be treated as closing remarks
+    assert _is_closing_or_polite_remark("sounds good") is False
+    assert _is_closing_or_polite_remark("sounds great") is False
+    assert _is_closing_or_polite_remark("perfect") is False
+    assert _is_closing_or_polite_remark("okay") is False
+    assert _is_closing_or_polite_remark("alright") is False
+    assert _is_closing_or_polite_remark("yes") is False
 
 
+def test_phone_extraction_spoken_oh() -> None:
+    from app.chat_api import _extract_slots_from_text
+
+    slots = _extract_slots_from_text("My phone is five one two eight oh oh zero zero one one", {})
+    assert slots.get("phone") == "5128000011"
