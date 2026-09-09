@@ -19,6 +19,7 @@ from app.call_tracking import (
     end_call,
     get_or_create_session_slots,
     start_call,
+    update_call_outcome,
     update_call_phone,
     update_session_slots,
 )
@@ -284,15 +285,24 @@ async def _create_stream_completion(
     client: AsyncOpenAI,
     **kwargs: Any,
 ) -> Any:
-    """Create streaming completion with reasoning_effort='none' for fast voice latency, falling back if unsupported."""
+    """Create streaming completion with lowest reasoning latency, handling model-specific constraints."""
+    # Ensure sufficient token budget so internal reasoning never starves conversational tokens
+    kwargs["max_tokens"] = max(kwargs.get("max_tokens", 200), 500)
     try:
         return await client.chat.completions.create(
             **kwargs,
             extra_body={"reasoning_effort": "none"},
         )
     except Exception as e:
-        logger.warning("completion_fallback_without_reasoning_effort", error=str(e))
-        return await client.chat.completions.create(**kwargs)
+        logger.warning("completion_fallback_reasoning_effort_none", error=str(e))
+        try:
+            return await client.chat.completions.create(
+                **kwargs,
+                extra_body={"reasoning_effort": "low"},
+            )
+        except Exception as e2:
+            logger.warning("completion_fallback_without_reasoning_effort", error=str(e2))
+            return await client.chat.completions.create(**kwargs)
 
 
 @router.post("/chat")
@@ -463,6 +473,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     if name == "book_appointment_tool" and ("booked" in tool_result.lower() or "confirmed" in tool_result.lower()):
                         outcome = "booked"
                         update_session_slots(req.session_id, {"confirmed": True})
+                        update_call_outcome(req.session_id, "booked")
                         if args.get("phone_number"):
                             update_call_phone(req.session_id, str(args["phone_number"]))
 

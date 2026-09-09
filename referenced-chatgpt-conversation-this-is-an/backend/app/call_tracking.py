@@ -41,7 +41,7 @@ def update_session_slots(session_id: str, updates: dict[str, Any]) -> dict[str, 
 
 
 def update_call_phone(room_name: str, phone: str) -> None:
-    """Update caller_phone on the active CallRecord for this session."""
+    """Update caller_phone on the active CallRecord for this session, creating one if not present."""
     with new_session() as session:
         record = (
             session.query(CallRecord)
@@ -49,8 +49,25 @@ def update_call_phone(room_name: str, phone: str) -> None:
             .order_by(CallRecord.id.desc())
             .first()
         )
-        if record and not record.caller_phone:
+        if not record:
+            record = CallRecord(room_name=room_name, caller_phone=str(phone).strip()[:32])
+            session.add(record)
+            session.flush()
+        elif not record.caller_phone:
             record.caller_phone = str(phone).strip()[:32]
+
+
+def update_call_outcome(room_name: str, outcome: str) -> None:
+    """Update outcome on the active CallRecord for this session."""
+    with new_session() as session:
+        record = (
+            session.query(CallRecord)
+            .filter(CallRecord.room_name == room_name)
+            .order_by(CallRecord.id.desc())
+            .first()
+        )
+        if record:
+            record.outcome = outcome
 
 
 def start_call(room_name: str) -> int:
