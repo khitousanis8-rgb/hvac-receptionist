@@ -370,25 +370,29 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     )
 
     if tools_to_use and has_booking_prereqs and is_affirmative and not slots.get("confirmed"):
-        tool_choice_to_use: Any = {"type": "function", "function": {"name": "book_appointment_tool"}}
+        tool_choice_to_use: str | None = "required"
     else:
         tool_choice_to_use = "auto" if tools_to_use else None
 
     async def sse_generator():
         outcome = "info_only"
         try:
-            # First pass: request streaming chat completion with tools
-            response = await _create_stream_completion(
-                client=client,
-                model=settings.llm_model,
-                messages=messages,
-                tools=tools_to_use,
-                tool_choice=tool_choice_to_use,
-                temperature=0.1,
-                max_tokens=200,
-                stop=["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
-                stream=True,
-            )
+            # First pass: request streaming chat completion with tools if applicable
+            comp_kwargs: dict[str, Any] = {
+                "client": client,
+                "model": settings.llm_model,
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": 200,
+                "stop": ["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
+                "stream": True,
+            }
+            if tools_to_use:
+                comp_kwargs["tools"] = tools_to_use
+                if tool_choice_to_use:
+                    comp_kwargs["tool_choice"] = tool_choice_to_use
+
+            response = await _create_stream_completion(**comp_kwargs)
 
             tool_calls_accumulator: dict[int, dict[str, Any]] = {}
             streamed_content = ""
