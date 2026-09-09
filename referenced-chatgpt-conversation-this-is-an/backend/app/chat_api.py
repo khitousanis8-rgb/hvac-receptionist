@@ -306,57 +306,128 @@ def _is_closing_or_polite_remark(text: str) -> bool:
     return False
 
 
+def _is_rate_limit_error(err_text: str) -> bool:
+    """Detect Groq rate limit errors including HTTP 429, tokens per day (TPD), and tokens per minute."""
+    t = err_text.lower()
+    return (
+        "429" in t
+        or "rate limit" in t
+        or "rate_limit_exceeded" in t
+        or "tokens per day" in t
+        or "tokens per minute" in t
+        or "requests per minute" in t
+        or "tpd" in t
+        or "tpm" in t
+    )
+
+
+def _get_candidate_models(primary_model: str) -> list[str]:
+    """Return prioritized candidate models on Groq for transparent failover when quotas are reached."""
+    supported = [
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.6-27b",
+        "openai/gpt-oss-120b",
+    ]
+    candidates = [primary_model] if primary_model else []
+    for m in supported:
+        if m not in candidates:
+            candidates.append(m)
+    return candidates or ["qwen/qwen3.8-27b"]
+
+
 async def _create_stream_completion(
     client: AsyncOpenAI,
     **kwargs: Any,
 ) -> Any:
-    """Create streaming completion with lowest reasoning latency, handling model-specific constraints."""
+    """Create streaming completion with lowest reasoning latency, automatic tool repair, and multi-model rate-limit failover."""
     # Ensure sufficient token budget so internal reasoning never starves conversational tokens
     kwargs["max_tokens"] = max(kwargs.get("max_tokens", 200), 500)
+    primary_model = kwargs.get("model", "qwen/qwen3.8-27b")
+    candidate_models = _get_candidate_models(primary_model)
 
-    async def _try_create(call_kwargs: dict[str, Any]) -> Any:
-        try:
-            return await client.chat.completions.create(
-                **call_kwargs,
-                extra_body={"reasoning_effort": "none"},
-            )
-        except Exception as e1:
-            err1 = str(e1).lower()
-            if "tool choice is none" in err1 or "model called a tool" in err1:
-                logger.info("tool_choice_none_fallback_auto_tools", error=str(e1))
-                fallback_kwargs = dict(call_kwargs)
-                fallback_kwargs["tools"] = TOOLS
-                fallback_kwargs["tool_choice"] = "auto"
-                return await client.chat.completions.create(**fallback_kwargs)
+    last_error: Exception | None = None
 
-            logger.warning("completion_fallback_reasoning_effort_none", error=str(e1))
+    for model_idx, candidate_model in enumerate(candidate_models):
+        current_kwargs = dict(kwargs)
+        current_kwargs["model"] = candidate_model
+
+        async def _try_create(call_kwargs: dict[str, Any]) -> Any:
             try:
                 return await client.chat.completions.create(
                     **call_kwargs,
-                    extra_body={"reasoning_effort": "low"},
+                    extra_body={"reasoning_effort": "none"},
                 )
-            except Exception as e2:
-                err2 = str(e2).lower()
-                if "tool choice is none" in err2 or "model called a tool" in err2:
-                    logger.info("tool_choice_none_fallback_auto_tools", error=str(e2))
+            except Exception as e1:
+                err1 = str(e1).lower()
+                if "tool choice is none" in err1 or "model called a tool" in err1:
+                    logger.info("tool_choice_none_fallback_auto_tools", error=str(e1), model=candidate_model)
                     fallback_kwargs = dict(call_kwargs)
                     fallback_kwargs["tools"] = TOOLS
                     fallback_kwargs["tool_choice"] = "auto"
                     return await client.chat.completions.create(**fallback_kwargs)
 
-                logger.warning("completion_fallback_without_reasoning_effort", error=str(e2))
-                return await client.chat.completions.create(**call_kwargs)
+                if _is_rate_limit_error(err1):
+                    raise
 
-    try:
-        return await _try_create(kwargs)
-    except Exception as top_err:
-        top_err_str = str(top_err).lower()
-        if "tool choice is none" in top_err_str or "model called a tool" in top_err_str:
-            fallback_kwargs = dict(kwargs)
-            fallback_kwargs["tools"] = TOOLS
-            fallback_kwargs["tool_choice"] = "auto"
-            return await client.chat.completions.create(**fallback_kwargs)
-        raise
+                logger.warning("completion_fallback_reasoning_effort_none", error=str(e1), model=candidate_model)
+                try:
+                    return await client.chat.completions.create(
+                        **call_kwargs,
+                        extra_body={"reasoning_effort": "low"},
+                    )
+                except Exception as e2:
+                    err2 = str(e2).lower()
+                    if "tool choice is none" in err2 or "model called a tool" in err2:
+                        logger.info("tool_choice_none_fallback_auto_tools", error=str(e2), model=candidate_model)
+                        fallback_kwargs = dict(call_kwargs)
+                        fallback_kwargs["tools"] = TOOLS
+                        fallback_kwargs["tool_choice"] = "auto"
+                        return await client.chat.completions.create(**fallback_kwargs)
+
+                    if _is_rate_limit_error(err2):
+                        raise
+
+                    logger.warning("completion_fallback_without_reasoning_effort", error=str(e2), model=candidate_model)
+                    return await client.chat.completions.create(**call_kwargs)
+
+        try:
+            return await _try_create(current_kwargs)
+        except Exception as model_err:
+            last_error = model_err
+            err_str = str(model_err).lower()
+            if _is_rate_limit_error(err_str) and model_idx < len(candidate_models) - 1:
+                next_model = candidate_models[model_idx + 1]
+                logger.warning(
+                    "model_rate_limit_failover",
+                    rate_limited_model=candidate_model,
+                    switching_to=next_model,
+                    error=str(model_err),
+                )
+                continue
+
+            if "tool choice is none" in err_str or "model called a tool" in err_str:
+                repair_kwargs = dict(current_kwargs)
+                repair_kwargs["tools"] = TOOLS
+                repair_kwargs["tool_choice"] = "auto"
+                try:
+                    return await client.chat.completions.create(**repair_kwargs)
+                except Exception as repair_err:
+                    if _is_rate_limit_error(str(repair_err).lower()) and model_idx < len(candidate_models) - 1:
+                        next_model = candidate_models[model_idx + 1]
+                        logger.warning(
+                            "model_rate_limit_failover_after_repair",
+                            rate_limited_model=candidate_model,
+                            switching_to=next_model,
+                        )
+                        continue
+                    last_error = repair_err
+
+            if not _is_rate_limit_error(err_str):
+                raise model_err
+
+    if last_error is not None:
+        raise last_error
 
 
 @router.post("/chat")
@@ -612,6 +683,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             logger.error("chat_stream_error", error=err_msg)
             if "tool choice is none" in err_msg.lower() or "model called a tool" in err_msg.lower():
                 recovery_text = "You are all set! Is there anything else I can assist you with today?"
+                yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
+                yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
+            elif _is_rate_limit_error(err_msg):
+                recovery_text = "I apologize for the brief pause, our line had a small hiccup. Could you please repeat that last part?"
                 yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
                 yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
             else:

@@ -444,3 +444,56 @@ def test_phone_extraction_spoken_oh() -> None:
 
     slots = _extract_slots_from_text("My phone is five one two eight oh oh zero zero one one", {})
     assert slots.get("phone") == "5128000011"
+
+
+def test_rate_limit_detection_and_candidate_models() -> None:
+    from app.chat_api import _is_rate_limit_error, _get_candidate_models
+
+    # Should detect 429 and common rate limit patterns
+    assert _is_rate_limit_error("Error code: 429 - Rate limit reached for model openai/gpt-oss-120b") is True
+    assert _is_rate_limit_error("Rate limit reached on tokens per day (TPD)") is True
+    assert _is_rate_limit_error("rate_limit_exceeded") is True
+    assert _is_rate_limit_error("TPM exceeded") is True
+    assert _is_rate_limit_error("Internal server error 500") is False
+
+    # Should provide prioritized failover list with primary model first
+    candidates = _get_candidate_models("openai/gpt-oss-120b")
+    assert candidates[0] == "openai/gpt-oss-120b"
+    assert "qwen/qwen3.8-27b" in candidates
+    assert "openai/gpt-oss-20b" in candidates
+
+
+def test_create_stream_completion_rate_limit_failover() -> None:
+    import pytest
+    from app.chat_api import _create_stream_completion
+
+    attempted_models = []
+
+    async def fake_create(**kwargs):
+        model = kwargs.get("model")
+        attempted_models.append(model)
+        if model == "openai/gpt-oss-120b":
+            raise Exception("Error code: 429 - Rate limit reached on tokens per day (TPD)")
+        class Chunk:
+            choices = [type("Choice", (), {"delta": type("Delta", (), {"content": "Fallback success", "tool_calls": None})()})]
+        async def gen():
+            yield Chunk()
+        return gen()
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(side_effect=fake_create)
+
+    import asyncio
+    stream = asyncio.run(
+        _create_stream_completion(
+            client=mock_client,
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    )
+    assert stream is not None
+    # Verify that it tried the exhausted 120b model first, then failed over to a backup model
+    assert attempted_models[0] == "openai/gpt-oss-120b"
+    assert len(attempted_models) >= 2
+    assert attempted_models[1] in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+

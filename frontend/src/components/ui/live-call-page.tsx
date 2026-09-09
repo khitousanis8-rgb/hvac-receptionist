@@ -433,6 +433,22 @@ function EndedState({
 /**
  * 3. ERROR STATE
  */
+function formatFriendlyErrorMessage(raw: string): string {
+  if (!raw) return "An unexpected connection issue occurred. Please retry.";
+  const lower = raw.toLowerCase();
+  if (raw.includes("429") || lower.includes("rate limit") || lower.includes("tokens per day")) {
+    return "The AI voice provider reached its daily token capacity limit. Please wait a few moments or retry.";
+  }
+  if (lower.includes("fetch") || lower.includes("network") || lower.includes("failed to fetch")) {
+    return "Network connection to the receptionist service was interrupted. Please check your internet connection.";
+  }
+  const match = raw.match(/['"]message['"]:\s*['"]([^'"]+)['"]/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return raw;
+}
+
 function ErrorState({
   message,
   onRetry,
@@ -454,7 +470,7 @@ function ErrorState({
             Connection Issue
           </h3>
           <p className="text-[12px] text-[#be123c]">
-            {message}
+            {formatFriendlyErrorMessage(message)}
           </p>
         </div>
       </div>
