@@ -44,6 +44,48 @@ async function readChatError(response: Response): Promise<string> {
   return `The assistant service returned HTTP ${response.status}.`;
 }
 
+/**
+ * Find the first acceptable split point in the buffered stream text.
+ *
+ * Dispatches a sentence the moment its terminal punctuation arrives — even if
+ * it is the last character of the buffer. The previous regex required a
+ * following space + word, so any sentence ending in "." or "!" sat silent in
+ * the buffer until the NEXT sentence began streaming (or until the stream
+ * closed), producing long dead-air pauses exactly at "!" and ".".
+ */
+function findClauseSplit(
+  buffer: string,
+  isFirstPhrase: boolean
+): { sentence: string; rest: string } | null {
+  const re = /[.?!,:!\n]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(buffer)) !== null) {
+    const punct = m[0];
+    const candidate = buffer.slice(0, m.index);
+    // Skip abbreviation periods: "9 a.m.", "p.m.", "Mr.", initials.
+    if (punct === ".") {
+      const lastWord = (candidate.split(/\s+/).pop() || "").toLowerCase();
+      if (/^[a-z]$/.test(lastWord) || /^(mr|mrs|ms|dr|st|vs|etc|no)$/.test(lastWord)) {
+        continue;
+      }
+    }
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+
+    if (punct === "." || punct === "?" || punct === "!") {
+      // A complete sentence is always a natural TTS unit — dispatch immediately.
+      if (isFirstPhrase && trimmed.length < 8) continue;
+      return { sentence: trimmed, rest: buffer.slice(m.index + 1) };
+    }
+    // Clause boundaries (comma, colon, newline): breath groups only.
+    if (isFirstPhrase ? trimmed.length >= 8 : trimmed.length >= 25 || buffer.length > 80) {
+      return { sentence: trimmed, rest: buffer.slice(m.index + 1) };
+    }
+    // Too short a breath group: keep scanning for a sentence end.
+  }
+  return null;
+}
+
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
@@ -215,28 +257,19 @@ export function KokoroCallSession({
                   sentenceBuffer += data.text;
                   setCurrentAssistantText(accumulatedAssistantReply);
 
-                  // 1. Ultra-responsive First Phrase: emit immediately at any clause boundary (comma, period, exclamation, question, colon)
-                  // This brings Time-to-First-Audio down from ~2.5s to ~350ms for natural conversation!
-                  if (!hasEmittedFirstChunk) {
-                    const firstMatch = sentenceBuffer.match(/^(.*?[.?!,:\n])\s+(.*)$/s);
-                    if (firstMatch && firstMatch[1].trim().length >= 8) {
-                      const firstSentence = firstMatch[1].trim();
-                      sentenceBuffer = firstMatch[2];
+                  // Dispatch text the moment its punctuation lands — even when the
+                  // punctuation is the last character of the buffer. The old regex
+                  // demanded a following space + word, so sentences ending in "."
+                  // or "!" waited in silence until the next sentence started
+                  // streaming (or until the whole stream closed).
+                  const split = findClauseSplit(sentenceBuffer, !hasEmittedFirstChunk);
+                  if (split && split.sentence) {
+                    sentenceBuffer = split.rest;
+                    if (!hasEmittedFirstChunk) {
                       hasEmittedFirstChunk = true;
-                      speechRecRef.current?.registerAssistantSpeech(firstSentence);
-                      neuralVoice.speakSentence(firstSentence);
                     }
-                  } else {
-                    // 2. Subsequent breath groups (buffer >= 25 chars or long buffer for smooth prosody)
-                    const match = sentenceBuffer.match(/^(.*?[.?!:\n])\s+(.*)$/s);
-                    if (match && (match[1].trim().length >= 25 || sentenceBuffer.length > 80)) {
-                      const completeSentence = match[1].trim();
-                      sentenceBuffer = match[2];
-                      if (completeSentence) {
-                        speechRecRef.current?.registerAssistantSpeech(completeSentence);
-                        neuralVoice.speakSentence(completeSentence);
-                      }
-                    }
+                    speechRecRef.current?.registerAssistantSpeech(split.sentence);
+                    neuralVoice.speakSentence(split.sentence);
                   }
                 } else if (currentEvent === "done") {
                   if (data.outcome === "booked") {

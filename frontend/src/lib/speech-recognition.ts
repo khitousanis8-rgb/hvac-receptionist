@@ -213,7 +213,11 @@ export class BrowserSpeechRecognition {
     if (!clean || clean.length < 10) return false;
 
     // Real acoustic echo of the greeting contains both the business intro and the prompt question
-    const hasIntro = clean.includes("thank you for calling") || clean.includes("my name is sarah");
+    const hasIntro =
+      clean.includes("thank you for calling") ||
+      clean.includes("thanks for calling") ||
+      clean.includes("my name is sarah") ||
+      clean.includes("this is sarah");
     const hasPrompt = clean.includes("how can i assist") || clean.includes("how can i help") || clean.includes("heating or cooling today");
     if (hasIntro && hasPrompt) {
       return true;

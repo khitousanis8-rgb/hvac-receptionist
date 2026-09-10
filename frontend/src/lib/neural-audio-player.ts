@@ -37,7 +37,7 @@ export class NeuralAudioPlayer {
   private activeSources: AudioBufferSourceNode[] = [];
   private queue: QueuedItem[] = [];
   private isFetching: boolean = false;
-  private activeAbortController: AbortController | null = null;
+  private inFlightControllers: Set<AbortController> = new Set();
   private currentTurnId: number = 0;
   private endTurnSignaled: boolean = false;
   private endTurnTimer: number | null = null;
@@ -209,15 +209,15 @@ export class NeuralAudioPlayer {
    * Internal halt of all active audio, fetches, and utterances without resetting turn state.
    */
   private stopAudioInternal(): void {
-    // 1. Abort currently in-flight network fetch immediately
-    if (this.activeAbortController) {
+    // 1. Abort all in-flight parallel prefetches immediately
+    for (const controller of this.inFlightControllers) {
       try {
-        this.activeAbortController.abort();
+        controller.abort();
       } catch {
         // ignore
       }
-      this.activeAbortController = null;
     }
+    this.inFlightControllers.clear();
 
     // 2. Abort all pending queued fetches
     for (const item of this.queue) {
@@ -305,41 +305,61 @@ export class NeuralAudioPlayer {
     if (this.isFetching || this.queue.length === 0) return;
     this.isFetching = true;
 
-    while (this.queue.length > 0 && this.isTurnActive) {
-      const item = this.queue.shift();
-      if (!item) break;
+    try {
+      while (this.queue.length > 0 && this.isTurnActive) {
+        // Drain the queue into a batch and fetch ALL sentences in parallel so
+        // the next sentence's audio is decoded before the current one finishes
+        // playing. Sequential fetching left a dead-air gap whenever a short
+        // sentence finished before the next fetch completed.
+        const batch = this.queue.splice(0, this.queue.length);
 
-      // Drop item if turn changed while queued
-      if (item.turnId !== this.currentTurnId || !this.isTurnActive) {
-        continue;
+        const results = batch.map((item) => {
+          this.inFlightControllers.add(item.abortController);
+          return this.fetchAudioBuffer(item.text, item.abortController.signal)
+            .then((buffer) => ({ item, buffer, error: null as Error | null }))
+            .catch((err: unknown) => ({ item, buffer: null, error: err as Error }))
+            .finally(() => {
+              this.inFlightControllers.delete(item.abortController);
+            });
+        });
+
+        // Schedule strictly in queue order so the hardware playback clock
+        // (nextPlayTime) chains the buffers with zero inter-sentence gap.
+        let scheduledCount = 0;
+        for (; scheduledCount < batch.length; scheduledCount++) {
+          const item = batch[scheduledCount];
+          // Zero Zombie Sounds: drop everything if the turn changed mid-batch
+          if (item.turnId !== this.currentTurnId || !this.isTurnActive) break;
+          const { buffer, error } = await results[scheduledCount];
+
+          if (error) {
+            if ((error as Error)?.name === "AbortError" || (error as DOMException)?.code === 20) {
+              break;
+            }
+            if (this.isTurnActive && this.currentTurnId === item.turnId) {
+              console.warn("[NeuralAudioPlayer] Stream fetch failed, falling back to Web Speech API:", error);
+              this.fallbackSpeak(item.text, item.turnId);
+            }
+            continue;
+          }
+
+          if (buffer && this.isTurnActive && this.currentTurnId === item.turnId) {
+            this.scheduleAudioBuffer(buffer, item.text);
+          }
+        }
+
+        // Abort any batch items that never got scheduled (turn changed mid-batch)
+        for (let j = scheduledCount; j < batch.length; j++) {
+          try {
+            batch[j].abortController.abort();
+          } catch {
+            // ignore
+          }
+        }
       }
-
-      this.activeAbortController = item.abortController;
-      const turnId = item.turnId;
-
-      try {
-        const buffer = await this.fetchAudioBuffer(item.text, item.abortController.signal);
-        // Verify that the assistant turn is still active and unchanged (Zero Zombie Sounds)
-        if (buffer && this.isTurnActive && this.currentTurnId === turnId) {
-          this.scheduleAudioBuffer(buffer, item.text);
-        }
-      } catch (err: unknown) {
-        if ((err as Error)?.name === "AbortError" || (err as DOMException)?.code === 20) {
-          break;
-        }
-        // Only fallback if the turn is still actively waiting for speech and not cancelled
-        if (this.isTurnActive && this.currentTurnId === turnId) {
-          console.warn("[NeuralAudioPlayer] Stream fetch failed, falling back to Web Speech API:", err);
-          this.fallbackSpeak(item.text, turnId);
-        }
-      } finally {
-        if (this.activeAbortController === item.abortController) {
-          this.activeAbortController = null;
-        }
-      }
+    } finally {
+      this.isFetching = false;
     }
-
-    this.isFetching = false;
     this.checkTurnCompletion();
   }
 

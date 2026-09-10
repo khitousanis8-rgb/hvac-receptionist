@@ -79,7 +79,12 @@ def _is_assistant_echo(text: str) -> bool:
     and does NOT contain genuine caller booking/problem intent.
     """
     clean = text.lower().strip()
-    has_intro = "thank you for calling" in clean or "my name is sarah" in clean
+    has_intro = (
+        "thank you for calling" in clean
+        or "thanks for calling" in clean
+        or "my name is sarah" in clean
+        or "this is sarah" in clean
+    )
     has_prompt = (
         "how can i assist" in clean
         or "how can i help" in clean
@@ -91,9 +96,11 @@ def _is_assistant_echo(text: str) -> bool:
     stripped = clean
     for phrase in [
         "thank you for calling",
+        "thanks for calling",
         "example hvac",
         "apex hvac",
         "my name is sarah",
+        "this is sarah",
         "how can i assist you with your heating or cooling today",
         "how can i assist you with",
         "how can i assist you",
@@ -524,8 +531,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     # Initial instant greeting without LLM latency
     if req.message == "__GREETING__":
         greeting_text = (
-            f"Thank you for calling {settings.business_company_name}! "
-            f"My name is Sarah. How can I assist you with your heating or cooling today?"
+            f"Thanks for calling {settings.business_company_name}! "
+            f"This is Sarah — how can I help with your heating or cooling today?"
         )
         call_id = start_or_get_browser_call(req.session_id, req.call_secret)
 
