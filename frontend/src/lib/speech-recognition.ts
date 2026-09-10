@@ -209,8 +209,8 @@ export class BrowserSpeechRecognition {
   }
 
   private isAcousticEcho(transcript: string): boolean {
-    const clean = transcript.toLowerCase().replace(/[^a-z0-9\s]/g, " ").trim();
-    if (!clean || clean.length < 15) return false;
+    const clean = transcript.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    if (!clean || clean.length < 10) return false;
 
     // Real acoustic echo of the greeting contains both the business intro and the prompt question
     const hasIntro = clean.includes("thank you for calling") || clean.includes("my name is sarah");
@@ -219,12 +219,28 @@ export class BrowserSpeechRecognition {
       return true;
     }
 
-    // Check against full assistant utterances (only suppress if 85%+ identical match of a long sentence)
+    // Speaker-feedback echo: the mic picked up the assistant's TTS through the
+    // PC speakers. Fragments are often short ("you're very welcome", "may i
+    // have your name"), so also match by word overlap against recent assistant
+    // speech: if >=70% of the transcript's words appear in a recent assistant
+    // utterance, it is almost certainly echo, not the caller.
     for (const utterance of this.recentAssistantUtterances) {
       if (utterance.length > 25 && clean.length > 25) {
         if (utterance === clean || utterance.includes(clean)) {
           return true;
         }
+      }
+
+      const echoWords = clean.split(" ").filter((w) => w.length >= 2);
+      if (echoWords.length < 3) continue;
+      const utteranceWords = new Set(utterance.split(/\s+/));
+      let matches = 0;
+      for (const w of echoWords) {
+        if (utteranceWords.has(w)) matches++;
+      }
+      if (matches / echoWords.length >= 0.7) {
+        console.warn("[EchoGuard] Suppressed speaker-feedback echo fragment:", transcript);
+        return true;
       }
     }
 

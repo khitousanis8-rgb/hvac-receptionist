@@ -473,7 +473,7 @@ def test_assistant_echo_detection_and_recovery_stream() -> None:
             ),
     )
     assert res.status_code == 200
-    assert "I'm right here!" in res.text
+    assert "echo of my own voice" in res.text
     assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
 
 

@@ -110,6 +110,33 @@ def _is_assistant_echo(text: str) -> bool:
 
 
 
+def _is_echo_of_assistant(message: str, history: list[ChatMessage]) -> bool:
+    """Detect speaker-feedback echo: the mic re-captured the assistant's TTS.
+
+    If >=70% of the transcript's words appear in a recent assistant message
+    from the caller's own session history, the "user" turn is almost certainly
+    the caller's speakers being re-transcribed, not the caller speaking.
+    """
+    clean_msg = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", message.lower())).strip()
+    if not clean_msg:
+        return False
+    msg_words = [w for w in clean_msg.split() if len(w) >= 2]
+    if len(msg_words) < 3:
+        return False
+
+    for msg in history[-6:]:
+        if msg.role != "assistant":
+            continue
+        clean_asst = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", msg.content.lower()))
+        asst_words = set(clean_asst.split())
+        if not asst_words:
+            continue
+        overlap = sum(1 for w in msg_words if w in asst_words) / len(msg_words)
+        if overlap >= 0.7:
+            return True
+    return False
+
+
 def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[str, Any]:
     """Lightweight rule-based extractor to update known slots from user utterances."""
     updates: dict[str, Any] = {}
@@ -525,11 +552,13 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         )
     active_call_id: int = req.call_id
 
-    # Detect acoustic echo of assistant's greeting picked up by microphone
-    if _is_assistant_echo(req.message):
+    # Detect acoustic echo of assistant speech picked up by the microphone:
+    # either the greeting pattern or any fragment of recent assistant turns.
+    if _is_assistant_echo(req.message) or _is_echo_of_assistant(req.message, req.history):
         async def echo_recovery_generator() -> AsyncIterator[str]:
             recovery_text = (
-                "I'm right here! How can I assist you with your heating or cooling today?"
+                "Sorry, I heard an echo of my own voice there! "
+                "How can I assist you with your heating or cooling today?"
             )
             yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
@@ -565,7 +594,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     # Cap history to the last 30 messages (~15 turns) to retain deep conversational nuances
     recent_history = req.history[-30:] if len(req.history) > 30 else req.history
     for msg in recent_history:
-        if msg.role == "user" and _is_assistant_echo(msg.content):
+        if msg.role == "user" and (
+            _is_assistant_echo(msg.content)
+            or _is_echo_of_assistant(msg.content, req.history)
+        ):
             continue
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": req.message})
