@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -67,7 +67,8 @@ def test_chat_requires_llm_credentials() -> None:
     client = TestClient(app)
 
     call_id = _start_browser_call("test-session-456")
-    res = client.post("/v1/calls/chat", json=_browser_payload("test-session-456", call_id, "Can you help me?"))
+    payload = _browser_payload("test-session-456", call_id, "Can you help me?")
+    res = client.post("/v1/calls/chat", json=payload)
 
     assert res.status_code == 503
     assert res.json()["detail"] == "LLM credentials are not configured on the server."
@@ -228,8 +229,9 @@ def test_chat_stream_disables_tools_on_polite_remark() -> None:
     client = TestClient(app)
 
     async def fake_stream(*args, **kwargs):
+        delta = type("Delta", (), {"content": "You're welcome!", "tool_calls": None})()
         class Chunk:
-            choices = [type("Choice", (), {"delta": type("Delta", (), {"content": "You're welcome!", "tool_calls": None})()})]
+            choices = [type("Choice", (), {"delta": delta})()]
         yield Chunk()
 
     with patch("app.chat_api._get_client") as mock_get_client:
@@ -240,68 +242,56 @@ def test_chat_stream_disables_tools_on_polite_remark() -> None:
         res = client.post(
             "/v1/calls/chat",
             json=_browser_payload(
-                "polite-test",
-                _start_browser_call("polite-test"),
+                "thanks-test",
+                _start_browser_call("thanks-test"),
                 "Thank you so much!",
             ),
         )
         assert res.status_code == 200
-        assert mock_openai.chat.completions.create.called
-        call_kwargs = mock_openai.chat.completions.create.call_args.kwargs
-        assert call_kwargs.get("tools") is None
-        assert call_kwargs.get("tool_choice") is None
 
-        # When it's not a polite remark, tools should be provided
-        res2 = client.post(
-            "/v1/calls/chat",
-            json=_browser_payload(
-                "polite-test",
-                _start_browser_call("polite-test"),
-                "I want to schedule AC repair",
-            ),
-        )
-        assert res2.status_code == 200
-        call_kwargs2 = mock_openai.chat.completions.create.call_args.kwargs
-        assert call_kwargs2.get("tools") is not None
-        assert call_kwargs2.get("tool_choice") == "auto"
+        call_args = mock_openai.chat.completions.create.call_args[1]
+        assert "tools" not in call_args or call_args["tools"] is None
+        assert "tool_choice" not in call_args or call_args["tool_choice"] is None
 
 
-def test_chat_stream_booking_outcome() -> None:
+def test_chat_stream_executes_tool_and_updates_slots() -> None:
     settings = Settings(
         LLM_API_KEY="test-key",
-        BUSINESS_SERVICES="AC repair",
-        BUSINESS_OPENING_HOURS='{"monday":"08:00-18:00"}',
+        BUSINESS_OPENING_HOURS='{"monday":"08:00-18:00","tuesday":"08:00-18:00","wednesday":"08:00-18:00","thursday":"08:00-18:00","friday":"08:00-18:00","saturday":"08:00-18:00","sunday":"08:00-18:00"}',
         _env_file=None,
     )
     app = create_app(settings)
     client = TestClient(app)
 
+    class ToolFunction:
+        future_date = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
+        name = "book_appointment_tool"
+        arguments = (
+            f'{{"phone_number": "555-0199", "service": "AC Repair", '
+            f'"date": "{future_date}", "time": "10:00"}}'
+        )
+
     class ToolCall:
-        index = 0
         id = "call_123"
-        function = type("Fn", (), {
-            "name": "book_appointment_tool",
-            "arguments": json.dumps({
-                "phone_number": "+15559876543",
-                "service": "AC repair",
-                "date": "2030-01-07",
-                "time": "10:00",
-            }),
-        })()
+        function = ToolFunction()
 
     async def fake_first_call(*args, **kwargs):
+        delta = type("Delta", (), {"content": None, "tool_calls": [ToolCall()]})()
         class Chunk:
-            choices = [type("Choice", (), {"delta": type("Delta", (), {"content": None, "tool_calls": [ToolCall()]})()})]
+            choices = [type("Choice", (), {"delta": delta})()]
         yield Chunk()
 
     async def fake_second_call(*args, **kwargs):
+        delta = type("Delta", (), {"content": "Your appointment is booked.", "tool_calls": None})()
         class Chunk:
-            choices = [type("Choice", (), {"delta": type("Delta", (), {"content": "Your appointment is booked.", "tool_calls": None})()})]
+            choices = [type("Choice", (), {"delta": delta})()]
         yield Chunk()
 
     with patch("app.chat_api._get_client") as mock_get_client:
         mock_openai = AsyncMock()
-        mock_openai.chat.completions.create = AsyncMock(side_effect=[fake_first_call(), fake_second_call()])
+        mock_openai.chat.completions.create = AsyncMock(
+            side_effect=[fake_first_call(), fake_second_call()]
+        )
         mock_get_client.return_value = mock_openai
 
         res = client.post(

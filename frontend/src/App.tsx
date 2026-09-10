@@ -1016,11 +1016,19 @@ export default function App() {
   const adminAccessNeeded = calls.status === 401 || appointments.status === 401;
 
   const updateAdminKey = () => {
-    const entered = window.prompt("Enter the private dashboard access key");
-    if (!entered?.trim()) return;
+    const promptMessage = adminKey
+      ? "Enter a new dashboard access key, or leave blank and click OK to lock/clear:"
+      : "Enter the private dashboard access key:";
+    const entered = window.prompt(promptMessage);
+    if (entered === null) return;
     const trimmed = entered.trim();
-    window.sessionStorage.setItem("hvac-admin-key", trimmed);
-    setAdminKey(trimmed);
+    if (!trimmed) {
+      window.sessionStorage.removeItem("hvac-admin-key");
+      setAdminKey(null);
+    } else {
+      window.sessionStorage.setItem("hvac-admin-key", trimmed);
+      setAdminKey(trimmed);
+    }
   };
 
   const links: {

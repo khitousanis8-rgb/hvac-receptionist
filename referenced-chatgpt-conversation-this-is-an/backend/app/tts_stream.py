@@ -188,6 +188,7 @@ async def stream_voice(
 
     should_cache = len(clean_text) < _MAX_CACHED_TEXT_LEN
     stream_iter = None
+    semaphore_transferred = False
     try:
         communicate = edge_tts.Communicate(
             text=clean_text,
@@ -213,23 +214,14 @@ async def stream_voice(
             )
 
     except TimeoutError as err:
-        if stream_iter is not None:
-            await stream_iter.aclose()
-        _TTS_SEMAPHORE.release()
         logger.error("edge_tts_connect_timeout", voice=voice_clean, text_preview=clean_text[:50])
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="Neural speech synthesis upstream timed out connecting.",
         ) from err
     except HTTPException:
-        if stream_iter is not None:
-            await stream_iter.aclose()
-        _TTS_SEMAPHORE.release()
         raise
     except Exception as exc:
-        if stream_iter is not None:
-            await stream_iter.aclose()
-        _TTS_SEMAPHORE.release()
         logger.error(
             "edge_tts_connect_error",
             error=str(exc),
@@ -240,6 +232,13 @@ async def stream_voice(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Neural speech synthesis connection error: {exc}",
         ) from exc
+    finally:
+        if not semaphore_transferred:
+            if stream_iter is not None:
+                await stream_iter.aclose()
+            _TTS_SEMAPHORE.release()
+
+    semaphore_transferred = True
 
     # Stream generator with guaranteed cleanup of websocket and semaphore
     async def audio_stream_generator() -> AsyncIterator[bytes]:

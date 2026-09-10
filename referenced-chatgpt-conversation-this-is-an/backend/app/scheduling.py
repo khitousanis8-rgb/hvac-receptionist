@@ -31,12 +31,13 @@ def is_within_business_hours(when: datetime, settings: Settings) -> bool:
         return False
     start_s, end_s = window.split("-")
     start = _parse_hhmm(start_s)
-    end = _parse_hhmm(end_s)
-    local_minutes = local.hour * 60 + local.minute
-    start_minutes = start.hour * 60 + start.minute
-    end_minutes = end.hour * 60 + end.minute
     if end_s == "24:00":
         end_minutes = 24 * 60
+    else:
+        end = _parse_hhmm(end_s)
+        end_minutes = end.hour * 60 + end.minute
+    local_minutes = local.hour * 60 + local.minute
+    start_minutes = start.hour * 60 + start.minute
     return start_minutes <= local_minutes and local_minutes + SLOT_MINUTES <= end_minutes
 
 
@@ -71,11 +72,9 @@ def normalize_phone_number(raw: str) -> str:
 
 
 def get_or_create_customer(
-    session: Session,
-    phone_number: str,
-    name: str | None = None,
+    session: Session, phone_number: str, name: str | None = None
 ) -> Customer:
-    """Find a customer by phone number, creating a record when unknown."""
+    """Find a customer by either normalized or raw phone; create if missing."""
     normalized = normalize_phone_number(phone_number)
     customer = (
         session.query(Customer)
@@ -116,7 +115,11 @@ def book_appointment(
         return None, (
             "That time is outside business hours. Please choose a time during opening hours."
         )
-    customer = get_or_create_customer(session, phone_number, name)
+    normalized_phone = normalize_phone_number(phone_number)
+    digits_only = "".join(c for c in normalized_phone if c.isdigit())
+    if not normalized_phone or len(digits_only) < 7:
+        return None, "A valid phone number is required to book an appointment."
+    customer = get_or_create_customer(session, normalized_phone, name)
 
     slot_end = when + timedelta(minutes=SLOT_MINUTES)
     earliest_overlap = when - timedelta(minutes=SLOT_MINUTES)
@@ -139,6 +142,7 @@ def book_appointment(
             f"Appointment is already confirmed for {svc} at {local_time}."
         )
 
+    # If another customer holds this slot, reject early with a friendly message.
     existing_other = (
         session.query(Appointment)
         .filter(
@@ -186,3 +190,53 @@ def list_upcoming(session: Session, phone_number: str) -> list[Appointment]:
             .order_by(Appointment.scheduled_for)
         ).scalars()
     )
+
+
+def parse_local_datetime(settings: Settings, date_str: str, time_str: str) -> datetime | None:
+    """Parse date and time strings into a business-timezone-aware datetime."""
+    tz = ZoneInfo(settings.business_timezone)
+    now = datetime.now(tz)
+
+    clean_date = date_str.lower().strip()
+    clean_time = time_str.strip()
+
+    if clean_date == "tomorrow":
+        target_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    elif clean_date == "today":
+        target_date = now.strftime("%Y-%m-%d")
+    else:
+        weekday_names = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+        normalized_weekday = clean_date.removeprefix("next ")
+        if normalized_weekday in weekday_names:
+            days_ahead = (weekday_names[normalized_weekday] - now.weekday()) % 7
+            if days_ahead == 0 or clean_date.startswith("next "):
+                days_ahead += 7
+            target_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+        else:
+            target_date = clean_date
+
+    # Try direct ISO parsing first
+    try:
+        return datetime.fromisoformat(f"{target_date}T{clean_time}").replace(tzinfo=tz)
+    except (ValueError, TypeError):
+        pass
+
+    # Try common formats like "%I:%M %p", "%I %p", "%H:%M"
+    norm_time = clean_time.replace(".", "").strip()
+    for fmt in ("%I:%M %p", "%I:%M%p", "%I %p", "%I%p", "%H:%M", "%H:%M:%S"):
+        try:
+            parsed_t = datetime.strptime(norm_time, fmt).time()
+            dt_base = datetime.strptime(target_date, "%Y-%m-%d")
+            return datetime.combine(dt_base.date(), parsed_t, tzinfo=tz)
+        except ValueError:
+            continue
+
+    return None

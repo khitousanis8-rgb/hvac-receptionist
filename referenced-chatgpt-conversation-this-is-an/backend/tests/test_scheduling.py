@@ -103,4 +103,54 @@ def test_phone_normalization_and_deduplication(db) -> None:
         c1 = get_or_create_customer(session, "(555) 123-4567", "Bob")
         c2 = get_or_create_customer(session, "+15551234567")
         assert c1.id == c2.id
-        assert c2.phone_number == "+15551234567"
+        assert c2.phone_number == "+15551234567"
+
+
+def test_business_hours_24_00_window() -> None:
+    from app.scheduling import is_within_business_hours
+    settings_24 = Settings(
+        BUSINESS_OPENING_HOURS='{"monday":"08:00-24:00"}',
+        BUSINESS_TIMEZONE="UTC",
+        _env_file=None,
+    )
+    # A Monday at 22:00 UTC (10 PM) should be within 08:00-24:00
+    mon_night = datetime(2030, 6, 3, 22, 0, tzinfo=UTC)
+    assert is_within_business_hours(mon_night, settings_24) is True
+
+    # A Monday at 23:30 UTC: 23:30 + 60 min = 24:30 > 24:00 -> False
+    mon_too_late = datetime(2030, 6, 3, 23, 30, tzinfo=UTC)
+    assert is_within_business_hours(mon_too_late, settings_24) is False
+
+
+def test_book_appointment_requires_valid_phone(db, settings) -> None:
+    with new_session() as session:
+        when = datetime(2030, 6, 3, 10, 0, tzinfo=UTC)
+        appt, msg = book_appointment(
+            session, settings, phone_number="", service="AC repair", when=when
+        )
+        assert appt is None
+        assert "valid phone number is required" in msg
+
+        appt_invalid, msg_invalid = book_appointment(
+            session, settings, phone_number="no-digits-here", service="AC repair", when=when
+        )
+        assert appt_invalid is None
+        assert "valid phone number is required" in msg_invalid
+
+
+def test_parse_local_datetime() -> None:
+    from app.scheduling import parse_local_datetime
+    settings = Settings(BUSINESS_TIMEZONE="UTC", _env_file=None)
+
+    dt1 = parse_local_datetime(settings, "tomorrow", "10:00 AM")
+    assert dt1 is not None
+    assert dt1.hour == 10
+    assert dt1.minute == 0
+
+    dt2 = parse_local_datetime(settings, "2030-06-03", "2:30 PM")
+    assert dt2 is not None
+    assert dt2.hour == 14
+    assert dt2.minute == 30
+
+    dt_invalid = parse_local_datetime(settings, "invalid-date", "invalid-time")
+    assert dt_invalid is None

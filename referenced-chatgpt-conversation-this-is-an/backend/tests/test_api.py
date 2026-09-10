@@ -145,3 +145,89 @@ def test_sqlite_backward_compatibility_migration(tmp_path) -> None:
         assert "access_token_hash" in cols
     finally:
         reset_engine()
+
+
+def test_appointments_pagination_and_iso_timestamp_z(tmp_path) -> None:
+    from datetime import UTC, datetime
+
+    from app.db import Appointment, Customer, init_db, new_session, reset_engine
+
+    db_url = f"sqlite:///{(tmp_path / 'test_appts.db').as_posix()}"
+    reset_engine()
+    init_db(db_url)
+    try:
+        settings = Settings(ADMIN_API_KEY="test-admin", DATABASE_URL=db_url, _env_file=None)
+        headers = {"X-Admin-Key": "test-admin"}
+
+        with new_session() as session:
+            c = Customer(phone_number="+15551234567", name="Jane")
+            session.add(c)
+            session.flush()
+            a1 = Appointment(
+                customer_id=c.id,
+                service="AC repair",
+                scheduled_for=datetime(2030, 6, 3, 10, 0, tzinfo=UTC),
+            )
+            a2 = Appointment(
+                customer_id=c.id,
+                service="Heating repair",
+                scheduled_for=datetime(2030, 6, 3, 14, 0, tzinfo=UTC),
+            )
+            session.add_all([a1, a2])
+
+        with TestClient(create_app(settings)) as client:
+            res = client.get("/v1/appointments?limit=1&offset=0", headers=headers)
+            assert res.status_code == 200
+            data = res.json()
+            assert len(data) == 1
+            assert data[0]["service"] == "AC repair"
+            assert data[0]["scheduled_for"].endswith("Z")
+
+            res_offset = client.get("/v1/appointments?limit=1&offset=1", headers=headers)
+            assert res_offset.status_code == 200
+            data_offset = res_offset.json()
+            assert len(data_offset) == 1
+            assert data_offset[0]["service"] == "Heating repair"
+            assert data_offset[0]["scheduled_for"].endswith("Z")
+    finally:
+        reset_engine()
+
+
+def test_require_admin_bearer_case_insensitive() -> None:
+    settings = Settings(ADMIN_API_KEY="my-secret-key", _env_file=None)
+    with TestClient(create_app(settings)) as client:
+        res = client.get("/v1/calls", headers={"Authorization": "bearer my-secret-key"})
+        assert res.status_code == 200
+
+
+def test_require_admin_empty_key_fails_closed() -> None:
+    settings = Settings(ADMIN_API_KEY="", _env_file=None)
+    with TestClient(create_app(settings)) as client:
+        res = client.get("/v1/calls", headers={"Authorization": "Bearer "})
+        assert res.status_code == 503
+
+
+def test_transcribe_rate_limiting() -> None:
+    from unittest.mock import MagicMock, patch
+    settings = Settings(LLM_API_KEY="mock-groq", _env_file=None)
+    with TestClient(create_app(settings)) as client:
+        with patch("app.chat_api._get_client") as mock_client:
+            mock_ai = MagicMock()
+            mock_client.return_value = mock_ai
+            # 30 requests should succeed or process
+            import base64
+            dummy_b64 = base64.b64encode(b"RIFFdummywavdata").decode()
+            for _ in range(30):
+                res = client.post(
+                    "/v1/calls/transcribe",
+                    json={"audio_base64": dummy_b64},
+                )
+                assert res.status_code != 429
+
+            # 31st request from same client exceeds limit -> 429
+            res_limit = client.post(
+                "/v1/calls/transcribe",
+                json={"audio_base64": dummy_b64},
+            )
+            assert res_limit.status_code == 429
+

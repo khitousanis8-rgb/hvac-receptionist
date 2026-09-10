@@ -361,6 +361,7 @@ export class BrowserSpeechRecognition {
       };
 
       this.mediaRecorder.onstop = async () => {
+        if (!this.shouldBeListening) return;
         if (this.audioChunks.length === 0) return;
         const actualType = mimeType || "audio/webm";
         const blob = new Blob(this.audioChunks, { type: actualType });
@@ -372,19 +373,25 @@ export class BrowserSpeechRecognition {
           const reader = new FileReader();
           reader.readAsDataURL(blob);
           reader.onloadend = async () => {
-            const result = reader.result as string;
-            const base64 = result.split(",")[1];
-            if (base64) {
-              const ext = actualType.includes("mp4") ? "mp4" : "webm";
-              const res = await apiPost<{ text?: string; transcript?: string }>("/v1/calls/transcribe", {
-                audio_base64: base64,
-                content_type: actualType,
-                filename: `audio.${ext}`,
-              });
-              const text = res.text || res.transcript;
-              if (text && text.trim()) {
-                this.onTranscript?.(text.trim(), true);
+            try {
+              if (!this.shouldBeListening) return;
+              const result = reader.result as string;
+              const base64 = result.split(",")[1];
+              if (base64) {
+                const ext = actualType.includes("mp4") ? "mp4" : "webm";
+                const res = await apiPost<{ text?: string; transcript?: string }>("/v1/calls/transcribe", {
+                  audio_base64: base64,
+                  content_type: actualType,
+                  filename: `audio.${ext}`,
+                });
+                if (!this.shouldBeListening) return;
+                const text = res.text || res.transcript;
+                if (text && text.trim()) {
+                  this.onTranscript?.(text.trim(), true);
+                }
               }
+            } catch (innerErr) {
+              console.warn("[SpeechRecognition] Fallback transcription request failed:", innerErr);
             }
           };
         } catch (err) {

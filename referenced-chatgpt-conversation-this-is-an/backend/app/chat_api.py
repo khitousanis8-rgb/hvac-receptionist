@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta
 from typing import Any, Literal
-from zoneinfo import ZoneInfo
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request, status
@@ -27,7 +27,7 @@ from app.call_tracking import (
 )
 from app.config import Settings, get_settings
 from app.db import new_session
-from app.scheduling import book_appointment, list_upcoming
+from app.scheduling import book_appointment, list_upcoming, parse_local_datetime
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/v1/calls", tags=["calls"])
@@ -131,12 +131,12 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
             prefix = "+" if "+" in matched_str else ""
             updates["phone"] = f"{prefix}{raw_digits}"
 
-    # 3. Service extraction
-    if any(k in lower for k in ["ac", "air condition", "cooling", "cool", "heat pump", "cold"]):
+    # 3. Service extraction (use word boundaries to prevent matching 'actually', 'package', etc.)
+    if re.search(r"\b(a/?c|air\s*condition(?:ing)?|cooling|cool)\b", lower):
         updates["service"] = "AC repair"
-    elif any(k in lower for k in ["furnace", "heating", "heater", "boiler", "warm"]):
+    elif re.search(r"\b(furnace|heating|heater|boiler|heat\s*pump)\b", lower):
         updates["service"] = "Heating repair"
-    elif any(k in lower for k in ["tuneup", "tune up", "tune-up", "maintenance", "inspection"]):
+    elif re.search(r"\b(tune-?up|tune\s*up|maintenance|inspection)\b", lower):
         updates["service"] = "HVAC tune-up"
 
     # 4. Date/time extraction. Keep each field canonical so the safety repair
@@ -159,54 +159,7 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
     return updates
 
 
-def _parse_local_datetime(settings: Settings, date_str: str, time_str: str) -> datetime | None:
-    tz = ZoneInfo(settings.business_timezone)
-    now = datetime.now(tz)
-
-    clean_date = date_str.lower().strip()
-    clean_time = time_str.strip()
-
-    if clean_date == "tomorrow":
-        target_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-    elif clean_date == "today":
-        target_date = now.strftime("%Y-%m-%d")
-    else:
-        weekday_names = {
-            "monday": 0,
-            "tuesday": 1,
-            "wednesday": 2,
-            "thursday": 3,
-            "friday": 4,
-            "saturday": 5,
-            "sunday": 6,
-        }
-        normalized_weekday = clean_date.removeprefix("next ")
-        if normalized_weekday in weekday_names:
-            days_ahead = (weekday_names[normalized_weekday] - now.weekday()) % 7
-            if days_ahead == 0 or clean_date.startswith("next "):
-                days_ahead += 7
-            target_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-        else:
-            target_date = clean_date
-
-    # Try direct ISO parsing first
-    try:
-        return datetime.fromisoformat(f"{target_date}T{clean_time}").replace(tzinfo=tz)
-    except (ValueError, TypeError):
-        pass
-
-    # Try common formats like "%I:%M %p", "%I %p", "%H:%M"
-    # Normalize clean_time (remove periods in a.m. / p.m.)
-    norm_time = clean_time.replace(".", "").strip()
-    for fmt in ("%I:%M %p", "%I:%M%p", "%I %p", "%I%p", "%H:%M", "%H:%M:%S"):
-        try:
-            parsed_t = datetime.strptime(norm_time, fmt).time()
-            dt_base = datetime.strptime(target_date, "%Y-%m-%d")
-            return datetime.combine(dt_base.date(), parsed_t, tzinfo=tz)
-        except ValueError:
-            continue
-
-    return None
+_parse_local_datetime = parse_local_datetime
 
 
 def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
@@ -668,8 +621,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     continue
 
                 if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
+                    for i, tc in enumerate(delta.tool_calls):
+                        raw_idx = getattr(tc, "index", None)
+                        idx = raw_idx if raw_idx is not None else i
                         if idx not in tool_calls_accumulator:
                             tool_calls_accumulator[idx] = {
                                 "id": tc.id or "",
@@ -846,6 +800,53 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     )
 
 
+_TRANSCRIBE_LOCK = threading.Lock()
+_IP_TRANSCRIBE_TIMESTAMPS: dict[str, list[float]] = {}
+_MAX_TRANSCRIBE_PER_WINDOW = 30
+_TRANSCRIBE_WINDOW_SECONDS = 60.0
+
+
+def check_transcribe_rate_limit(client_ip: str) -> None:
+    """Sliding-window rate limiter for transcription to prevent quota abuse and DoS."""
+    now = time.time()
+    cutoff = now - _TRANSCRIBE_WINDOW_SECONDS
+    with _TRANSCRIBE_LOCK:
+        timestamps = _IP_TRANSCRIBE_TIMESTAMPS.get(client_ip, [])
+        timestamps = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= _MAX_TRANSCRIBE_PER_WINDOW:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Rate limit exceeded for transcription. Please wait before trying again.",
+            )
+        timestamps.append(now)
+        _IP_TRANSCRIBE_TIMESTAMPS[client_ip] = timestamps
+        if len(_IP_TRANSCRIBE_TIMESTAMPS) > 1000:
+            for ip in list(_IP_TRANSCRIBE_TIMESTAMPS.keys()):
+                _IP_TRANSCRIBE_TIMESTAMPS[ip] = [
+                    t for t in _IP_TRANSCRIBE_TIMESTAMPS[ip] if t > cutoff
+                ]
+                if not _IP_TRANSCRIBE_TIMESTAMPS[ip]:
+                    del _IP_TRANSCRIBE_TIMESTAMPS[ip]
+            if len(_IP_TRANSCRIBE_TIMESTAMPS) > 1000:
+                excess = len(_IP_TRANSCRIBE_TIMESTAMPS) - 1000
+                for old_ip in list(_IP_TRANSCRIBE_TIMESTAMPS.keys())[:excess]:
+                    del _IP_TRANSCRIBE_TIMESTAMPS[old_ip]
+
+
+def _get_client_ip(request: Request | None) -> str:
+    """Safely extract client IP from request headers."""
+    if request is None:
+        return "127.0.0.1"
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+        if client_ip:
+            return client_ip
+    if request.client and request.client.host:
+        return request.client.host
+    return "127.0.0.1"
+
+
 class TranscribeRequest(BaseModel):
     audio_base64: str = Field(
         max_length=5_000_000, description="Base64-encoded audio bytes"
@@ -855,8 +856,10 @@ class TranscribeRequest(BaseModel):
 
 
 @router.post("/transcribe")
-async def transcribe_audio(req: TranscribeRequest) -> dict[str, str]:
+async def transcribe_audio(req: TranscribeRequest, request: Request) -> dict[str, str]:
     """Transcribe caller audio using Groq Whisper API (free tier, ~200ms turnaround)."""
+    client_ip = _get_client_ip(request)
+    check_transcribe_rate_limit(client_ip)
     settings = get_settings()
     if not settings.llm_api_key:
         raise HTTPException(

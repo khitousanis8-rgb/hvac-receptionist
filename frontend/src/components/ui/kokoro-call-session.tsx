@@ -178,6 +178,7 @@ export function KokoroCallSession({
         let buffer = "";
         let accumulatedAssistantReply = "";
         let sentenceBuffer = "";
+        let currentEvent = "message";
 
         while (true) {
           const { done, value } = await reader.read();
@@ -187,8 +188,13 @@ export function KokoroCallSession({
           const lines = buffer.split("\n");
           buffer = lines.pop() || "";
 
-          let currentEvent = "message";
           for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+              // SSE boundary: blank line resets event type for the next frame
+              currentEvent = "message";
+              continue;
+            }
             if (line.startsWith("event:")) {
               currentEvent = line.replace("event:", "").trim();
             } else if (line.startsWith("data:")) {
@@ -334,6 +340,7 @@ export function KokoroCallSession({
 
     return () => {
       isCancelled = true;
+      hasInitialized.current = false;
       neuralVoice.stop();
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();

@@ -202,6 +202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/v1/appointments", tags=["dashboard"], dependencies=[Depends(require_admin)])
     async def list_appointments(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[dict[str, object]]:
         """Upcoming appointments, soonest first."""
         with new_session() as session:
@@ -209,6 +210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session.query(Appointment, Customer)
                 .join(Customer, Appointment.customer_id == Customer.id)
                 .order_by(Appointment.scheduled_for)
+                .offset(offset)
                 .limit(limit)
                 .all()
             )
@@ -216,7 +218,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {
                     "id": appointment.id,
                     "service": appointment.service,
-                    "scheduled_for": appointment.scheduled_for.isoformat(),
+                    "scheduled_for": (
+                        appointment.scheduled_for.isoformat().replace("+00:00", "Z")
+                        if appointment.scheduled_for
+                        else None
+                    ),
                     "status": appointment.status,
                     "notes": appointment.notes,
                     "customer_name": customer.name,

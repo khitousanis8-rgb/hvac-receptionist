@@ -2,27 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import structlog
 from livekit.agents import RunContext, function_tool
 
 from app.config import Settings, get_settings
 from app.db import init_db, new_session
-from app.scheduling import book_appointment, list_upcoming
+from app.scheduling import book_appointment, list_upcoming, parse_local_datetime
 
 logger = structlog.get_logger(__name__)
 
-def _parse_local_datetime(settings: Settings, date: str, time: str) -> datetime | None:
-    """Parse date and time strings into a business-timezone-aware datetime."""
-    try:
-        return datetime.fromisoformat(f"{date}T{time}").replace(
-            tzinfo=ZoneInfo(settings.business_timezone)
-        )
-    except (ValueError, TypeError):
-        return None
+_parse_local_datetime = parse_local_datetime
 
 
 @function_tool
