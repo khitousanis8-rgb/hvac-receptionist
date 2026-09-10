@@ -8,17 +8,12 @@ import {
   CheckCircle2,
   ArrowRight,
   Sparkles,
-  Check,
-  Copy,
-  Zap,
-  CalendarCheck2,
-  ShieldCheck,
-  Headphones,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { neuralVoice } from "@/lib/neural-audio-player";
 import { KokoroCallSession } from "./kokoro-call-session";
+import { HoverRevealCards, CardItem } from "./hover-reveal-cards";
 
 type CallPhase = "idle" | "in-call" | "ended" | "error";
 
@@ -34,32 +29,38 @@ function formatDuration(seconds: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
-const TEST_SCENARIOS = [
+const HVAC_CAPABILITIES: CardItem[] = [
   {
-    title: "Urgent cooling repair",
-    phrase: "My AC stopped blowing cold air today and it's over 90° outside. Can I schedule a technician for tomorrow morning?",
-    badge: "Priority",
-    roi: "Tests how the receptionist collects the key details and moves an urgent request toward a booking.",
-    urgent: true,
+    id: "emergency",
+    title: "Emergency Response",
+    subtitle: "24/7 Rapid Triage",
+    badge: "Safety First",
+    description: "Instant priority triage for gas odors, water leaks, and extreme weather failures.",
+    imageUrl: "/images/hvac-emergency.jpg",
   },
   {
-    title: "Appointment check",
-    phrase: "Can you look up my upcoming maintenance appointment for phone number 555-0144?",
-    badge: "Scheduling",
-    roi: "Tests a normal scheduling question without interrupting the front office.",
+    id: "scheduling",
+    title: "Automated Booking",
+    subtitle: "Live Calendar Sync",
+    badge: "Schedule Aware",
+    description: "Direct real-time appointment booking synced with dispatch opening hours.",
+    imageUrl: "/images/hvac-scheduling.jpg",
   },
   {
-    title: "Equipment question",
-    phrase: "What are your standard operating hours and do you install residential heat pumps or ductless mini-splits?",
-    badge: "Service info",
-    roi: "Tests whether services and hours are explained clearly before a caller decides to book.",
+    id: "service",
+    title: "Diagnostic & Tune-Up",
+    subtitle: "Precision Service",
+    badge: "Certified Care",
+    description: "Heat pump, furnace, and AC seasonal maintenance with clear problem intake.",
+    imageUrl: "/images/hvac-service.jpg",
   },
   {
-    title: "Gas leak safety check",
-    phrase: "I smell strong gas near my furnace in the utility closet and hear a loud hissing sound.",
-    badge: "Safety",
-    roi: "Tests how an immediate safety concern is identified and handled first.",
-    urgent: true,
+    id: "voice",
+    title: "AI Voice Receptionist",
+    subtitle: "Zero Wait Handoff",
+    badge: "Studio Audio",
+    description: "Natural conversational receptionist answering front office calls 24/7 with zero delay.",
+    imageUrl: "/images/hvac-voice.jpg",
   },
 ];
 
@@ -104,7 +105,7 @@ export function LiveCallPage({
   };
 
   return (
-    <div className="w-full max-w-4xl space-y-5 font-sans pb-12 md:pb-6">
+    <div className="w-full max-w-5xl space-y-6 font-sans pb-12 md:pb-6">
       {/* Voice demo status */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e7e7e7] pb-3.5">
         <div className="space-y-0.5">
@@ -192,7 +193,7 @@ export function LiveCallPage({
 }
 
 /**
- * 1. IDLE STATE
+ * 1. IDLE STATE - Hero Banner + HoverRevealCards Capabilities
  */
 function IdleState({
   onStart,
@@ -201,16 +202,8 @@ function IdleState({
   onStart: () => void;
   companyName?: string;
 }) {
-  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
-
-  const copyPhrase = (text: string, idx: number) => {
-    navigator.clipboard.writeText(text);
-    setCopiedIdx(idx);
-    setTimeout(() => setCopiedIdx(null), 1800);
-  };
-
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* Primary Action Hero Card */}
       <div className="rounded-2xl border border-[#e7e7e7] bg-white p-5 sm:p-7 shadow-xs">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-5">
@@ -223,7 +216,7 @@ function IdleState({
               Test the reception flow
             </h2>
             <p className="text-[12px] sm:text-[13px] text-[#4e505b] leading-relaxed text-pretty">
-              Speak as a customer and test a realistic scheduling, service, or safety request. The conversation is logged here so you can inspect the handoff.
+              Speak as a customer and test a realistic scheduling, service, or safety request. The conversation is logged automatically in the dispatch dashboard.
             </p>
           </div>
 
@@ -238,110 +231,28 @@ function IdleState({
             <span>Start voice demo</span>
           </motion.button>
         </div>
-
-        {/* Demo capabilities */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-5 mt-5 border-t border-[#f4f4f5]">
-          <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa] space-y-1">
-            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0a0a0a]">
-              <Zap className="w-3.5 h-3.5 text-[#0b5ed7]" aria-hidden="true" />
-              <span>Clear handoff</span>
-            </div>
-            <p className="text-[11px] text-[#71717a] leading-relaxed">
-              The agent asks for the details needed to make the next step understandable to your team.
-            </p>
-          </div>
-
-          <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa] space-y-1">
-            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0a0a0a]">
-              <CalendarCheck2 className="w-3.5 h-3.5 text-[#059669]" aria-hidden="true" />
-              <span>Schedule aware</span>
-            </div>
-            <p className="text-[11px] text-[#71717a] leading-relaxed">
-              Booking requests are placed into the same appointment view your dispatch team uses.
-            </p>
-          </div>
-
-          <div className="p-3.5 rounded-xl border border-[#e7e7e7] bg-[#fafafa] space-y-1">
-            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-[#0a0a0a]">
-              <ShieldCheck className="w-3.5 h-3.5 text-[#d97706]" aria-hidden="true" />
-              <span>Safety first</span>
-            </div>
-            <p className="text-[11px] text-[#71717a] leading-relaxed">
-              Emergency-style requests are recognized before ordinary service questions are handled.
-            </p>
-          </div>
-        </div>
       </div>
 
-      {/* Suggested testing scenarios */}
-      <div className="rounded-2xl border border-[#e7e7e7] bg-white overflow-hidden shadow-xs">
-        <div className="flex items-center justify-between px-4 sm:px-5 py-3 border-b border-[#e7e7e7] bg-[#fafafa]">
+      {/* Scoped HVAC Capabilities Showcase - HoverRevealCards */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between px-1">
           <div className="flex items-center gap-2">
-            <Headphones className="w-3.5 h-3.5 text-[#0b5ed7]" aria-hidden="true" />
-            <span className="text-[12px] font-semibold text-[#0a0a0a]">
-              Suggested test prompts
+            <span className="text-[12px] font-semibold uppercase tracking-wider text-[#0a0a0a]">
+              Receptionist Capabilities
+            </span>
+            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border border-[#e7e7e7] bg-[#fafafa] text-[#71717a]">
+              Live Interactive Cards
             </span>
           </div>
-          <span className="text-[10px] font-mono text-[#71717a] hidden sm:inline-block">
-            Copy any prompt
+          <span className="text-[11px] text-[#71717a] hidden sm:inline-block">
+            Tap or click any card to launch demo
           </span>
         </div>
 
-        <div className="divide-y divide-[#f4f4f5] text-[12px]">
-          {TEST_SCENARIOS.map((item, idx) => (
-            <div
-              key={item.title}
-              onClick={() => copyPhrase(item.phrase, idx)}
-              className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#fafafa] transition-colors cursor-pointer group"
-            >
-              <div className="space-y-1 max-w-2xl">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span
-                    className={cn(
-                      "font-semibold",
-                      item.urgent ? "text-[#e11d48]" : "text-[#0a0a0a]"
-                    )}
-                  >
-                    {item.title}
-                  </span>
-                  <span
-                    className={cn(
-                      "text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.2 rounded border font-medium",
-                      item.urgent
-                        ? "bg-[#fff1f2] border-[#fecdd3] text-[#e11d48]"
-                        : "bg-[#eff6ff] border-[#bfdbfe] text-[#0b5ed7]"
-                    )}
-                  >
-                    {item.badge}
-                  </span>
-                </div>
-                <p className="font-mono text-[#4e505b] text-[11px]">
-                  &ldquo;{item.phrase}&rdquo;
-                </p>
-                {item.roi && (
-                  <p className="text-[11px] text-[#059669] flex items-center gap-1.5 pt-0.5">
-                    <span className="font-semibold text-[9px] uppercase font-mono tracking-wider bg-[#ecfdf5] border border-[#a7f3d0] px-1 py-0.2 rounded text-[#059669] shrink-0">
-                      Test focus
-                    </span>
-                    <span className="text-[#059669]">{item.roi}</span>
-                  </p>
-                )}
-              </div>
-
-              <div className="flex items-center gap-1 text-[10px] font-mono text-[#71717a] shrink-0 self-end sm:self-auto">
-                {copiedIdx === idx ? (
-                  <span className="text-[#059669] flex items-center gap-1 font-semibold">
-                    <Check className="w-3 h-3" aria-hidden="true" /> Copied
-                  </span>
-                ) : (
-                  <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
-                    <Copy className="w-3 h-3" aria-hidden="true" /> Copy to test
-                  </span>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
+        <HoverRevealCards
+          items={HVAC_CAPABILITIES}
+          onCardClick={() => onStart()}
+        />
       </div>
     </div>
   );
@@ -423,7 +334,7 @@ function EndedState({
           className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12px] font-semibold bg-white border border-[#e7e7e7] text-[#0a0a0a] hover:bg-[#fafafa] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
         >
           <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-          <span>Try another prompt</span>
+          <span>Start new call</span>
         </button>
       </div>
     </div>
