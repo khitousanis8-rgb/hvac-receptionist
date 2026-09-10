@@ -49,7 +49,7 @@ export const HoverRevealCards: React.FC<HoverRevealCardsProps> = ({
     <div
       role="list"
       className={cn(
-        "group grid w-full grid-cols-1 gap-4 p-1 sm:grid-cols-2 lg:grid-cols-4",
+        "hover-reveal-group group grid w-full grid-cols-1 gap-4 p-1 sm:grid-cols-2 lg:grid-cols-4",
         className
       )}
     >
@@ -67,11 +67,11 @@ export const HoverRevealCards: React.FC<HoverRevealCardsProps> = ({
             }
           }}
           className={cn(
-            "relative h-72 sm:h-80 cursor-pointer overflow-hidden rounded-2xl bg-cover bg-center shadow-md transition-all duration-500 ease-in-out select-none border border-white/10",
+            "hover-reveal-card relative h-72 sm:h-80 cursor-pointer overflow-hidden rounded-2xl bg-cover bg-center shadow-md transition-all duration-500 ease-in-out select-none border border-white/10",
             // PC hover effects: De-emphasize siblings on container hover
-            "[@media(hover:hover)]:group-hover:scale-[0.97] [@media(hover:hover)]:group-hover:opacity-60 [@media(hover:hover)]:group-hover:blur-[2px]",
+            "group-hover:scale-[0.97] group-hover:opacity-60 group-hover:blur-[2px]",
             // Highlight hovered or keyboard-focused card
-            "[@media(hover:hover)]:hover:!scale-105 [@media(hover:hover)]:hover:!opacity-100 [@media(hover:hover)]:hover:!blur-none",
+            "hover:!scale-105 hover:!opacity-100 hover:!blur-none",
             "focus-visible:!scale-105 focus-visible:!opacity-100 focus-visible:!blur-none",
             // Mobile active tap feedback
             "active:scale-[0.98] transition-transform",

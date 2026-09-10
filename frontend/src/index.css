@@ -109,3 +109,19 @@ body {
 .app-shell .divide-\[\#f4f4f5\] > :not(:last-child) { border-color: var(--line); }
 .app-shell .hover\:bg-\[\#fafafa\]:hover { background-color: var(--surface-3); }
 .app-shell .shadow-xs, .app-shell .shadow-sm, .app-shell .shadow-2xs { box-shadow: none; }
+
+/* Hover reveal card interactions (enabled exclusively on pointer/hover devices for desktop, safely ignored on touchscreens) */
+@media (hover: hover) and (pointer: fine) {
+  .hover-reveal-group:hover .hover-reveal-card {
+    transform: scale(0.97);
+    opacity: 0.6;
+    filter: blur(2px);
+  }
+  .hover-reveal-group .hover-reveal-card:hover,
+  .hover-reveal-group .hover-reveal-card:focus-visible {
+    transform: scale(1.05) !important;
+    opacity: 1 !important;
+    filter: none !important;
+    z-index: 20;
+  }
+}
