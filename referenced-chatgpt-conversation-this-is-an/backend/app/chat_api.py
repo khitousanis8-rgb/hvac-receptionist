@@ -72,18 +72,41 @@ class EndCallRequest(BaseModel):
 
 
 def _is_assistant_echo(text: str) -> bool:
-    """Detect if caller input is an echo of assistant speech picked up by mic."""
+    """Detect if caller input is an echo of assistant speech picked up by mic.
+
+    Only flags true if the message closely mirrors the opening greeting pattern
+    and does NOT contain genuine caller booking/problem intent.
+    """
     clean = text.lower().strip()
-    echo_markers = [
-        "how can i assist you",
-        "how can i help you with your heating",
+    has_intro = "thank you for calling" in clean or "my name is sarah" in clean
+    has_prompt = (
+        "how can i assist" in clean
+        or "how can i help" in clean
+        or "heating or cooling today" in clean
+    )
+    if not (has_intro and has_prompt):
+        return False
+
+    stripped = clean
+    for phrase in [
         "thank you for calling",
-        "my name is sarah",
-        "heating or cooling today",
         "example hvac",
+        "apex hvac",
+        "my name is sarah",
+        "how can i assist you with your heating or cooling today",
         "how can i assist you with",
-    ]
-    return any(marker in clean for marker in echo_markers)
+        "how can i assist you",
+        "how can i help you",
+        "heating or cooling today",
+        "with your heating or cooling today",
+    ]:
+        stripped = stripped.replace(phrase, " ")
+
+    stripped = re.sub(r"[^a-z0-9]", " ", stripped).strip()
+    remaining_words = [w for w in stripped.split() if len(w) > 2]
+    return len(remaining_words) <= 2
+
+
 
 
 def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[str, Any]:

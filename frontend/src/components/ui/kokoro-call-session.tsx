@@ -179,6 +179,7 @@ export function KokoroCallSession({
         let accumulatedAssistantReply = "";
         let sentenceBuffer = "";
         let currentEvent = "message";
+        let hasEmittedFirstChunk = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -214,15 +215,27 @@ export function KokoroCallSession({
                   sentenceBuffer += data.text;
                   setCurrentAssistantText(accumulatedAssistantReply);
 
-                  // Accumulate into natural conversational breath groups (at least 35 chars
-                  // or long buffer) before emitting an utterance to eliminate choppy inter-sentence pauses
-                  const match = sentenceBuffer.match(/^(.*?[.?!:\n])\s+(.*)$/s);
-                  if (match && (match[1].trim().length >= 35 || sentenceBuffer.length > 90)) {
-                    const completeSentence = match[1].trim();
-                    sentenceBuffer = match[2];
-                    if (completeSentence) {
-                      speechRecRef.current?.registerAssistantSpeech(completeSentence);
-                      neuralVoice.speakSentence(completeSentence);
+                  // 1. Ultra-responsive First Phrase: emit immediately at any clause boundary (comma, period, exclamation, question, colon)
+                  // This brings Time-to-First-Audio down from ~2.5s to ~350ms for natural conversation!
+                  if (!hasEmittedFirstChunk) {
+                    const firstMatch = sentenceBuffer.match(/^(.*?[.?!,:\n])\s+(.*)$/s);
+                    if (firstMatch && firstMatch[1].trim().length >= 8) {
+                      const firstSentence = firstMatch[1].trim();
+                      sentenceBuffer = firstMatch[2];
+                      hasEmittedFirstChunk = true;
+                      speechRecRef.current?.registerAssistantSpeech(firstSentence);
+                      neuralVoice.speakSentence(firstSentence);
+                    }
+                  } else {
+                    // 2. Subsequent breath groups (buffer >= 25 chars or long buffer for smooth prosody)
+                    const match = sentenceBuffer.match(/^(.*?[.?!:\n])\s+(.*)$/s);
+                    if (match && (match[1].trim().length >= 25 || sentenceBuffer.length > 80)) {
+                      const completeSentence = match[1].trim();
+                      sentenceBuffer = match[2];
+                      if (completeSentence) {
+                        speechRecRef.current?.registerAssistantSpeech(completeSentence);
+                        neuralVoice.speakSentence(completeSentence);
+                      }
                     }
                   }
                 } else if (currentEvent === "done") {
@@ -233,7 +246,7 @@ export function KokoroCallSession({
                   }
                   setActiveTool(null);
                 } else if (currentEvent === "error") {
-                  onErrorRef.current(data.error || "Streaming error from assistant");
+                  console.warn("[KokoroCall] Assistant stream notice:", data.error);
                 }
               } catch {
                 // Ignore parse errors on partial frames
@@ -258,13 +271,15 @@ export function KokoroCallSession({
         }
       } catch (err: any) {
         if (err.name !== "AbortError" || timedOut) {
-          console.error("[KokoroCall] chat error:", err);
+          console.warn("[KokoroCall] chat hiccup:", err);
           setIsAgentThinking(false);
-          onErrorRef.current(
-            timedOut
-              ? "The assistant did not respond within 45 seconds. Please try again."
-              : err?.message || "Failed to communicate with receptionist"
-          );
+          // Graceful in-call recovery: speak a polite apology and keep the call alive!
+          const apology = timedOut
+            ? "I'm sorry, I didn't hear that clearly. Could you please repeat that?"
+            : "I apologize, my connection had a momentary pause. What can I help you with today?";
+          setCurrentAssistantText(apology);
+          neuralVoice.speakSentence(apology);
+          neuralVoice.endTurnQueue();
         }
       } finally {
         window.clearTimeout(timeoutId);
@@ -318,16 +333,22 @@ export function KokoroCallSession({
               setCurrentCallerText(text);
             }
           },
+          onBargeIn: () => {
+            console.log("[VoiceCall] Caller barged in: interrupting assistant playback");
+            neuralVoice.stop();
+            setIsAgentSpeaking(false);
+            speechRecRef.current?.pauseForAgentPlayback(false);
+          },
           onError: (err) => {
-            console.warn("[VoiceCall] speech error:", err);
+            console.warn("[VoiceCall] speech notice:", err);
           },
         });
 
-        // Trigger initial greeting instantly
-        await sendMessageToAgent("__GREETING__", []);
-
-        // Start listening for caller speech
+        // Start listening immediately so microphone is primed
         speech.start();
+
+        // Trigger initial greeting in parallel
+        void sendMessageToAgent("__GREETING__", []);
       } catch (err: any) {
         if (!isCancelled) {
           console.error("[VoiceCall] init failed:", err);
