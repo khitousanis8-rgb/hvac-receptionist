@@ -174,3 +174,21 @@ def test_stream_voice_success_and_cache() -> None:
         assert res2.status_code == 200
         assert res2.headers.get("X-Audio-Source") == "cache"
         assert res2.content == res1.content
+
+
+def test_stream_voice_multi_chunk_yields_full_stream() -> None:
+    settings = Settings(_env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    async def mock_multi_stream(self):
+        yield {"type": "audio", "data": b"CHUNK1_HEADER_"}
+        yield {"type": "audio", "data": b"CHUNK2_BODY_"}
+        yield {"type": "audio", "data": b"CHUNK3_TAIL_"}
+
+    with patch("edge_tts.Communicate.stream", side_effect=mock_multi_stream, autospec=True):
+        phrase = "Multi chunk audio test for stream continuity"
+        res = client.get(f"/v1/voice/stream?text={phrase}")
+        assert res.status_code == 200
+        assert res.content == b"CHUNK1_HEADER_CHUNK2_BODY_CHUNK3_TAIL_"
+

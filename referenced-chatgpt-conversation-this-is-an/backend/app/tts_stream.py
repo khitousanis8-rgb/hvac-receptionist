@@ -213,6 +213,8 @@ async def stream_voice(
                 detail="Neural speech synthesis returned no audio stream.",
             )
 
+        semaphore_transferred = True
+
     except TimeoutError as err:
         logger.error("edge_tts_connect_timeout", voice=voice_clean, text_preview=clean_text[:50])
         raise HTTPException(
@@ -237,8 +239,6 @@ async def stream_voice(
             if stream_iter is not None:
                 await stream_iter.aclose()
             _TTS_SEMAPHORE.release()
-
-    semaphore_transferred = True
 
     # Stream generator with guaranteed cleanup of websocket and semaphore
     async def audio_stream_generator() -> AsyncIterator[bytes]:

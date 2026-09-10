@@ -67,14 +67,14 @@ export class NeuralAudioPlayer {
 
       if (!AudioCtx) return null;
 
-      // Note: On iOS Safari, passing a fixed sampleRate (e.g. 24000) that does not match
-      // hardware (44100/48000) throws a NotSupportedError DOMException.
-      // We attempt 24000 first, and fallback to hardware default rate gracefully.
+      // Initialize AudioContext using native hardware sample rate (typically 44.1k or 48k Hz)
+      // for 100% compatibility across all desktop OS sound cards (Windows WASAPI, macOS CoreAudio)
+      // and mobile devices. decodeAudioData automatically resamples the 24kHz stream audio.
       try {
-        this.audioContext = new AudioCtx({ sampleRate: 24000 });
+        this.audioContext = new AudioCtx();
       } catch {
         try {
-          this.audioContext = new AudioCtx();
+          this.audioContext = new AudioCtx({ sampleRate: 24000 });
         } catch (e) {
           console.warn("[NeuralAudioPlayer] Failed to instantiate AudioContext:", e);
           return null;
