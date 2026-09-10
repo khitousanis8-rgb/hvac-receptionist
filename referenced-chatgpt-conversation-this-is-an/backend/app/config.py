@@ -27,6 +27,9 @@ class Settings(BaseSettings):
         "http://localhost:3000,http://localhost:5173,https://hvac-receptionist-umber.vercel.app"
     )
     database_url: str = "sqlite:///./hvac_receptionist.db"
+    # Required to read customer records or use the private operations dashboard.
+    # Keep this server-side only; never compile it into the public frontend.
+    admin_api_key: SecretStr | None = None
 
     business_company_name: Annotated[str, Field(min_length=1)] = "Example HVAC"
     business_phone: Annotated[str, Field(min_length=1)] = "+15555550100"

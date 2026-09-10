@@ -7,6 +7,7 @@ from datetime import time as dt_time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -156,8 +157,14 @@ def book_appointment(
         scheduled_for=when,
         notes=safe_notes,
     )
-    session.add(appointment)
-    session.flush()
+    try:
+        # The pre-check above makes the usual path friendly; the partial unique
+        # index is the authoritative protection when two callers race to book.
+        with session.begin_nested():
+            session.add(appointment)
+            session.flush()
+    except IntegrityError:
+        return None, "That slot was just taken. Please choose another time."
     return appointment, f"Booked {service} at {when.isoformat()}"
 
 

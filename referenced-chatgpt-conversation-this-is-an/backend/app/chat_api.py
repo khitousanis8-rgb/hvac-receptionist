@@ -16,13 +16,13 @@ from pydantic import BaseModel, Field
 
 from app.agent.prompts import receptionist_instructions
 from app.call_tracking import (
-    end_call,
-    end_call_by_session,
-    get_or_create_session_slots,
-    start_call,
+    end_browser_call,
+    get_call_slots,
+    is_authorized_active_call,
+    start_or_get_browser_call,
     update_call_outcome,
     update_call_phone,
-    update_session_slots,
+    update_call_slots,
 )
 from app.config import Settings, get_settings
 from app.db import new_session
@@ -51,14 +51,17 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    session_id: str = Field(max_length=64)
+    session_id: str = Field(max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     message: str = Field(max_length=4000)
     history: list[ChatMessage] = Field(default_factory=list)
+    call_id: int | None = Field(default=None, ge=1)
+    call_secret: str = Field(min_length=32, max_length=128)
 
 
 class EndCallRequest(BaseModel):
-    session_id: str = Field(max_length=64)
-    call_id: int | None = None
+    session_id: str = Field(max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    call_id: int = Field(ge=1)
+    call_secret: str = Field(min_length=32, max_length=128)
     outcome: str = Field(default="info_only", pattern="^(booked|info_only)$")
     summary: str | None = Field(default=None, max_length=2000)
 
@@ -131,16 +134,22 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
     elif any(k in lower for k in ["tuneup", "tune up", "tune-up", "maintenance", "inspection"]):
         updates["service"] = "HVAC tune-up"
 
-    # 4. Date/Time extraction heuristics
-    if any(k in lower for k in ["tomorrow", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]):
-        time_match = re.search(
-            r"(tomorrow|today|next \w+|\w+day)?\s*(?:at)?\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?|\b))",
-            lower,
-        )
-        if time_match:
-            updates["time"] = time_match.group(0).strip()
-        elif "tomorrow" in lower:
-            updates["date"] = "tomorrow"
+    # 4. Date/time extraction. Keep each field canonical so the safety repair
+    # can pass the same schema used by the booking tool.
+    date_match = re.search(
+        r"\b(\d{4}-\d{2}-\d{2}|today|tomorrow|next\s+"
+        r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        lower,
+    )
+    if date_match:
+        updates["date"] = date_match.group(1)
+    time_match = re.search(
+        r"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))\b",
+        lower,
+    )
+    if time_match:
+        updates["time"] = time_match.group(1)
 
     return updates
 
@@ -157,7 +166,23 @@ def _parse_local_datetime(settings: Settings, date_str: str, time_str: str) -> d
     elif clean_date == "today":
         target_date = now.strftime("%Y-%m-%d")
     else:
-        target_date = clean_date
+        weekday_names = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+        normalized_weekday = clean_date.removeprefix("next ")
+        if normalized_weekday in weekday_names:
+            days_ahead = (weekday_names[normalized_weekday] - now.weekday()) % 7
+            if days_ahead == 0 or clean_date.startswith("next "):
+                days_ahead += 7
+            target_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+        else:
+            target_date = clean_date
 
     # Try direct ISO parsing first
     try:
@@ -441,7 +466,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             f"Thank you for calling {settings.business_company_name}! "
             f"My name is Sarah. How can I assist you with your heating or cooling today?"
         )
-        call_id = start_call(req.session_id)
+        call_id = start_or_get_browser_call(req.session_id, req.call_secret)
 
         async def greeting_generator():
             yield f"event: call_started\ndata: {json.dumps({'call_id': call_id})}\n\n"
@@ -452,6 +477,14 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             greeting_generator(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    if req.call_id is None or not is_authorized_active_call(
+        req.call_id, req.session_id, req.call_secret
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This call session is invalid or has already ended.",
         )
 
     # Detect acoustic echo of assistant's greeting picked up by microphone
@@ -475,11 +508,13 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
     client = _get_client(settings)
 
-    # 1. Update and retrieve persistent session slots (immune to sliding window eviction)
-    slots = get_or_create_session_slots(req.session_id)
+    # 1. Update and retrieve durable session slots bound to this exact call.
+    slots = get_call_slots(req.call_id)
     new_slots = _extract_slots_from_text(req.message, slots)
     if new_slots:
-        slots = update_session_slots(req.session_id, new_slots)
+        slots = update_call_slots(req.call_id, new_slots)
+        if phone := new_slots.get("phone"):
+            update_call_phone(req.call_id, str(phone))
 
     # 2. Dynamic prompt grounding with verified slots
     system_content = receptionist_instructions(settings, slots=slots)
@@ -609,14 +644,14 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     name = tc["name"]
                     args = parsed_args[i]
 
-                    logger.info("executing_chat_tool", tool=name, args=args)
+                    logger.info("executing_chat_tool", tool=name, argument_names=sorted(args))
                     tool_result = _execute_tool(settings, name, args)
                     if name == "book_appointment_tool" and ("booked" in tool_result.lower() or "confirmed" in tool_result.lower()):
                         outcome = "booked"
-                        update_session_slots(req.session_id, {"confirmed": True})
-                        update_call_outcome(req.session_id, "booked")
+                        update_call_slots(req.call_id, {"confirmed": True})
+                        update_call_outcome(req.call_id, "booked")
                         if args.get("phone_number"):
-                            update_call_phone(req.session_id, str(args["phone_number"]))
+                            update_call_phone(req.call_id, str(args["phone_number"]))
 
                     yield f"event: tool_call\ndata: {json.dumps({'name': name, 'result': tool_result})}\n\n"
 
@@ -658,23 +693,36 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     ]
                 )
                 if is_claiming_booked and not slots.get("confirmed") and has_booking_prereqs:
-                    logger.warning("anti_hallucination_auto_booking", session_id=req.session_id, slots=slots)
+                    logger.warning(
+                        "anti_hallucination_auto_booking",
+                        session_id=req.session_id,
+                        present_slots=sorted(key for key, value in slots.items() if value),
+                    )
                     cust_name = slots.get("name") or "Caller"
                     cust_phone = slots.get("phone") or ""
                     cust_service = slots.get("service") or "AC repair"
-                    cust_time = slots.get("time") or slots.get("date") or "tomorrow 9:00 AM"
-                    booking_result = _execute_tool(settings, "book_appointment_tool", {
-                        "customer_name": cust_name,
-                        "phone_number": cust_phone,
-                        "service": cust_service,
-                        "preferred_datetime": cust_time,
-                    })
-                    if "booked" in booking_result.lower() or "confirmed" in booking_result.lower():
-                        outcome = "booked"
-                        update_session_slots(req.session_id, {"confirmed": True})
-                        update_call_outcome(req.session_id, "booked")
-                        if cust_phone:
-                            update_call_phone(req.session_id, cust_phone)
+                    cust_date = slots.get("date")
+                    cust_time = slots.get("time")
+                    if cust_date and cust_time:
+                        booking_result = _execute_tool(
+                            settings,
+                            "book_appointment_tool",
+                            {
+                                "name": cust_name,
+                                "phone_number": cust_phone,
+                                "service": cust_service,
+                                "date": str(cust_date),
+                                "time": str(cust_time),
+                            },
+                        )
+                        if "booked" in booking_result.lower() or "confirmed" in booking_result.lower():
+                            outcome = "booked"
+                            update_call_slots(req.call_id, {"confirmed": True})
+                            update_call_outcome(req.call_id, "booked")
+                            if cust_phone:
+                                update_call_phone(req.call_id, str(cust_phone))
+                    else:
+                        logger.warning("booking_claim_rejected_missing_canonical_datetime")
 
             yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
 
@@ -741,9 +789,17 @@ async def transcribe_audio(req: TranscribeRequest) -> dict[str, str]:
 
 @router.post("/end")
 async def end_call_record(req: EndCallRequest) -> dict[str, Any]:
-    """Finalize call record in SQLite."""
-    if req.call_id:
-        end_call(req.call_id, req.outcome, req.summary)
-    elif req.session_id:
-        end_call_by_session(req.session_id, req.outcome, req.summary)
-    return {"status": "ok", "call_id": req.call_id, "session_id": req.session_id, "outcome": req.outcome}
+    """Finalize only the caller's own active browser call."""
+    finalized = end_browser_call(
+        req.call_id,
+        req.session_id,
+        req.call_secret,
+        req.outcome,
+        req.summary,
+    )
+    if not finalized:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The active call was not found or cannot be finalized by this client.",
+        )
+    return {"status": "ok", "call_id": req.call_id, "outcome": req.outcome}

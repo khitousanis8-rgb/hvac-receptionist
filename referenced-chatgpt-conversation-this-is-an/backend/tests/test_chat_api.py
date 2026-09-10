@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.chat_api import _execute_tool, _is_closing_or_polite_remark
 from app.config import Settings
+from app.call_tracking import start_or_get_browser_call
 from app.db import CallRecord, Customer, init_db, new_session
 from app.main import create_app
 
@@ -17,6 +18,22 @@ from app.main import create_app
 @pytest.fixture(autouse=True)
 def setup_db() -> None:
     init_db()
+
+
+_CALL_SECRET = "a" * 64
+
+
+def _start_browser_call(room_name: str) -> int:
+    return start_or_get_browser_call(room_name, _CALL_SECRET)
+
+
+def _browser_payload(room_name: str, call_id: int, message: str) -> dict[str, object]:
+    return {
+        "session_id": room_name,
+        "message": message,
+        "call_id": call_id,
+        "call_secret": _CALL_SECRET,
+    }
 
 
 def test_initial_greeting_stream() -> None:
@@ -29,7 +46,11 @@ def test_initial_greeting_stream() -> None:
 
     res = client.post(
         "/v1/calls/chat",
-        json={"session_id": "test-session-123", "message": "__GREETING__"},
+        json={
+            "session_id": "test-session-123",
+            "message": "__GREETING__",
+            "call_secret": _CALL_SECRET,
+        },
     )
     assert res.status_code == 200
     assert "text/event-stream" in res.headers["content-type"]
@@ -45,10 +66,8 @@ def test_chat_requires_llm_credentials() -> None:
     app = create_app(Settings(_env_file=None))
     client = TestClient(app)
 
-    res = client.post(
-        "/v1/calls/chat",
-        json={"session_id": "test-session-456", "message": "Can you help me?"},
-    )
+    call_id = _start_browser_call("test-session-456")
+    res = client.post("/v1/calls/chat", json=_browser_payload("test-session-456", call_id, "Can you help me?"))
 
     assert res.status_code == 503
     assert res.json()["detail"] == "LLM credentials are not configured on the server."
@@ -86,17 +105,14 @@ def test_end_call_endpoint() -> None:
     app = create_app(settings)
     client = TestClient(app)
 
-    with new_session() as session:
-        call = CallRecord(room_name="test-call-end-99")
-        session.add(call)
-        session.commit()
-        call_id = call.id
+    call_id = _start_browser_call("test-call-end-99")
 
     res = client.post(
         "/v1/calls/end",
         json={
             "session_id": "test-call-end-99",
             "call_id": call_id,
+            "call_secret": _CALL_SECRET,
             "outcome": "booked",
             "summary": "Customer booked AC repair.",
         },
@@ -109,6 +125,32 @@ def test_end_call_endpoint() -> None:
         assert updated is not None
         assert updated.outcome == "booked"
         assert updated.transcript_summary == "Customer booked AC repair."
+
+
+def test_end_call_cannot_modify_another_browser_call() -> None:
+    client = TestClient(create_app(Settings(_env_file=None)))
+    owner_call_id = start_or_get_browser_call("owner-room", _CALL_SECRET)
+    other_secret = "b" * 64
+    target_call_id = start_or_get_browser_call("target-room", other_secret)
+
+    response = client.post(
+        "/v1/calls/end",
+        json={
+            "session_id": "target-room",
+            "call_id": target_call_id,
+            "call_secret": _CALL_SECRET,
+            "outcome": "booked",
+            "summary": "tampered",
+        },
+    )
+
+    assert owner_call_id != target_call_id
+    assert response.status_code == 404
+    with new_session() as session:
+        target = session.get(CallRecord, target_call_id)
+        assert target is not None
+        assert target.ended_at is None
+        assert target.outcome == "in_progress"
 
 
 def test_get_client_singleton() -> None:
@@ -197,7 +239,11 @@ def test_chat_stream_disables_tools_on_polite_remark() -> None:
 
         res = client.post(
             "/v1/calls/chat",
-            json={"session_id": "polite-test", "message": "Thank you so much!"},
+            json=_browser_payload(
+                "polite-test",
+                _start_browser_call("polite-test"),
+                "Thank you so much!",
+            ),
         )
         assert res.status_code == 200
         assert mock_openai.chat.completions.create.called
@@ -208,7 +254,11 @@ def test_chat_stream_disables_tools_on_polite_remark() -> None:
         # When it's not a polite remark, tools should be provided
         res2 = client.post(
             "/v1/calls/chat",
-            json={"session_id": "polite-test", "message": "I want to schedule AC repair"},
+            json=_browser_payload(
+                "polite-test",
+                _start_browser_call("polite-test"),
+                "I want to schedule AC repair",
+            ),
         )
         assert res2.status_code == 200
         call_kwargs2 = mock_openai.chat.completions.create.call_args.kwargs
@@ -256,7 +306,11 @@ def test_chat_stream_booking_outcome() -> None:
 
         res = client.post(
             "/v1/calls/chat",
-            json={"session_id": "booking-test", "message": "Book AC repair for next Monday 10am"},
+            json=_browser_payload(
+                "booking-test",
+                _start_browser_call("booking-test"),
+                "Book AC repair for next Monday 10am",
+            ),
         )
         assert res.status_code == 200
         text = res.text
@@ -286,7 +340,8 @@ def test_extract_slots_from_text() -> None:
 
     # 5. Date/Time extraction
     u5 = _extract_slots_from_text("where to go for tomorrow at 9:00 a.m. Maybe", slots)
-    assert "tomorrow at 9:00 a.m" in u5.get("time", "")
+    assert u5["date"] == "tomorrow"
+    assert u5["time"] == "9:00 a.m"
 
 
 def test_parse_local_datetime_relative_and_formats() -> None:
@@ -310,19 +365,20 @@ def test_parse_local_datetime_relative_and_formats() -> None:
 
 def test_session_slots_and_caller_phone_sync() -> None:
     from app.call_tracking import (
-        get_or_create_session_slots,
+        get_call_slots,
         start_call,
         update_call_phone,
-        update_session_slots,
+        update_call_slots,
     )
 
     room = "test-room-slots-99"
     call_id = start_call(room)
 
-    slots = get_or_create_session_slots(room)
+    slots = get_call_slots(call_id)
     assert slots["name"] is None
 
-    update_session_slots(room, {"name": "Anis", "phone": "+12301234567"})
+    slots = update_call_slots(call_id, {"name": "Anis", "phone": "+12301234567"})
+    update_call_phone(call_id, "+12301234567")
     assert slots["name"] == "Anis"
     assert slots["phone"] == "+12301234567"
 
@@ -372,19 +428,25 @@ def test_end_call_preserves_booked_outcome() -> None:
 
 
 def test_end_call_by_session_endpoint() -> None:
-    from app.call_tracking import start_call, update_call_outcome
+    from app.call_tracking import update_call_outcome
 
     settings = Settings(_env_file=None)
     app = create_app(settings)
     client = TestClient(app)
     room = "test-session-end-endpoint"
-    start_call(room)
-    update_call_outcome(room, "booked")
+    call_id = _start_browser_call(room)
+    update_call_outcome(call_id, "booked")
 
-    # Call /v1/calls/end with session_id only and info_only outcome
+    # The browser can finalize only its own record and cannot downgrade booked.
     res = client.post(
         "/v1/calls/end",
-        json={"session_id": room, "outcome": "info_only", "summary": "Caller hung up"},
+        json={
+            "session_id": room,
+            "call_id": call_id,
+            "call_secret": _CALL_SECRET,
+            "outcome": "info_only",
+            "summary": "Caller hung up",
+        },
     )
     assert res.status_code == 200
 
@@ -414,7 +476,11 @@ def test_assistant_echo_detection_and_recovery_stream() -> None:
     client = TestClient(app)
     res = client.post(
         "/v1/calls/chat",
-        json={"session_id": "echo-test-session", "message": echo_text},
+            json=_browser_payload(
+                "echo-test-session",
+                _start_browser_call("echo-test-session"),
+                echo_text,
+            ),
     )
     assert res.status_code == 200
     assert "I'm right here!" in res.text
@@ -496,4 +562,3 @@ def test_create_stream_completion_rate_limit_failover() -> None:
     assert attempted_models[0] == "openai/gpt-oss-120b"
     assert len(attempted_models) >= 2
     assert attempted_models[1] in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
-

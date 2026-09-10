@@ -50,6 +50,12 @@ function formatDuration(seconds: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
+function createCallSecret(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export function KokoroCallSession({
   companyName,
   onCallEnded,
@@ -68,8 +74,10 @@ export function KokoroCallSession({
 
   const durationRef = useRef<number>(0);
   const sessionIdRef = useRef<string>(`session-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`);
+  const callSecretRef = useRef<string>(createCallSecret());
   const callIdRef = useRef<number | null>(null);
   const callOutcomeRef = useRef<string>("info_only");
+  const callEndRequestedRef = useRef<boolean>(false);
   const speechRecRef = useRef<BrowserSpeechRecognition | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptHistoryRef = useRef<ChatMessage[]>([]);
@@ -151,6 +159,8 @@ export function KokoroCallSession({
             session_id: sessionIdRef.current,
             message: userMessage,
             history: recentHistory.map((m) => ({ role: m.role, content: m.content })),
+            call_id: callIdRef.current,
+            call_secret: callSecretRef.current,
           }),
           signal: controller.signal,
         });
@@ -331,6 +341,24 @@ export function KokoroCallSession({
       if (speechRecRef.current) {
         speechRecRef.current.stop();
       }
+      const callId = callIdRef.current;
+      if (callId && !callEndRequestedRef.current) {
+        callEndRequestedRef.current = true;
+        void fetch(apiUrl("/v1/calls/end"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: sessionIdRef.current,
+            call_id: callId,
+            call_secret: callSecretRef.current,
+            outcome: callOutcomeRef.current,
+            summary: transcriptHistoryRef.current
+              .map((m) => `${m.role}: ${m.content}`)
+              .join("\n"),
+          }),
+          keepalive: true,
+        });
+      }
     };
   }, [sendMessageToAgent]);
 
@@ -348,6 +376,8 @@ export function KokoroCallSession({
   };
 
   const handleEndCall = async () => {
+    if (callEndRequestedRef.current) return;
+    callEndRequestedRef.current = true;
     neuralVoice.stop();
     if (speechRecRef.current) {
       speechRecRef.current.stop();
@@ -360,13 +390,14 @@ export function KokoroCallSession({
       await apiPost("/v1/calls/end", {
         session_id: sessionIdRef.current,
         call_id: callIdRef.current,
+        call_secret: callSecretRef.current,
         outcome: callOutcomeRef.current,
         summary: transcriptHistoryRef.current
           .map((m) => `${m.role}: ${m.content}`)
           .join("\n"),
       });
-    } catch {
-      // ignore
+    } catch (err) {
+      console.warn("[KokoroCall] call log finalization failed:", err);
     }
 
     onCallEnded(durationRef.current);

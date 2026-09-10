@@ -65,37 +65,60 @@ interface PublicConfig {
 
 interface ApiState<T> {
   data: T[];
+  total: number;
+  outcomeCounts: Record<string, number>;
   loaded: boolean;
   error: boolean;
+  status: number | null;
   updatedAt: Date | null;
 }
 
-function useApi<T>(path: string, refreshMs = 10000): ApiState<T> {
+function useApi<T>(path: string, refreshMs = 10000, adminKey?: string | null): ApiState<T> {
   const [state, setState] = useState<ApiState<T>>({
     data: [],
+    total: 0,
+    outcomeCounts: {},
     loaded: false,
     error: false,
+    status: null,
     updatedAt: null,
   });
   useEffect(() => {
     let alive = true;
     const load = () =>
-      fetch(apiUrl(path))
+      fetch(apiUrl(path), {
+        headers: adminKey ? { "X-Admin-Key": adminKey } : undefined,
+      })
         .then((r) => {
           if (!r.ok) throw new Error(String(r.status));
           return r.json();
         })
         .then((d) => {
           if (!alive) return;
+          const items = Array.isArray(d) ? d : Array.isArray(d?.items) ? d.items : [];
           setState({
-            data: Array.isArray(d) ? d : [],
+            data: items,
+            total: typeof d?.total === "number" ? d.total : items.length,
+            outcomeCounts:
+              d?.outcome_counts && typeof d.outcome_counts === "object"
+                ? d.outcome_counts
+                : {},
             loaded: true,
             error: false,
+            status: 200,
             updatedAt: new Date(),
           });
         })
-        .catch(() => {
-          if (alive) setState((s) => ({ ...s, loaded: true, error: true }));
+        .catch((err: Error) => {
+          if (alive) {
+            const parsedStatus = Number.parseInt(err.message, 10);
+            setState((s) => ({
+              ...s,
+              loaded: true,
+              error: true,
+              status: Number.isFinite(parsedStatus) ? parsedStatus : null,
+            }));
+          }
         });
     load();
     const timer = setInterval(load, refreshMs);
@@ -103,7 +126,7 @@ function useApi<T>(path: string, refreshMs = 10000): ApiState<T> {
       alive = false;
       clearInterval(timer);
     };
-  }, [path, refreshMs]);
+  }, [path, refreshMs, adminKey]);
   return state;
 }
 
@@ -670,6 +693,8 @@ function CallsPage({ calls }: { calls: ApiState<CallRecord> }) {
     if (filter === "info_only") return c.outcome === "info_only";
     return true;
   });
+  const countFor = (outcome: "all" | "booked" | "info_only") =>
+    outcome === "all" ? calls.total : calls.outcomeCounts[outcome] ?? 0;
 
   return (
     <div className="space-y-4 pb-8">
@@ -695,7 +720,7 @@ function CallsPage({ calls }: { calls: ApiState<CallRecord> }) {
                   : "text-[#71717a] hover:text-[#0a0a0a]"
               )}
             >
-              {t.replace("_", " ")} ({t === "all" ? calls.data.length : calls.data.filter((c) => c.outcome === t).length})
+              {t.replace("_", " ")} ({countFor(t)})
             </button>
           ))}
         </div>
@@ -703,7 +728,7 @@ function CallsPage({ calls }: { calls: ApiState<CallRecord> }) {
 
       {/* Desktop Table View */}
       <div className="hidden md:block">
-        <Card title={`Calls Log (${filtered.length})`}>
+          <Card title={`Calls Log (${filtered.length} shown of ${countFor(filter)})`}>
           <CallsTable calls={filtered} loading={!calls.loaded} />
         </Card>
       </div>
@@ -830,8 +855,8 @@ function DashboardPage({
   loading: boolean;
   onNavigate: (page: Page) => void;
 }) {
-  const bookedCount = calls.data.filter((c) => c.outcome === "booked").length;
-  const rate = calls.data.length > 0 ? Math.round((bookedCount / calls.data.length) * 100) : 0;
+  const bookedCount = calls.outcomeCounts.booked ?? calls.data.filter((c) => c.outcome === "booked").length;
+  const rate = calls.total > 0 ? Math.round((bookedCount / calls.total) * 100) : 0;
 
   return (
     <div className="space-y-5 pb-8">
@@ -864,7 +889,7 @@ function DashboardPage({
       {/* Metrics Row */}
       <Reveal delay={0.04} className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
         <StatCard
-          value={loading ? "—" : calls.data.length}
+          value={loading ? "—" : calls.total}
           label="Calls handled"
           subtext="Inbound"
         />
@@ -969,8 +994,11 @@ function DashboardPage({
 }
 
 export default function App() {
-  const calls = useApi<CallRecord>("/v1/calls");
-  const appointments = useApi<Appointment>("/v1/appointments");
+  const [adminKey, setAdminKey] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : window.sessionStorage.getItem("hvac-admin-key")
+  );
+  const calls = useApi<CallRecord>("/v1/calls?limit=200", 10000, adminKey);
+  const appointments = useApi<Appointment>("/v1/appointments", 10000, adminKey);
   const online = useHealth();
   const config = useConfig();
   const [page, setPage] = useState<Page>("dashboard");
@@ -985,6 +1013,15 @@ export default function App() {
       : calls.updatedAt ?? appointments.updatedAt;
   const loading = !calls.loaded || !appointments.loaded;
   const apiError = calls.error || appointments.error;
+  const adminAccessNeeded = calls.status === 401 || appointments.status === 401;
+
+  const updateAdminKey = () => {
+    const entered = window.prompt("Enter the private dashboard access key");
+    if (!entered?.trim()) return;
+    const trimmed = entered.trim();
+    window.sessionStorage.setItem("hvac-admin-key", trimmed);
+    setAdminKey(trimmed);
+  };
 
   const links: {
     page: Page;
@@ -1108,6 +1145,14 @@ export default function App() {
           </div>
         </div>
 
+        <button
+          type="button"
+          onClick={updateAdminKey}
+          className="md:hidden rounded-full border border-[#e7e7e7] bg-white px-2.5 py-1 text-[10px] font-semibold text-[#4e505b]"
+        >
+          {adminKey ? "Records" : "Unlock"}
+        </button>
+
         {/* Quick Emergency Call Button */}
         {config?.emergency_phone && (
           <a
@@ -1136,6 +1181,13 @@ export default function App() {
               </p>
             </div>
             <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={updateAdminKey}
+                className="rounded-lg border border-[#e7e7e7] bg-white px-3 py-1.5 text-[11px] font-semibold text-[#4e505b] hover:bg-[#fafafa]"
+              >
+                {adminKey ? "Admin access set" : "Unlock records"}
+              </button>
               <div className="flex items-center gap-2 text-[11px] text-[#71717a] px-3 py-1 rounded-lg border border-[#e7e7e7] bg-[#fafafa]">
                 <span
                   className={cn(
@@ -1164,7 +1216,9 @@ export default function App() {
 
           {apiError && (
             <div className="mb-4 rounded-xl border border-[#fde68a] bg-[#fffbeb] px-4 py-2.5 text-[12px] text-[#b45309] shadow-xs">
-              Connecting to backend API… If the server was idle, it takes ~30–50s to wake up. Retrying automatically.
+              {adminAccessNeeded
+                ? "Customer records are private. Select “Unlock records” and enter the server-configured access key."
+                : "Connecting to backend API… If the server was idle, it takes ~30–50s to wake up. Retrying automatically."}
             </div>
           )}
 

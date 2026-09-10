@@ -10,11 +10,13 @@ from typing import Annotated
 from uuid import uuid4
 
 import structlog
-from fastapi import FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 
 from app.agent.dispatch import CredentialsMissingError, DispatchError, create_room_and_token
+from app.auth import require_admin
 from app.chat_api import router as chat_router
 from app.config import Settings, get_settings
 from app.dashboard import router as dashboard_router
@@ -86,10 +88,10 @@ class CallTokenResponse(BaseModel):
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    settings = get_settings()
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    settings: Settings = application.state.settings
     configure_logging(settings.log_level)
-    init_db()
+    init_db(settings.database_url)
     structlog.get_logger(__name__).info("api_started", environment=settings.app_env)
     yield
     structlog.get_logger(__name__).info("api_stopped")
@@ -151,32 +153,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "services": runtime_settings.business_services,
         }
 
-    @app.get("/v1/calls", tags=["dashboard"])
+    @app.get("/v1/calls", tags=["dashboard"], dependencies=[Depends(require_admin)])
     async def list_calls(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    ) -> list[dict[str, object]]:
-        """Recent call records, newest first."""
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> dict[str, object]:
+        """Page through private call records, newest first, with accurate totals."""
         with new_session() as session:
+            base_query = session.query(CallRecord)
+            total = base_query.count()
             records = (
-                session.query(CallRecord)
+                base_query
                 .order_by(CallRecord.started_at.desc())
+                .offset(offset)
                 .limit(limit)
                 .all()
             )
-            return [
-                {
-                    "id": record.id,
-                    "room_name": record.room_name,
-                    "caller_phone": record.caller_phone,
-                    "outcome": record.outcome,
-                    "transcript_summary": record.transcript_summary,
-                    "started_at": record.started_at.isoformat() if record.started_at else None,
-                    "ended_at": record.ended_at.isoformat() if record.ended_at else None,
-                }
-                for record in records
-            ]
+            outcome_counts: dict[str, int] = {}
+            for outcome, count in (
+                session.query(CallRecord.outcome, func.count()).group_by(CallRecord.outcome)
+            ):
+                outcome_counts[str(outcome)] = int(count)
+            return {
+                "items": [
+                    {
+                        "id": record.id,
+                        "room_name": record.room_name,
+                        "caller_phone": record.caller_phone,
+                        "outcome": record.outcome,
+                        "transcript_summary": record.transcript_summary,
+                        "started_at": record.started_at.isoformat().replace("+00:00", "Z")
+                        if record.started_at
+                        else None,
+                        "ended_at": record.ended_at.isoformat().replace("+00:00", "Z")
+                        if record.ended_at
+                        else None,
+                    }
+                    for record in records
+                ],
+                "total": total,
+                "outcome_counts": outcome_counts,
+                "next_offset": offset + len(records) if offset + len(records) < total else None,
+            }
 
-    @app.get("/v1/appointments", tags=["dashboard"])
+    @app.get("/v1/appointments", tags=["dashboard"], dependencies=[Depends(require_admin)])
     async def list_appointments(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
     ) -> list[dict[str, object]]:

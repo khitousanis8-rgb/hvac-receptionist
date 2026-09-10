@@ -32,16 +32,17 @@ def test_public_configuration_never_includes_credentials() -> None:
 
 
 def test_endpoints_query_limit_validation() -> None:
-    with TestClient(create_app()) as client:
-        res1 = client.get("/v1/calls?limit=0")
+    settings = Settings(ADMIN_API_KEY="test-admin-key", _env_file=None)
+    headers = {"X-Admin-Key": "test-admin-key"}
+    with TestClient(create_app(settings)) as client:
+        res1 = client.get("/v1/calls?limit=0", headers=headers)
         assert res1.status_code == 422
 
-        res2 = client.get("/v1/calls?limit=201")
+        res2 = client.get("/v1/calls?limit=201", headers=headers)
         assert res2.status_code == 422
 
-        res3 = client.get("/v1/appointments?limit=0")
+        res3 = client.get("/v1/appointments?limit=0", headers=headers)
         assert res3.status_code == 422
 
-        res4 = client.get("/v1/appointments?limit=500")
+        res4 = client.get("/v1/appointments?limit=500", headers=headers)
         assert res4.status_code == 422
-
