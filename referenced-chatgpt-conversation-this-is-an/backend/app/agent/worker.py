@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import json
+
 import structlog
 from dotenv import load_dotenv
 from livekit import rtc
-from livekit.agents import Agent, AgentServer, AgentSession, JobContext, JobExecutorType, cli, inference
+from livekit.agents import (
+    Agent,
+    AgentServer,
+    AgentSession,
+    JobContext,
+    JobExecutorType,
+    cli,
+    inference,
+)
 from livekit.plugins import openai
 
 from app.agent.prompts import receptionist_instructions
@@ -65,7 +74,8 @@ def build_agent_session(settings: Settings) -> AgentSession[None]:
         # - Uses LiveKit Cloud TurnDetector & VAD (0% local CPU on Render free tier).
         # - Disables automatic acoustic interruption & discards mic audio while agent speaks:
         #   Prevents speaker feedback loops, audio packet buffer underruns, and speech cuts.
-        # - Enables preemptive generation so responses start streaming immediately (sub-second latency).
+        # - Enables preemptive generation so responses start streaming immediately
+        #   (sub-second latency).
         turn_handling={
             "interruption": {
                 "enabled": False,

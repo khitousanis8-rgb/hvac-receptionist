@@ -10,7 +10,6 @@ from typing import Any
 
 from app.db import CallRecord, new_session
 
-
 _DEFAULT_SLOTS: dict[str, Any] = {
     "name": None,
     "phone": None,
@@ -127,7 +126,11 @@ def update_call_outcome(call_id: int, outcome: str) -> None:
     """Update the exact active record without downgrading a confirmed booking."""
     with new_session() as session:
         record = session.get(CallRecord, call_id)
-        if record and record.ended_at is None and (record.outcome != "booked" or outcome == "booked"):
+        if (
+            record
+            and record.ended_at is None
+            and (record.outcome != "booked" or outcome == "booked")
+        ):
             record.outcome = outcome
 
 

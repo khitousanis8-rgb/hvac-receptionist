@@ -11,7 +11,6 @@ from app.db import init_db, reset_engine
 from app.main import create_app
 from app.scheduling import book_appointment
 
-
 _ADMIN_KEY = "dashboard-test-key"
 _ADMIN_HEADERS = {"X-Admin-Key": _ADMIN_KEY}
 

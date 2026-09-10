@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.call_tracking import start_or_get_browser_call
 from app.chat_api import _execute_tool, _is_closing_or_polite_remark
 from app.config import Settings
-from app.call_tracking import start_or_get_browser_call
 from app.db import CallRecord, Customer, init_db, new_session
 from app.main import create_app
 
@@ -513,7 +513,7 @@ def test_phone_extraction_spoken_oh() -> None:
 
 
 def test_rate_limit_detection_and_candidate_models() -> None:
-    from app.chat_api import _is_rate_limit_error, _get_candidate_models
+    from app.chat_api import _get_candidate_models, _is_rate_limit_error
 
     # Should detect 429 and common rate limit patterns
     assert _is_rate_limit_error("Error code: 429 - Rate limit reached for model openai/gpt-oss-120b") is True
@@ -530,7 +530,6 @@ def test_rate_limit_detection_and_candidate_models() -> None:
 
 
 def test_create_stream_completion_rate_limit_failover() -> None:
-    import pytest
     from app.chat_api import _create_stream_completion
 
     attempted_models = []

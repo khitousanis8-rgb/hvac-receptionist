@@ -75,7 +75,11 @@ async def book_appointment_tool(
         matched_service: str | None = None
         for approved in settings.business_services:
             clean_app = approved.strip().lower()
-            if normalized_requested == clean_app or normalized_requested in clean_app or clean_app in normalized_requested:
+            if (
+                normalized_requested == clean_app
+                or normalized_requested in clean_app
+                or clean_app in normalized_requested
+            ):
                 matched_service = approved.strip()
                 break
         if not matched_service:

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
-from collections.abc import AsyncIterator
 import re
 import threading
 import time
+from collections import OrderedDict
+from collections.abc import AsyncIterator
 from typing import Any
 
 import edge_tts
@@ -35,7 +35,11 @@ class AudioLRUCache:
     Prevents unbounded memory growth on memory-constrained hosting (e.g. Render 512MB RAM).
     """
 
-    def __init__(self, max_entries: int = _MAX_CACHE_ENTRIES, max_bytes: int = _MAX_CACHE_BYTES) -> None:
+    def __init__(
+        self,
+        max_entries: int = _MAX_CACHE_ENTRIES,
+        max_bytes: int = _MAX_CACHE_BYTES,
+    ) -> None:
         self._cache: OrderedDict[tuple[str, str], bytes] = OrderedDict()
         self._lock = asyncio.Lock()
         self._max_entries = max_entries
@@ -149,7 +153,10 @@ async def stream_voice(
     if len(voice_clean) > 64 or not _VOICE_REGEX.match(voice_clean):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid voice identifier '{voice}'. Voice must match pattern '[lang]-[REGION]-[Name]Neural'.",
+            detail=(
+                f"Invalid voice identifier '{voice}'. "
+                "Voice must match pattern '[lang]-[REGION]-[Name]Neural'."
+            ),
         )
 
     cache_key = (clean_text, voice_clean)
@@ -173,11 +180,11 @@ async def stream_voice(
     # Concurrency limiter to protect Render 512MB RAM
     try:
         await asyncio.wait_for(_TTS_SEMAPHORE.acquire(), timeout=5.0)
-    except TimeoutError:
+    except TimeoutError as err:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Speech synthesis service is at maximum capacity. Please retry shortly.",
-        )
+        ) from err
 
     should_cache = len(clean_text) < _MAX_CACHED_TEXT_LEN
     stream_iter = None
@@ -205,7 +212,7 @@ async def stream_voice(
                 detail="Neural speech synthesis returned no audio stream.",
             )
 
-    except TimeoutError:
+    except TimeoutError as err:
         if stream_iter is not None:
             await stream_iter.aclose()
         _TTS_SEMAPHORE.release()
@@ -213,7 +220,7 @@ async def stream_voice(
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="Neural speech synthesis upstream timed out connecting.",
-        )
+        ) from err
     except HTTPException:
         if stream_iter is not None:
             await stream_iter.aclose()
@@ -223,11 +230,16 @@ async def stream_voice(
         if stream_iter is not None:
             await stream_iter.aclose()
         _TTS_SEMAPHORE.release()
-        logger.error("edge_tts_connect_error", error=str(exc), voice=voice_clean, text_preview=clean_text[:50])
+        logger.error(
+            "edge_tts_connect_error",
+            error=str(exc),
+            voice=voice_clean,
+            text_preview=clean_text[:50],
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Neural speech synthesis connection error: {exc}",
-        )
+        ) from exc
 
     # Stream generator with guaranteed cleanup of websocket and semaphore
     async def audio_stream_generator() -> AsyncIterator[bytes]:

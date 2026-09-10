@@ -131,10 +131,12 @@ def book_appointment(
         .first()
     )
     if existing_same_customer is not None:
-        local_time = when.astimezone(ZoneInfo(settings.business_timezone)).strftime("%I:%M %p").lstrip("0")
+        tz = ZoneInfo(settings.business_timezone)
+        local_time = when.astimezone(tz).strftime("%I:%M %p").lstrip("0")
+        svc = existing_same_customer.service
         return (
             existing_same_customer,
-            f"Appointment is already confirmed for {existing_same_customer.service} at {local_time}."
+            f"Appointment is already confirmed for {svc} at {local_time}."
         )
 
     existing_other = (

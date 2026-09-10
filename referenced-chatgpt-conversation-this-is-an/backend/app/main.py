@@ -50,7 +50,10 @@ def check_token_rate_limit(client_ip: str) -> None:
         if len(timestamps) >= _MAX_CALL_TOKENS_PER_WINDOW:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded for call token generation. Please wait before trying again.",
+                detail=(
+                    "Rate limit exceeded for call token generation. "
+                    "Please wait before trying again."
+                ),
             )
         timestamps.append(now)
         _IP_REQUEST_TIMESTAMPS[client_ip] = timestamps

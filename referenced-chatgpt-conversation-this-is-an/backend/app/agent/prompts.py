@@ -1,9 +1,11 @@
-"""Prompt content owned by the HVAC receptionist application."""
+from __future__ import annotations
+
+from typing import Any
 
 from app.config import Settings
 
 
-def receptionist_instructions(settings: Settings, slots: dict | None = None) -> str:
+def receptionist_instructions(settings: Settings, slots: dict[str, Any] | None = None) -> str:
     """Return the safe operating boundary for the voice receptionist with dynamic slot grounding."""
     services = ", ".join(settings.business_services) or "HVAC services"
     slots = slots or {}

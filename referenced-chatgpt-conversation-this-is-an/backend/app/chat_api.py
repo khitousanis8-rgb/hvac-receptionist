@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from collections.abc import AsyncIterator
+from datetime import datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -37,7 +38,11 @@ _client: AsyncOpenAI | None = None
 def _get_client(settings: Settings) -> AsyncOpenAI:
     global _client
     if _client is None:
-        api_key = settings.llm_api_key.get_secret_value() if settings.llm_api_key is not None else ""
+        api_key = (
+            settings.llm_api_key.get_secret_value()
+            if settings.llm_api_key is not None
+            else ""
+        )
         _client = AsyncOpenAI(
             api_key=api_key,
             base_url=str(settings.llm_base_url),
@@ -67,7 +72,7 @@ class EndCallRequest(BaseModel):
 
 
 def _is_assistant_echo(text: str) -> bool:
-    """Detect if caller input is actually an acoustic echo of assistant speech picked up by the microphone."""
+    """Detect if caller input is an echo of assistant speech picked up by mic."""
     clean = text.lower().strip()
     echo_markers = [
         "how can i assist you",
@@ -215,7 +220,10 @@ def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
             if not appointments:
                 return "No upcoming appointments found for that phone number."
             lines = [
-                f"{appt.scheduled_for.strftime('%B %d at %I:%M %p')}: {appt.service} ({appt.status})"
+                (
+                    f"{appt.scheduled_for.strftime('%B %d at %I:%M %p')}: "
+                    f"{appt.service} ({appt.status})"
+                )
                 for appt in appointments
             ]
             return "Upcoming appointments: " + "; ".join(lines)
@@ -233,7 +241,11 @@ def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
             matched_service: str | None = None
             for approved in settings.business_services:
                 clean_app = approved.strip().lower()
-                if normalized_requested == clean_app or normalized_requested in clean_app or clean_app in normalized_requested:
+                if (
+                    normalized_requested == clean_app
+                    or normalized_requested in clean_app
+                    or clean_app in normalized_requested
+                ):
                     matched_service = approved.strip()
                     break
             if not matched_service:
@@ -267,16 +279,34 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "book_appointment_tool",
-            "description": "Book an HVAC service appointment during business hours once phone, service, date, and time are confirmed.",
+            "description": (
+                "Book an HVAC service appointment during business hours once "
+                "phone, service, date, and time are confirmed."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "phone_number": {"type": "string", "description": "The caller's phone number"},
-                    "service": {"type": "string", "description": "One of the approved HVAC services"},
-                    "date": {"type": "string", "description": "Appointment date in YYYY-MM-DD format"},
-                    "time": {"type": "string", "description": "Appointment start time in HH:MM 24h format"},
+                    "phone_number": {
+                        "type": "string",
+                        "description": "The caller's phone number",
+                    },
+                    "service": {
+                        "type": "string",
+                        "description": "One of the approved HVAC services",
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "Appointment date in YYYY-MM-DD format",
+                    },
+                    "time": {
+                        "type": "string",
+                        "description": "Appointment start time in HH:MM 24h format",
+                    },
                     "name": {"type": "string", "description": "Caller name if provided"},
-                    "notes": {"type": "string", "description": "Optional notes or equipment issue description"},
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional notes or equipment issue description",
+                    },
                 },
                 "required": ["phone_number", "service", "date", "time"],
             },
@@ -290,7 +320,10 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "phone_number": {"type": "string", "description": "The caller's phone number"},
+                    "phone_number": {
+                        "type": "string",
+                        "description": "The caller's phone number",
+                    },
                 },
                 "required": ["phone_number"],
             },
@@ -332,7 +365,7 @@ def _is_closing_or_polite_remark(text: str) -> bool:
 
 
 def _is_rate_limit_error(err_text: str) -> bool:
-    """Detect Groq rate limit errors including HTTP 429, tokens per day (TPD), and tokens per minute."""
+    """Detect Groq rate limit errors including HTTP 429, TPD, and TPM."""
     t = err_text.lower()
     return (
         "429" in t
@@ -347,7 +380,7 @@ def _is_rate_limit_error(err_text: str) -> bool:
 
 
 def _get_candidate_models(primary_model: str) -> list[str]:
-    """Return prioritized candidate models on Groq for transparent failover when quotas are reached."""
+    """Return prioritized candidate models on Groq for transparent failover on quota limits."""
     supported = [
         "qwen/qwen3.8-27b",
         "openai/gpt-oss-20b",
@@ -361,11 +394,71 @@ def _get_candidate_models(primary_model: str) -> list[str]:
     return candidates or ["qwen/qwen3.8-27b"]
 
 
+async def _try_create_completion(
+    client: AsyncOpenAI,
+    candidate_model: str,
+    call_kwargs: dict[str, Any],
+) -> Any:
+    try:
+        return await client.chat.completions.create(
+            **call_kwargs,
+            extra_body={"reasoning_effort": "none"},
+        )
+    except Exception as e1:
+        err1 = str(e1).lower()
+        if "tool choice is none" in err1 or "model called a tool" in err1:
+            logger.info(
+                "tool_choice_none_fallback_auto_tools",
+                error=str(e1),
+                model=candidate_model,
+            )
+            fallback_kwargs = dict(call_kwargs)
+            fallback_kwargs["tools"] = TOOLS
+            fallback_kwargs["tool_choice"] = "auto"
+            return await client.chat.completions.create(**fallback_kwargs)
+
+        if _is_rate_limit_error(err1):
+            raise
+
+        logger.warning(
+            "completion_fallback_reasoning_effort_none",
+            error=str(e1),
+            model=candidate_model,
+        )
+        try:
+            return await client.chat.completions.create(
+                **call_kwargs,
+                extra_body={"reasoning_effort": "low"},
+            )
+        except Exception as e2:
+            err2 = str(e2).lower()
+            if "tool choice is none" in err2 or "model called a tool" in err2:
+                logger.info(
+                    "tool_choice_none_fallback_auto_tools",
+                    error=str(e2),
+                    model=candidate_model,
+                )
+                fallback_kwargs = dict(call_kwargs)
+                fallback_kwargs["tools"] = TOOLS
+                fallback_kwargs["tool_choice"] = "auto"
+                return await client.chat.completions.create(**fallback_kwargs)
+
+            if _is_rate_limit_error(err2):
+                raise
+
+            logger.warning(
+                "completion_fallback_without_reasoning_effort",
+                error=str(e2),
+                model=candidate_model,
+            )
+            return await client.chat.completions.create(**call_kwargs)
+
+
 async def _create_stream_completion(
     client: AsyncOpenAI,
     **kwargs: Any,
 ) -> Any:
-    """Create streaming completion with lowest reasoning latency, automatic tool repair, and multi-model rate-limit failover."""
+    """Create streaming completion with lowest latency, tool repair, and model failover."""
     # Ensure sufficient token budget so internal reasoning never starves conversational tokens
     kwargs["max_tokens"] = max(kwargs.get("max_tokens", 200), 500)
     primary_model = kwargs.get("model", "qwen/qwen3.8-27b")
@@ -377,47 +470,8 @@ async def _create_stream_completion(
         current_kwargs = dict(kwargs)
         current_kwargs["model"] = candidate_model
 
-        async def _try_create(call_kwargs: dict[str, Any]) -> Any:
-            try:
-                return await client.chat.completions.create(
-                    **call_kwargs,
-                    extra_body={"reasoning_effort": "none"},
-                )
-            except Exception as e1:
-                err1 = str(e1).lower()
-                if "tool choice is none" in err1 or "model called a tool" in err1:
-                    logger.info("tool_choice_none_fallback_auto_tools", error=str(e1), model=candidate_model)
-                    fallback_kwargs = dict(call_kwargs)
-                    fallback_kwargs["tools"] = TOOLS
-                    fallback_kwargs["tool_choice"] = "auto"
-                    return await client.chat.completions.create(**fallback_kwargs)
-
-                if _is_rate_limit_error(err1):
-                    raise
-
-                logger.warning("completion_fallback_reasoning_effort_none", error=str(e1), model=candidate_model)
-                try:
-                    return await client.chat.completions.create(
-                        **call_kwargs,
-                        extra_body={"reasoning_effort": "low"},
-                    )
-                except Exception as e2:
-                    err2 = str(e2).lower()
-                    if "tool choice is none" in err2 or "model called a tool" in err2:
-                        logger.info("tool_choice_none_fallback_auto_tools", error=str(e2), model=candidate_model)
-                        fallback_kwargs = dict(call_kwargs)
-                        fallback_kwargs["tools"] = TOOLS
-                        fallback_kwargs["tool_choice"] = "auto"
-                        return await client.chat.completions.create(**fallback_kwargs)
-
-                    if _is_rate_limit_error(err2):
-                        raise
-
-                    logger.warning("completion_fallback_without_reasoning_effort", error=str(e2), model=candidate_model)
-                    return await client.chat.completions.create(**call_kwargs)
-
         try:
-            return await _try_create(current_kwargs)
+            return await _try_create_completion(client, candidate_model, current_kwargs)
         except Exception as model_err:
             last_error = model_err
             err_str = str(model_err).lower()
@@ -438,7 +492,10 @@ async def _create_stream_completion(
                 try:
                     return await client.chat.completions.create(**repair_kwargs)
                 except Exception as repair_err:
-                    if _is_rate_limit_error(str(repair_err).lower()) and model_idx < len(candidate_models) - 1:
+                    if (
+                        _is_rate_limit_error(str(repair_err).lower())
+                        and model_idx < len(candidate_models) - 1
+                    ):
                         next_model = candidate_models[model_idx + 1]
                         logger.warning(
                             "model_rate_limit_failover_after_repair",
@@ -468,10 +525,13 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         )
         call_id = start_or_get_browser_call(req.session_id, req.call_secret)
 
-        async def greeting_generator():
+        async def greeting_generator() -> AsyncIterator[str]:
             yield f"event: call_started\ndata: {json.dumps({'call_id': call_id})}\n\n"
             yield f"event: delta\ndata: {json.dumps({'text': greeting_text})}\n\n"
-            yield f"event: done\ndata: {json.dumps({'outcome': 'info_only', 'call_id': call_id})}\n\n"
+            yield (
+                f"event: done\ndata: "
+                f"{json.dumps({'outcome': 'info_only', 'call_id': call_id})}\n\n"
+            )
 
         return StreamingResponse(
             greeting_generator(),
@@ -486,11 +546,14 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This call session is invalid or has already ended.",
         )
+    active_call_id: int = req.call_id
 
     # Detect acoustic echo of assistant's greeting picked up by microphone
     if _is_assistant_echo(req.message):
-        async def echo_recovery_generator():
-            recovery_text = "I'm right here! How can I assist you with your heating or cooling today?"
+        async def echo_recovery_generator() -> AsyncIterator[str]:
+            recovery_text = (
+                "I'm right here! How can I assist you with your heating or cooling today?"
+            )
             yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
@@ -509,12 +572,12 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     client = _get_client(settings)
 
     # 1. Update and retrieve durable session slots bound to this exact call.
-    slots = get_call_slots(req.call_id)
+    slots = get_call_slots(active_call_id)
     new_slots = _extract_slots_from_text(req.message, slots)
     if new_slots:
-        slots = update_call_slots(req.call_id, new_slots)
+        slots = update_call_slots(active_call_id, new_slots)
         if phone := new_slots.get("phone"):
-            update_call_phone(req.call_id, str(phone))
+            update_call_phone(active_call_id, str(phone))
 
     # 2. Dynamic prompt grounding with verified slots
     system_content = receptionist_instructions(settings, slots=slots)
@@ -535,7 +598,15 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         for w in ["yes", "yeah", "yep", "correct", "perfect", "sure", "book", "booked"]
     ) or any(
         phrase in cleaned_msg
-        for phrase in ["sounds good", "sounds great", "please book", "go ahead", "that works", "thats fine", "that is fine"]
+        for phrase in [
+            "sounds good",
+            "sounds great",
+            "please book",
+            "go ahead",
+            "that works",
+            "thats fine",
+            "that is fine",
+        ]
     )
     has_booking_prereqs = bool(
         slots.get("phone")
@@ -548,7 +619,15 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     is_polite_closing = False if is_confirming_now else _is_closing_or_polite_remark(req.message)
     is_reschedule_or_check = any(
         kw in req.message.lower()
-        for kw in ["change", "reschedule", "cancel", "check", "different time", "another time", "update"]
+        for kw in [
+            "change",
+            "reschedule",
+            "cancel",
+            "check",
+            "different time",
+            "another time",
+            "update",
+        ]
     )
     if is_polite_closing or (slots.get("confirmed") and not is_reschedule_or_check):
         tools_to_use = None
@@ -560,7 +639,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     else:
         tool_choice_to_use = "auto" if tools_to_use else None
 
-    async def sse_generator():
+    async def sse_generator() -> AsyncIterator[str]:
         outcome = "info_only"
         try:
             # First pass: request streaming chat completion with tools if applicable
@@ -594,7 +673,11 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                         if idx not in tool_calls_accumulator:
                             tool_calls_accumulator[idx] = {
                                 "id": tc.id or "",
-                                "name": tc.function.name if tc.function and tc.function.name else "",
+                                "name": (
+                                    tc.function.name
+                                    if tc.function and tc.function.name
+                                    else ""
+                                ),
                                 "arguments": "",
                             }
                         if tc.id:
@@ -646,14 +729,19 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
                     logger.info("executing_chat_tool", tool=name, argument_names=sorted(args))
                     tool_result = _execute_tool(settings, name, args)
-                    if name == "book_appointment_tool" and ("booked" in tool_result.lower() or "confirmed" in tool_result.lower()):
+                    if name == "book_appointment_tool" and (
+                        "booked" in tool_result.lower() or "confirmed" in tool_result.lower()
+                    ):
                         outcome = "booked"
-                        update_call_slots(req.call_id, {"confirmed": True})
-                        update_call_outcome(req.call_id, "booked")
+                        update_call_slots(active_call_id, {"confirmed": True})
+                        update_call_outcome(active_call_id, "booked")
                         if args.get("phone_number"):
-                            update_call_phone(req.call_id, str(args["phone_number"]))
+                            update_call_phone(active_call_id, str(args["phone_number"]))
 
-                    yield f"event: tool_call\ndata: {json.dumps({'name': name, 'result': tool_result})}\n\n"
+                    yield (
+                        f"event: tool_call\ndata: "
+                        f"{json.dumps({'name': name, 'result': tool_result})}\n\n"
+                    )
 
                     messages.append(
                         {
@@ -715,12 +803,15 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                                 "time": str(cust_time),
                             },
                         )
-                        if "booked" in booking_result.lower() or "confirmed" in booking_result.lower():
+                        if (
+                            "booked" in booking_result.lower()
+                            or "confirmed" in booking_result.lower()
+                        ):
                             outcome = "booked"
-                            update_call_slots(req.call_id, {"confirmed": True})
-                            update_call_outcome(req.call_id, "booked")
+                            update_call_slots(active_call_id, {"confirmed": True})
+                            update_call_outcome(active_call_id, "booked")
                             if cust_phone:
-                                update_call_phone(req.call_id, str(cust_phone))
+                                update_call_phone(active_call_id, str(cust_phone))
                     else:
                         logger.warning("booking_claim_rejected_missing_canonical_datetime")
 
@@ -729,12 +820,20 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         except Exception as e:
             err_msg = str(e)
             logger.error("chat_stream_error", error=err_msg)
-            if "tool choice is none" in err_msg.lower() or "model called a tool" in err_msg.lower():
-                recovery_text = "You are all set! Is there anything else I can assist you with today?"
+            if (
+                "tool choice is none" in err_msg.lower()
+                or "model called a tool" in err_msg.lower()
+            ):
+                recovery_text = (
+                    "You are all set! Is there anything else I can assist you with today?"
+                )
                 yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
                 yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
             elif _is_rate_limit_error(err_msg):
-                recovery_text = "I apologize for the brief pause, our line had a small hiccup. Could you please repeat that last part?"
+                recovery_text = (
+                    "I apologize for the brief pause, our line had a small hiccup. "
+                    "Could you please repeat that last part?"
+                )
                 yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
                 yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
             else:
@@ -748,7 +847,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
 
 class TranscribeRequest(BaseModel):
-    audio_base64: str = Field(max_length=5_000_000, description="Base64-encoded audio bytes")
+    audio_base64: str = Field(
+        max_length=5_000_000, description="Base64-encoded audio bytes"
+    )
     content_type: str = Field(default="audio/webm", max_length=64)
     filename: str = Field(default="audio.webm", max_length=64)
 
@@ -767,8 +868,11 @@ async def transcribe_audio(req: TranscribeRequest) -> dict[str, str]:
 
     try:
         audio_bytes = base64.b64decode(req.audio_base64)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid base64 audio data")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid base64 audio data",
+        ) from exc
 
     client = _get_client(settings)
 
@@ -784,7 +888,7 @@ async def transcribe_audio(req: TranscribeRequest) -> dict[str, str]:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Transcription failed: {e}",
-        )
+        ) from e
 
 
 @router.post("/end")

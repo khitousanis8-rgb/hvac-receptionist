@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import aiohttp
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
-from app.tts_stream import AudioLRUCache, audio_cache, _IP_TTS_TIMESTAMPS
+from app.tts_stream import _IP_TTS_TIMESTAMPS, AudioLRUCache
 
 
 def test_list_recommended_voices() -> None:
