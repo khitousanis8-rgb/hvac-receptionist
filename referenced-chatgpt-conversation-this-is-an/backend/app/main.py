@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -162,42 +163,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> dict[str, object]:
         """Page through private call records, newest first, with accurate totals."""
-        with new_session() as session:
-            base_query = session.query(CallRecord)
-            total = base_query.count()
-            records = (
-                base_query
-                .order_by(CallRecord.started_at.desc())
-                .offset(offset)
-                .limit(limit)
-                .all()
-            )
-            outcome_counts: dict[str, int] = {}
-            for outcome, count in (
-                session.query(CallRecord.outcome, func.count()).group_by(CallRecord.outcome)
-            ):
-                outcome_counts[str(outcome)] = int(count)
-            return {
-                "items": [
-                    {
-                        "id": record.id,
-                        "room_name": record.room_name,
-                        "caller_phone": record.caller_phone,
-                        "outcome": record.outcome,
-                        "transcript_summary": record.transcript_summary,
-                        "started_at": record.started_at.isoformat().replace("+00:00", "Z")
-                        if record.started_at
-                        else None,
-                        "ended_at": record.ended_at.isoformat().replace("+00:00", "Z")
-                        if record.ended_at
-                        else None,
-                    }
-                    for record in records
-                ],
-                "total": total,
-                "outcome_counts": outcome_counts,
-                "next_offset": offset + len(records) if offset + len(records) < total else None,
-            }
+
+        def _query_calls() -> dict[str, object]:
+            # Runs in a worker thread so the sync SQLAlchemy session never
+            # blocks the event loop serving concurrent SSE/TTS streams.
+            with new_session() as session:
+                base_query = session.query(CallRecord)
+                total = base_query.count()
+                records = (
+                    base_query
+                    .order_by(CallRecord.started_at.desc())
+                    .offset(offset)
+                    .limit(limit)
+                    .all()
+                )
+                outcome_counts: dict[str, int] = {}
+                for outcome, count in (
+                    session.query(CallRecord.outcome, func.count()).group_by(
+                        CallRecord.outcome
+                    )
+                ):
+                    outcome_counts[str(outcome)] = int(count)
+                return {
+                    "items": [
+                        {
+                            "id": record.id,
+                            "room_name": record.room_name,
+                            "caller_phone": record.caller_phone,
+                            "outcome": record.outcome,
+                            "transcript_summary": record.transcript_summary,
+                            "started_at": record.started_at.isoformat().replace(
+                                "+00:00", "Z"
+                            )
+                            if record.started_at
+                            else None,
+                            "ended_at": record.ended_at.isoformat().replace("+00:00", "Z")
+                            if record.ended_at
+                            else None,
+                        }
+                        for record in records
+                    ],
+                    "total": total,
+                    "outcome_counts": outcome_counts,
+                    "next_offset": (
+                        offset + len(records) if offset + len(records) < total else None
+                    ),
+                }
+
+        return await asyncio.to_thread(_query_calls)
 
     @app.get("/v1/appointments", tags=["dashboard"], dependencies=[Depends(require_admin)])
     async def list_appointments(
@@ -205,31 +218,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[dict[str, object]]:
         """Upcoming appointments, soonest first."""
-        with new_session() as session:
-            rows = (
-                session.query(Appointment, Customer)
-                .join(Customer, Appointment.customer_id == Customer.id)
-                .order_by(Appointment.scheduled_for)
-                .offset(offset)
-                .limit(limit)
-                .all()
-            )
-            return [
-                {
-                    "id": appointment.id,
-                    "service": appointment.service,
-                    "scheduled_for": (
-                        appointment.scheduled_for.isoformat().replace("+00:00", "Z")
-                        if appointment.scheduled_for
-                        else None
-                    ),
-                    "status": appointment.status,
-                    "notes": appointment.notes,
-                    "customer_name": customer.name,
-                    "customer_phone": customer.phone_number,
-                }
-                for appointment, customer in rows
-            ]
+
+        def _query_appointments() -> list[dict[str, object]]:
+            # Offloaded to a worker thread to keep the event loop responsive.
+            with new_session() as session:
+                rows = (
+                    session.query(Appointment, Customer)
+                    .join(Customer, Appointment.customer_id == Customer.id)
+                    .order_by(Appointment.scheduled_for)
+                    .offset(offset)
+                    .limit(limit)
+                    .all()
+                )
+                return [
+                    {
+                        "id": appointment.id,
+                        "service": appointment.service,
+                        "scheduled_for": (
+                            appointment.scheduled_for.isoformat().replace("+00:00", "Z")
+                            if appointment.scheduled_for
+                            else None
+                        ),
+                        "status": appointment.status,
+                        "notes": appointment.notes,
+                        "customer_name": customer.name,
+                        "customer_phone": customer.phone_number,
+                    }
+                    for appointment, customer in rows
+                ]
+
+        return await asyncio.to_thread(_query_appointments)
 
     @app.post(
         "/v1/calls/token",
@@ -248,17 +266,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         identity = payload.identity if payload else None
 
         if room_name:
-            with new_session() as session:
-                active_call = (
-                    session.query(CallRecord)
-                    .filter(CallRecord.room_name == room_name, CallRecord.ended_at.is_(None))
-                    .first()
-                )
-                if active_call is not None:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail="A call is already in progress for this room.",
+
+            def _find_active_call() -> bool:
+                with new_session() as session:
+                    return (
+                        session.query(CallRecord)
+                        .filter(
+                            CallRecord.room_name == room_name,
+                            CallRecord.ended_at.is_(None),
+                        )
+                        .first()
+                        is not None
                     )
+
+            if await asyncio.to_thread(_find_active_call):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A call is already in progress for this room.",
+                )
 
         try:
             url, token, room = await create_room_and_token(

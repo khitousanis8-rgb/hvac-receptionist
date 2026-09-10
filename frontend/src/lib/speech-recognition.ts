@@ -261,6 +261,14 @@ export class BrowserSpeechRecognition {
     this.shouldBeListening = false;
     this.isListening = false;
 
+    // Drop any pending finalized transcript so it cannot fire after the
+    // call has ended (e.g. user hangs up within the 280ms debounce window).
+    if (this.debounceTimer !== null) {
+      window.clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.accumulatedFinalText = "";
+
     if (this.recognition) {
       try {
         this.recognition.abort();

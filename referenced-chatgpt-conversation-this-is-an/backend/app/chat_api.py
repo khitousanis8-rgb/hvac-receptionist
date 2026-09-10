@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import threading
@@ -515,8 +516,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    if req.call_id is None or not is_authorized_active_call(
-        req.call_id, req.session_id, req.call_secret
+    if req.call_id is None or not await asyncio.to_thread(
+        is_authorized_active_call, req.call_id, req.session_id, req.call_secret
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -548,12 +549,14 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     client = _get_client(settings)
 
     # 1. Update and retrieve durable session slots bound to this exact call.
-    slots = get_call_slots(active_call_id)
+    # DB helpers are sync; run them in a worker thread to keep the event loop
+    # responsive for concurrent SSE/TTS streams.
+    slots = await asyncio.to_thread(get_call_slots, active_call_id)
     new_slots = _extract_slots_from_text(req.message, slots)
     if new_slots:
-        slots = update_call_slots(active_call_id, new_slots)
+        slots = await asyncio.to_thread(update_call_slots, active_call_id, new_slots)
         if phone := new_slots.get("phone"):
-            update_call_phone(active_call_id, str(phone))
+            await asyncio.to_thread(update_call_phone, active_call_id, str(phone))
 
     # 2. Dynamic prompt grounding with verified slots
     system_content = receptionist_instructions(settings, slots=slots)
@@ -705,15 +708,19 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     args = parsed_args[i]
 
                     logger.info("executing_chat_tool", tool=name, argument_names=sorted(args))
-                    tool_result = _execute_tool(settings, name, args)
+                    tool_result = await asyncio.to_thread(_execute_tool, settings, name, args)
                     if name == "book_appointment_tool" and (
                         "booked" in tool_result.lower() or "confirmed" in tool_result.lower()
                     ):
                         outcome = "booked"
-                        update_call_slots(active_call_id, {"confirmed": True})
-                        update_call_outcome(active_call_id, "booked")
+                        await asyncio.to_thread(
+                            update_call_slots, active_call_id, {"confirmed": True}
+                        )
+                        await asyncio.to_thread(update_call_outcome, active_call_id, "booked")
                         if args.get("phone_number"):
-                            update_call_phone(active_call_id, str(args["phone_number"]))
+                            await asyncio.to_thread(
+                                update_call_phone, active_call_id, str(args["phone_number"])
+                            )
 
                     yield (
                         f"event: tool_call\ndata: "
@@ -769,7 +776,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     cust_date = slots.get("date")
                     cust_time = slots.get("time")
                     if cust_date and cust_time:
-                        booking_result = _execute_tool(
+                        booking_result = await asyncio.to_thread(
+                            _execute_tool,
                             settings,
                             "book_appointment_tool",
                             {
@@ -785,10 +793,16 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                             or "confirmed" in booking_result.lower()
                         ):
                             outcome = "booked"
-                            update_call_slots(active_call_id, {"confirmed": True})
-                            update_call_outcome(active_call_id, "booked")
+                            await asyncio.to_thread(
+                                update_call_slots, active_call_id, {"confirmed": True}
+                            )
+                            await asyncio.to_thread(
+                                update_call_outcome, active_call_id, "booked"
+                            )
                             if cust_phone:
-                                update_call_phone(active_call_id, str(cust_phone))
+                                await asyncio.to_thread(
+                                    update_call_phone, active_call_id, str(cust_phone)
+                                )
                     else:
                         logger.warning("booking_claim_rejected_missing_canonical_datetime")
 
@@ -920,7 +934,8 @@ async def transcribe_audio(req: TranscribeRequest, request: Request) -> dict[str
 @router.post("/end")
 async def end_call_record(req: EndCallRequest) -> dict[str, Any]:
     """Finalize only the caller's own active browser call."""
-    finalized = end_browser_call(
+    finalized = await asyncio.to_thread(
+        end_browser_call,
         req.call_id,
         req.session_id,
         req.call_secret,
