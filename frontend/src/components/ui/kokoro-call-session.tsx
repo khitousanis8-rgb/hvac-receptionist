@@ -165,6 +165,9 @@ export function KokoroCallSession({
       setIsAgentSpeaking(playing);
     });
     neuralVoice.setTurnStateCallback((turnActive) => {
+      if (turnActive) {
+        setCurrentCallerText("");
+      }
       speechRecRef.current?.pauseForAgentPlayback(turnActive);
     });
     return () => {
@@ -274,8 +277,10 @@ export function KokoroCallSession({
                     if (!hasEmittedFirstChunk) {
                       hasEmittedFirstChunk = true;
                     }
-                    speechRecRef.current?.registerAssistantSpeech(split.sentence);
-                    neuralVoice.speakSentence(split.sentence);
+                    if (!split.sentence.toLowerCase().includes("echo of my own voice")) {
+                      speechRecRef.current?.registerAssistantSpeech(split.sentence);
+                      neuralVoice.speakSentence(split.sentence);
+                    }
                   }
                 } else if (currentEvent === "done") {
                   if (data.outcome === "booked") {
@@ -296,13 +301,16 @@ export function KokoroCallSession({
 
         // Speak remaining sentence buffer if any
         if (sentenceBuffer.trim()) {
-          speechRecRef.current?.registerAssistantSpeech(sentenceBuffer.trim());
-          neuralVoice.speakSentence(sentenceBuffer.trim());
+          if (!sentenceBuffer.toLowerCase().includes("echo of my own voice")) {
+            speechRecRef.current?.registerAssistantSpeech(sentenceBuffer.trim());
+            neuralVoice.speakSentence(sentenceBuffer.trim());
+          }
         }
         neuralVoice.endTurnQueue();
 
         setIsAgentThinking(false);
         if (accumulatedAssistantReply.trim()) {
+          speechRecRef.current?.registerAssistantSpeech(accumulatedAssistantReply.trim());
           transcriptHistoryRef.current = [
             ...transcriptHistoryRef.current,
             { role: "assistant", content: accumulatedAssistantReply.trim() },
@@ -380,7 +388,7 @@ export function KokoroCallSession({
             }
             neuralVoice.stop();
             setIsAgentSpeaking(false);
-            speechRecRef.current?.pauseForAgentPlayback(false);
+            speechRecRef.current?.resumeImmediatelyForInterrupt();
           },
           onError: (err) => {
             console.warn("[VoiceCall] speech notice:", err);
@@ -447,7 +455,7 @@ export function KokoroCallSession({
     }
     neuralVoice.stop();
     setIsAgentSpeaking(false);
-    speechRecRef.current?.pauseForAgentPlayback(false);
+    speechRecRef.current?.resumeImmediatelyForInterrupt();
   };
 
   const handleEndCall = async () => {

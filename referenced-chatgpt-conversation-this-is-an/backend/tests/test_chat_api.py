@@ -484,6 +484,28 @@ def test_assistant_echo_detection_and_recovery_stream() -> None:
     assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
 
 
+def test_is_echo_of_assistant_multi_turn() -> None:
+    from app.chat_api import ChatMessage, _is_echo_of_assistant
+
+    history = [
+        ChatMessage(role="user", content="I need some help with my system"),
+        ChatMessage(
+            role="assistant",
+            content="Just to confirm, that's AC repair for Monday, October 19 at 11:00 AM. Would you like me to book it?",
+        ),
+    ]
+
+    # Re-captured full assistant speech with booking keywords must be recognized as echo
+    asst_echo = "Just to confirm that's AC repair for Monday October 19 at 11:00 AM would you like me to book it"
+    assert _is_echo_of_assistant(asst_echo, history) is True
+
+    # Short genuine caller responses must NEVER be treated as echo
+    assert _is_echo_of_assistant("yes please", history) is False
+    assert _is_echo_of_assistant("AC repair", history) is False
+    assert _is_echo_of_assistant("tomorrow morning", history) is False
+    assert _is_echo_of_assistant("please book it", history) is False
+
+
 def test_closing_remark_vs_confirmation_delineation() -> None:
     from app.chat_api import _is_closing_or_polite_remark
 

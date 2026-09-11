@@ -30,6 +30,7 @@ export class BrowserSpeechRecognition {
   private onBargeIn: SpeechBargeInCallback | null = null;
 
   private debounceTimer: number | null = null;
+  private cooldownTimer: number | null = null;
   private accumulatedFinalText: string = "";
 
   // Fallback MediaRecorder state
@@ -65,7 +66,11 @@ export class BrowserSpeechRecognition {
       this.recognition.maxAlternatives = 1;
 
       this.recognition.onresult = (event: any) => {
-        if (!this.shouldBeListening || this.isMuted) return;
+        // Drop any microphone capture while muted, inactive, or while assistant is speaking
+        if (!this.shouldBeListening || this.isMuted || this.isPausedForAgent) return;
+
+        // Acoustic cooldown guard: discard any residual speaker reverb within 350ms of playback finish
+        if (Date.now() - this.lastAgentSpeechEndTime < 350) return;
 
         let interimText = "";
         let finalText = "";
@@ -78,25 +83,6 @@ export class BrowserSpeechRecognition {
             interimText += transcript;
           }
         }
-
-        const candidateText = (finalText || interimText).trim();
-
-        // Caller Barge-in: if assistant is speaking and caller speaks substantive words (or interrupt command), halt assistant immediately
-        if (this.isPausedForAgent) {
-          const words = candidateText.split(/\s+/).filter((w) => w.length >= 2);
-          const isStopCommand = /^(stop|wait|hold|pause|no)$/i.test(candidateText.trim());
-          if ((words.length >= 2 || candidateText.length >= 8 || isStopCommand) && !this.isAcousticEcho(candidateText)) {
-            console.log("[SpeechRecognition] Caller barge-in detected:", candidateText);
-            this.isPausedForAgent = false;
-            this.onBargeIn?.();
-          } else {
-            // Still in assistant turn or echo chunk
-            return;
-          }
-        }
-
-        // Brief 100ms acoustic grace period to prevent speaker reverberation
-        if (Date.now() - this.lastAgentSpeechEndTime < 100) return;
 
         if (finalText.trim()) {
           if (this.isAcousticEcho(finalText.trim())) {
@@ -116,7 +102,7 @@ export class BrowserSpeechRecognition {
             const full = this.accumulatedFinalText.trim();
             this.accumulatedFinalText = "";
             this.debounceTimer = null;
-            if (full && this.onTranscript && !this.isMuted) {
+            if (full && this.onTranscript && !this.isMuted && !this.isPausedForAgent) {
               if (this.isAcousticEcho(full)) {
                 console.warn("[EchoGuard] Suppressed full microphone acoustic echo:", full);
                 return;
@@ -140,9 +126,9 @@ export class BrowserSpeechRecognition {
         console.warn("[SpeechRecognition] Event error:", event.error);
         // "network" or "audio-capture" are recoverable browser session timeouts, not fatal errors
         if (event.error === "network" || event.error === "audio-capture") {
-          if (this.shouldBeListening && !this.isMuted) {
+          if (this.shouldBeListening && !this.isMuted && !this.isPausedForAgent) {
             window.setTimeout(() => {
-              if (this.shouldBeListening && !this.isMuted && this.recognition) {
+              if (this.shouldBeListening && !this.isMuted && !this.isPausedForAgent && this.recognition) {
                 try {
                   this.recognition.start();
                   this.isListening = true;
@@ -167,8 +153,8 @@ export class BrowserSpeechRecognition {
 
       this.recognition.onend = () => {
         this.isListening = false;
-        // Seamlessly auto-restart continuous listening session
-        if (this.shouldBeListening && !this.isMuted) {
+        // Seamlessly auto-restart continuous listening session ONLY when not paused for assistant
+        if (this.shouldBeListening && !this.isMuted && !this.isPausedForAgent) {
           try {
             this.recognition.start();
             this.isListening = true;
@@ -200,10 +186,10 @@ export class BrowserSpeechRecognition {
   }
 
   public registerAssistantSpeech(text: string): void {
-    const clean = text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").trim();
-    if (clean.length > 8) {
+    const clean = text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    if (clean.length > 5) {
       this.recentAssistantUtterances.push(clean);
-      if (this.recentAssistantUtterances.length > 8) {
+      if (this.recentAssistantUtterances.length > 12) {
         this.recentAssistantUtterances.shift();
       }
     }
@@ -211,43 +197,71 @@ export class BrowserSpeechRecognition {
 
   private isAcousticEcho(transcript: string): boolean {
     const clean = transcript.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-    if (!clean || clean.length < 10) return false;
+    if (!clean || clean.length < 5) return false;
 
-    // Real acoustic echo of the greeting contains both the business intro and the prompt question
-    const hasIntro =
-      clean.includes("thank you for calling") ||
-      clean.includes("thanks for calling") ||
-      clean.includes("my name is sarah") ||
-      clean.includes("this is sarah");
-    const hasPrompt = clean.includes("how can i assist") || clean.includes("how can i help") || clean.includes("heating or cooling today");
-    if (hasIntro && hasPrompt) {
-      return true;
+    // 1. Signature assistant phrases that should NEVER be accepted as caller input
+    const SIGNATURE_ASST_PATTERNS = [
+      "thank you for calling",
+      "thanks for calling",
+      "my name is sarah",
+      "this is sarah",
+      "how can i assist",
+      "how can i help",
+      "heating or cooling today",
+      "with your heating or cooling",
+      "what service do you need help with",
+      "what is the best callback phone number",
+      "what s the best callback phone number",
+      "best callback phone number",
+      "technician to reach you",
+      "would you like me to book it",
+      "just to confirm",
+      "you re all set",
+      "you are all set",
+      "our technician will see you then",
+      "is there anything else i can help with",
+      "is there anything else",
+      "sorry i heard an echo of my own voice",
+    ];
+
+    for (const sig of SIGNATURE_ASST_PATTERNS) {
+      if (clean.includes(sig)) {
+        console.warn("[EchoGuard] Suppressed signature assistant phrase echo:", transcript);
+        return true;
+      }
     }
 
-    // Speaker-feedback echo: the mic picked up the assistant's TTS through the
-    // PC speakers. Fragments physically only occur during or immediately after playback.
-    const isPlaybackActive = this.isPausedForAgent || (Date.now() - this.lastAgentSpeechEndTime < 400);
-    if (!isPlaybackActive) {
-      return false;
-    }
-
-    const COMMON_STOP_WORDS = new Set(["you", "for", "can", "i", "help", "today", "the", "a", "an", "to", "and", "that", "this", "my", "is"]);
+    // 2. Direct substring or full match against any recent assistant utterance
     for (const utterance of this.recentAssistantUtterances) {
-      if (utterance.length > 25 && clean.length > 25) {
-        if (utterance === clean || utterance.includes(clean)) {
+      if (utterance.length >= 12 && clean.length >= 12) {
+        if (utterance.includes(clean) || clean.includes(utterance)) {
+          console.warn("[EchoGuard] Suppressed substring echo match:", transcript);
           return true;
         }
       }
+    }
 
-      const echoWords = clean.split(" ").filter((w) => w.length >= 2 && !COMMON_STOP_WORDS.has(w));
-      if (echoWords.length < 2) continue;
-      const utteranceWords = new Set(utterance.split(/\s+/));
-      let matches = 0;
-      for (const w of echoWords) {
-        if (utteranceWords.has(w)) matches++;
+    // 3. Multi-word overlap check against recent assistant speech
+    const COMMON_STOP_WORDS = new Set([
+      "the", "a", "an", "and", "or", "to", "in", "at", "for", "with", "is", "it", "that", "this", "my", "you"
+    ]);
+    const candidateWords = clean.split(" ").filter((w) => w.length >= 2 && !COMMON_STOP_WORDS.has(w));
+    if (candidateWords.length >= 3) {
+      const allAsstWords = new Set<string>();
+      for (const u of this.recentAssistantUtterances) {
+        for (const w of u.split(/\s+/)) {
+          if (w.length >= 2 && !COMMON_STOP_WORDS.has(w)) allAsstWords.add(w);
+        }
       }
-      if (matches / echoWords.length >= 0.7) {
-        console.warn("[EchoGuard] Suppressed speaker-feedback echo fragment:", transcript);
+
+      let matches = 0;
+      for (const w of candidateWords) {
+        if (allAsstWords.has(w)) matches++;
+      }
+
+      const overlap = matches / candidateWords.length;
+      if (overlap >= 0.5) {
+        console.warn("[EchoGuard] Suppressed multi-word overlap echo (overlap " + Math.round(overlap * 100) + "%):", transcript);
         return true;
       }
     }
@@ -285,6 +299,11 @@ export class BrowserSpeechRecognition {
     this.shouldBeListening = false;
     this.isListening = false;
 
+    if (this.cooldownTimer !== null) {
+      window.clearTimeout(this.cooldownTimer);
+      this.cooldownTimer = null;
+    }
+
     // Drop any pending finalized transcript so it cannot fire after the
     // call has ended (e.g. user hangs up within the 280ms debounce window).
     if (this.debounceTimer !== null) {
@@ -308,6 +327,10 @@ export class BrowserSpeechRecognition {
   public setMuted(muted: boolean) {
     this.isMuted = muted;
     if (muted) {
+      if (this.cooldownTimer !== null) {
+        window.clearTimeout(this.cooldownTimer);
+        this.cooldownTimer = null;
+      }
       if (this.isListening && this.recognition) {
         try {
           this.recognition.abort();
@@ -323,37 +346,93 @@ export class BrowserSpeechRecognition {
   }
 
   /**
-   * Coordinate speech recognition state with virtual assistant playback.
-   * Keeps the microphone continuously active for seamless caller barge-in,
-   * while filtering echoes and avoiding abort/restart audio pipeline hiccups.
+   * Immediately resume speech recognition without waiting for acoustic cooldown
+   * when the caller explicitly clicks "Interrupt" or presses Spacebar.
+   */
+  public resumeImmediatelyForInterrupt(): void {
+    if (this.cooldownTimer !== null) {
+      window.clearTimeout(this.cooldownTimer);
+      this.cooldownTimer = null;
+    }
+    if (this.debounceTimer !== null) {
+      window.clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.accumulatedFinalText = "";
+    this.isPausedForAgent = false;
+    this.lastAgentSpeechEndTime = 0;
+
+    if (this.shouldBeListening && !this.isMuted && this.recognition) {
+      try {
+        this.recognition.start();
+        this.isListening = true;
+        this.onStateChange?.(true);
+      } catch (err: any) {
+        if (err?.name === "InvalidStateError") {
+          this.isListening = true;
+          this.onStateChange?.(true);
+        }
+      }
+    }
+  }
+
+  /**
+   * Hardware auto-gating with acoustic cooldown.
+   * While assistant is speaking, microphone capture is completely paused and flushed
+   * so speaker audio is never captured. On speech end, waits a 350ms acoustic cooldown
+   * for speaker reverb to dissipate before opening the microphone for the caller's turn.
    */
   public pauseForAgentPlayback(isSpeaking: boolean) {
-    this.isPausedForAgent = isSpeaking;
-
     if (isSpeaking) {
+      this.isPausedForAgent = true;
+
+      if (this.cooldownTimer !== null) {
+        window.clearTimeout(this.cooldownTimer);
+        this.cooldownTimer = null;
+      }
       if (this.debounceTimer !== null) {
         window.clearTimeout(this.debounceTimer);
         this.debounceTimer = null;
       }
       this.accumulatedFinalText = "";
-      // Keep recognition running continuously so the caller can barge in!
+
+      // Hardware auto-gating: abort recognition while assistant speaks through device speakers
+      if (this.recognition) {
+        try {
+          this.recognition.abort();
+        } catch {
+          // ignore
+        }
+      }
+      this.isListening = false;
+      this.onStateChange?.(false);
     } else {
       this.lastAgentSpeechEndTime = Date.now();
       this.isPausedForAgent = false;
-      // Ensure microphone is active and ready immediately
-      if (this.shouldBeListening && !this.isMuted && this.recognition) {
-        try {
-          this.recognition.start();
-          this.isListening = true;
-          this.onStateChange?.(true);
-        } catch (err: any) {
-          if (err?.name === "InvalidStateError") {
-            // Already actively listening - perfect
+      this.accumulatedFinalText = "";
+
+      if (this.cooldownTimer !== null) {
+        window.clearTimeout(this.cooldownTimer);
+      }
+
+      // Acoustic cooldown: wait 350ms for room reverb and speaker DAC buffers to dissipate
+      this.cooldownTimer = window.setTimeout(() => {
+        this.cooldownTimer = null;
+        if (this.shouldBeListening && !this.isMuted && !this.isPausedForAgent && this.recognition) {
+          try {
+            this.recognition.start();
             this.isListening = true;
             this.onStateChange?.(true);
+          } catch (err: any) {
+            if (err?.name === "InvalidStateError") {
+              this.isListening = true;
+              this.onStateChange?.(true);
+            } else {
+              console.warn("[SpeechRecognition] Start after cooldown:", err);
+            }
           }
         }
-      }
+      }, 350);
     }
   }
 
