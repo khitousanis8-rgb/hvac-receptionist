@@ -103,16 +103,21 @@ def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
         "apex hvac",
         "my name is sarah",
         "this is sarah",
+        "how can i help with your heating or cooling today",
         "how can i assist you with your heating or cooling today",
-        "how can i assist you with",
-        "how can i assist you",
-        "how can i help you",
-        "heating or cooling today",
         "with your heating or cooling today",
+        "with your heating or cooling",
+        "heating or cooling today",
+        "how can i help with",
+        "how can i assist you with",
+        "how can i help you",
+        "how can i assist you",
+        "how can i help",
+        "how can i assist",
     ]
     if company_name and company_name.strip():
         phrases.append(company_name.strip().lower())
-    for phrase in phrases:
+    for phrase in sorted(phrases, key=len, reverse=True):
         stripped = stripped.replace(phrase, " ")
 
     stripped = re.sub(r"[^a-z0-9]", " ", stripped).strip()
@@ -719,7 +724,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     # Detect acoustic echo of assistant speech picked up by the microphone:
     # either the greeting pattern or any fragment of recent assistant turns.
     # Returns a silent no-op (event: done only) to completely eliminate spoken feedback loops.
-    if _is_assistant_echo(req.message) or _is_echo_of_assistant(req.message, req.history):
+    if (
+        _is_assistant_echo(req.message, settings.business_company_name)
+        or _is_echo_of_assistant(req.message, req.history)
+    ):
         async def echo_noop_generator() -> AsyncIterator[str]:
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
