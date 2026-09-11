@@ -480,7 +480,7 @@ def test_assistant_echo_detection_and_recovery_stream() -> None:
             ),
     )
     assert res.status_code == 200
-    assert "echo of my own voice" in res.text
+    assert "event: delta" not in res.text
     assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
 
 
@@ -834,3 +834,31 @@ def test_safety_emergency_instruction_takes_priority() -> None:
     assert "leave the building immediately" in res.text
     assert "911" in res.text
     assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
+
+
+def test_safety_emergency_keywords_and_exclusions() -> None:
+    from app.chat_api import _is_safety_emergency
+
+    # Fireplace must not trigger safety emergency
+    assert _is_safety_emergency("I have a gas fireplace in my living room") is False
+    assert _is_safety_emergency("We want to service our fireplace") is False
+
+    # Actual fire and safety hazards must trigger
+    assert _is_safety_emergency("My furnace caught on fire!") is True
+    assert _is_safety_emergency("There is smoke coming from the vents") is True
+    assert _is_safety_emergency("I smell gas near the meter") is True
+    assert _is_safety_emergency("The unit is sparking") is True
+
+
+def test_slang_cool_not_extracted_as_ac_repair() -> None:
+    from app.chat_api import _extract_slots_from_text
+
+    # Slang expressions with cool must NOT trigger AC repair
+    assert "service" not in _extract_slots_from_text("That's cool, thanks!", {})
+    assert "service" not in _extract_slots_from_text("Cool, sounds like a plan", {})
+
+    # Legitimate cooling requests must trigger AC repair
+    assert _extract_slots_from_text("My AC is not cooling", {}).get("service") == "AC repair"
+    assert _extract_slots_from_text("We need cooling repair", {}).get("service") == "AC repair"
+    assert _extract_slots_from_text("Air conditioning is down", {}).get("service") == "AC repair"
+

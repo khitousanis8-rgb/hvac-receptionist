@@ -70,7 +70,7 @@ function findClauseSplit(
       }
       const charBefore = buffer[m.index - 1] || "";
       const charAfter = buffer[m.index + 1] || "";
-      if (/\d/.test(charBefore) && /\d/.test(charAfter)) {
+      if (/\d/.test(charBefore) && (/\d/.test(charAfter) || charAfter === "")) {
         continue;
       }
     }
@@ -388,6 +388,7 @@ export function KokoroCallSession({
             }
             neuralVoice.stop();
             setIsAgentSpeaking(false);
+            setIsAgentThinking(false);
             speechRecRef.current?.resumeImmediatelyForInterrupt();
           },
           onError: (err) => {
@@ -455,6 +456,7 @@ export function KokoroCallSession({
     }
     neuralVoice.stop();
     setIsAgentSpeaking(false);
+    setIsAgentThinking(false);
     speechRecRef.current?.resumeImmediatelyForInterrupt();
   };
 

@@ -74,7 +74,7 @@ class EndCallRequest(BaseModel):
     summary: str | None = Field(default=None, max_length=2000)
 
 
-def _is_assistant_echo(text: str) -> bool:
+def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
     """Detect if caller input is an echo of assistant speech picked up by mic.
 
     Only flags true if the message closely mirrors the opening greeting pattern
@@ -96,7 +96,7 @@ def _is_assistant_echo(text: str) -> bool:
         return False
 
     stripped = clean
-    for phrase in [
+    phrases = [
         "thank you for calling",
         "thanks for calling",
         "example hvac",
@@ -109,7 +109,10 @@ def _is_assistant_echo(text: str) -> bool:
         "how can i help you",
         "heating or cooling today",
         "with your heating or cooling today",
-    ]:
+    ]
+    if company_name and company_name.strip():
+        phrases.append(company_name.strip().lower())
+    for phrase in phrases:
         stripped = stripped.replace(phrase, " ")
 
     stripped = re.sub(r"[^a-z0-9]", " ", stripped).strip()
@@ -122,7 +125,7 @@ def _is_assistant_echo(text: str) -> bool:
 def _is_echo_of_assistant(message: str, history: list[ChatMessage]) -> bool:
     """Detect speaker-feedback echo: the mic re-captured the assistant's TTS.
 
-    If >=70% of the transcript's words appear in a recent assistant message
+    If >=75% of the transcript's words appear in a recent assistant message
     from the caller's own session history, the "user" turn is almost certainly
     the caller's speakers being re-transcribed, not the caller speaking.
     """
@@ -130,19 +133,15 @@ def _is_echo_of_assistant(message: str, history: list[ChatMessage]) -> bool:
     if not clean_msg:
         return False
     msg_words = [w for w in clean_msg.split() if len(w) >= 2]
-    if len(msg_words) < 3:
+    # Acoustic echoes re-captured from speakers are full sentences/clauses.
+    # Responses under 8 words (e.g. "Monday at 10 AM works for me", "Can you book that for me",
+    # "That is for cooling") must NEVER be flagged as echo because callers mirror prompt words.
+    if len(msg_words) < 8:
         return False
 
-    # Never treat brief affirmative or slot-providing caller responses (<= 3 words) as echo
-    if len(msg_words) <= 3:
-        caller_intent_keywords = {
-            "yes", "yeah", "yep", "sure", "correct", "perfect", "please", "book",
-            "tomorrow", "today", "monday", "tuesday", "wednesday", "thursday",
-            "friday", "saturday", "sunday", "morning", "afternoon", "repair",
-            "broken", "leak", "leaking", "ac", "heat", "heater", "furnace"
-        }
-        if any(w in caller_intent_keywords for w in msg_words):
-            return False
+    # Never treat genuine affirmative caller responses as echo
+    if is_explicit_booking_confirmation(message):
+        return False
 
     for msg in history[-6:]:
         if msg.role != "assistant":
@@ -152,7 +151,7 @@ def _is_echo_of_assistant(message: str, history: list[ChatMessage]) -> bool:
         if not asst_words:
             continue
         overlap = sum(1 for w in msg_words if w in asst_words) / len(msg_words)
-        if overlap >= 0.7:
+        if overlap >= 0.75:
             return True
     return False
 
@@ -205,7 +204,7 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
             updates["phone"] = f"{prefix}{raw_digits}"
 
     # 3. Service extraction (use word boundaries to prevent matching 'actually', 'package', etc.)
-    if re.search(r"\b(a/?c|air\s*condition(?:ing)?|cooling|cool)\b", lower):
+    if re.search(r"\b(a/?c|air\s*condition(?:ing)?|cooling|not\s+cooling)\b", lower):
         updates["service"] = "AC repair"
     elif re.search(r"\b(furnace|heating|heater|boiler|heat\s*pump)\b", lower):
         updates["service"] = "Heating repair"
@@ -377,12 +376,16 @@ def booking_result_text(result: str) -> tuple[str, bool]:
 
 def _is_safety_emergency(text: str) -> bool:
     """Detect safety emergency keywords to give immediate life-safety guidance."""
-    lower = text.lower()
+    lower = text.lower().replace("fireplace", " ")
     emergency_kws = [
-        "gas smell", "smell gas", "smelling gas", "smoke", "fire", "sparking",
+        "gas smell", "smell gas", "smelling gas", "smoke", "sparking",
         "sparks", "carbon monoxide", "dizzy", "burning smell", "gas leak",
     ]
-    return any(kw in lower for kw in emergency_kws)
+    if any(kw in lower for kw in emergency_kws):
+        return True
+    if re.search(r"\bfire\b", lower):
+        return True
+    return False
 
 
 def _is_general_question(text: str) -> bool:
@@ -715,17 +718,13 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
     # Detect acoustic echo of assistant speech picked up by the microphone:
     # either the greeting pattern or any fragment of recent assistant turns.
+    # Returns a silent no-op (event: done only) to completely eliminate spoken feedback loops.
     if _is_assistant_echo(req.message) or _is_echo_of_assistant(req.message, req.history):
-        async def echo_recovery_generator() -> AsyncIterator[str]:
-            recovery_text = (
-                "Sorry, I heard an echo of my own voice there! "
-                "How can I assist you with your heating or cooling today?"
-            )
-            yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
+        async def echo_noop_generator() -> AsyncIterator[str]:
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
         return StreamingResponse(
-            echo_recovery_generator(),
+            echo_noop_generator(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -753,8 +752,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         if booking_details_changed(new_slots):
             new_slots["confirmation_requested"] = False
             new_slots["confirmation_fingerprint"] = None
-            if not slots.get("confirmed"):
-                new_slots["confirmed"] = False
+            new_slots["confirmed"] = False
         slots = await asyncio.to_thread(update_call_slots, active_call_id, new_slots)
         if phone := new_slots.get("phone"):
             await asyncio.to_thread(update_call_phone, active_call_id, str(phone))
@@ -849,7 +847,12 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 await asyncio.to_thread(
                     update_call_slots,
                     active_call_id,
-                    {"confirmation_requested": False, "confirmation_fingerprint": None},
+                    {
+                        "confirmation_requested": False,
+                        "confirmation_fingerprint": None,
+                        "time": None,
+                        "date": None,
+                    },
                 )
                 async def decline_generator() -> AsyncIterator[str]:
                     decline_msg = (
@@ -882,7 +885,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
     # Case B: No active recap. Check missing booking fields.
     missing = booking_missing_fields(slots)
-    if not missing:
+    if not missing and not _is_general_question(req.message) and not has_active_recap:
         parsed_dt = _parse_local_datetime(
             settings, str(slots.get("date")), str(slots.get("time"))
         )

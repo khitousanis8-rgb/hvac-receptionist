@@ -108,7 +108,9 @@ def update_call_slots(call_id: int, updates: dict[str, Any]) -> dict[str, Any]:
             raise LookupError("Call record is not active")
         slots = _decode_slots(record.session_slots)
         for key, value in updates.items():
-            if value is not None and str(value).strip():
+            if value is None:
+                slots[key] = None
+            elif str(value).strip():
                 slots[key] = value
         record.session_slots = _encode_slots(slots)
         return slots
