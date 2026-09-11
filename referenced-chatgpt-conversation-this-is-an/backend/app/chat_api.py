@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import threading
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import structlog
@@ -190,6 +192,8 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
     normalized_for_phone = lower
     for word, digit in digit_map.items():
         normalized_for_phone = re.sub(rf"\b{word}\b", digit, normalized_for_phone)
+    # Exclude ISO date patterns so calendar dates are not misclassified as phone numbers
+    normalized_for_phone = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", normalized_for_phone)
 
     phone_match = re.search(r"(\+?\s*[\d\s\-\.\(\)]{8,}\d)", normalized_for_phone)
     if phone_match:
@@ -228,6 +232,181 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
 
 
 _parse_local_datetime = parse_local_datetime
+
+
+def booking_missing_fields(slots: dict[str, Any]) -> list[str]:
+    """Required for an actual booking: service, phone, date, and time."""
+    required = ["service", "phone", "date", "time"]
+    missing: list[str] = []
+    for field in required:
+        val = slots.get(field)
+        if not val or not str(val).strip():
+            missing.append(field)
+    return missing
+
+
+def booking_details_changed(updates: dict[str, Any]) -> bool:
+    """Returns true when an update contains phone, service, date, or time."""
+    return any(
+        k in updates and updates[k] is not None
+        for k in ("phone", "service", "date", "time")
+    )
+
+
+def is_explicit_booking_confirmation(text: str) -> bool:
+    """Check if text is an explicit whole-message booking confirmation.
+
+    Normalizes lower-case text, punctuation, and whitespace.
+    Returns True only for whole-message allowlist phrases.
+    Rejects messages containing a negation, a new time/date, or additional booking details.
+    Does not use substring matching.
+    """
+    cleaned = re.sub(r"[^\w\s]", " ", text.lower())
+    normalized = " ".join(cleaned.split())
+    if not normalized:
+        return False
+
+    negations = {
+        "no", "not", "dont", "don't", "cancel", "stop", "wait", "change",
+        "instead", "different", "nevermind", "decline", "neither",
+    }
+    words = set(normalized.split())
+    if words & negations:
+        return False
+
+    date_time_indicators = {
+        "tomorrow", "today", "yesterday", "monday", "tuesday", "wednesday",
+        "thursday", "friday", "saturday", "sunday", "am", "pm", "morning",
+        "afternoon", "evening", "next", "o'clock", "oclock", "week", "noon",
+    }
+    if words & date_time_indicators:
+        return False
+
+    if re.search(r"\d", normalized):
+        return False
+
+    accepted_phrases = {
+        "yes",
+        "yes please",
+        "yes please do",
+        "please",
+        "yeah",
+        "yeah please",
+        "yep",
+        "yep please",
+        "please book it",
+        "please book that",
+        "please book",
+        "book it",
+        "book that",
+        "go ahead",
+        "go ahead and book it",
+        "go ahead and book",
+        "that works",
+        "that works for me",
+        "sounds good",
+        "sounds great",
+        "correct",
+        "that is correct",
+        "thats correct",
+        "confirm it",
+        "please confirm it",
+        "confirm",
+        "sure",
+        "sure thing",
+        "perfect",
+        "absolutely",
+    }
+    return normalized in accepted_phrases
+
+
+def booking_confirmation_fingerprint(slots: dict[str, Any]) -> str:
+    """Compute a stable hash of the 4 core booking details."""
+    phone = str(slots.get("phone", "")).strip().lower()
+    service = str(slots.get("service", "")).strip().lower()
+    date_val = str(slots.get("date", "")).strip().lower()
+    time_val = str(slots.get("time", "")).strip().lower()
+    raw = f"{phone}|{service}|{date_val}|{time_val}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def booking_confirmation_text(settings: Settings, slots: dict[str, Any]) -> str:
+    """Build the spoken confirmation recap from verified durable slots."""
+    service = slots.get("service") or "service"
+    date_val = slots.get("date") or "your requested date"
+    time_val = slots.get("time") or "your requested time"
+
+    parsed_dt = _parse_local_datetime(settings, str(date_val), str(time_val))
+    if parsed_dt is not None:
+        when_str = parsed_dt.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
+        return (
+            f"Just to confirm, that's {service} for {when_str}. "
+            f"Would you like me to book it?"
+        )
+
+    return (
+        f"Just to confirm, that's {service} for {date_val} at {time_val}. "
+        f"Would you like me to book it?"
+    )
+
+
+def booking_result_text(result: str) -> tuple[str, bool]:
+    """Convert the booking function result into a short spoken reply and a success flag.
+
+    Preserves a failure or unavailable-slot response strictly as a failure;
+    never classifies as success unless the booking genuinely succeeded in SQLite.
+    """
+    clean = result.strip()
+    if (
+        clean.startswith("Booked ")
+        or clean.startswith("Appointment booked")
+        or clean.startswith("Appointment is already confirmed")
+    ):
+        return (
+            "You're all set! I've booked that appointment for you. "
+            "Our technician will see you then. Is there anything else I can help with?",
+            True,
+        )
+    return (
+        f"I wasn't able to book that slot. {clean} "
+        f"Would you like to try a different time?",
+        False,
+    )
+
+
+def _is_safety_emergency(text: str) -> bool:
+    """Detect safety emergency keywords to give immediate life-safety guidance."""
+    lower = text.lower()
+    emergency_kws = [
+        "gas smell", "smell gas", "smelling gas", "smoke", "fire", "sparking",
+        "sparks", "carbon monoxide", "dizzy", "burning smell", "gas leak",
+    ]
+    return any(kw in lower for kw in emergency_kws)
+
+
+def _is_general_question(text: str) -> bool:
+    """Detect if caller is asking a general question rather than supplying booking info."""
+    lower = text.lower().strip()
+    if "?" in lower:
+        return True
+    question_starters = (
+        "how much", "what are your", "do you", "can you", "where are", "who are",
+        "what hours", "what brands", "what is", "whats", "how does", "pricing",
+        "cost", "rates",
+    )
+    return any(lower.startswith(q) or f" {q}" in lower for q in question_starters)
+
+
+def _is_booking_flow_active(slots: dict[str, Any], text: str) -> bool:
+    """Determine if the caller is in an active booking dialogue."""
+    if slots.get("service") or slots.get("phone") or slots.get("date") or slots.get("time"):
+        return True
+    lower = text.lower()
+    booking_intents = (
+        "book", "schedule", "appointment", "technician", "come out",
+        "repair", "service", "tune up", "tune-up",
+    )
+    return any(kw in lower for kw in booking_intents)
 
 
 def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
@@ -295,44 +474,7 @@ def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
     return f"Unknown tool: {name}"
 
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "book_appointment_tool",
-            "description": (
-                "Book an HVAC service appointment during business hours once "
-                "phone, service, date, and time are confirmed."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "phone_number": {
-                        "type": "string",
-                        "description": "The caller's phone number",
-                    },
-                    "service": {
-                        "type": "string",
-                        "description": "One of the approved HVAC services",
-                    },
-                    "date": {
-                        "type": "string",
-                        "description": "Appointment date in YYYY-MM-DD format",
-                    },
-                    "time": {
-                        "type": "string",
-                        "description": "Appointment start time in HH:MM 24h format",
-                    },
-                    "name": {"type": "string", "description": "Caller name if provided"},
-                    "notes": {
-                        "type": "string",
-                        "description": "Optional notes or equipment issue description",
-                    },
-                },
-                "required": ["phone_number", "service", "date", "time"],
-            },
-        },
-    },
+READ_ONLY_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -351,6 +493,8 @@ TOOLS = [
         },
     },
 ]
+
+TOOLS = READ_ONLY_TOOLS
 
 
 def _is_closing_or_polite_remark(text: str) -> bool:
@@ -434,7 +578,7 @@ async def _try_create_completion(
                 model=candidate_model,
             )
             fallback_kwargs = dict(call_kwargs)
-            fallback_kwargs["tools"] = TOOLS
+            fallback_kwargs["tools"] = READ_ONLY_TOOLS
             fallback_kwargs["tool_choice"] = "auto"
             return await client.chat.completions.create(**fallback_kwargs)
 
@@ -460,7 +604,7 @@ async def _try_create_completion(
                     model=candidate_model,
                 )
                 fallback_kwargs = dict(call_kwargs)
-                fallback_kwargs["tools"] = TOOLS
+                fallback_kwargs["tools"] = READ_ONLY_TOOLS
                 fallback_kwargs["tool_choice"] = "auto"
                 return await client.chat.completions.create(**fallback_kwargs)
 
@@ -480,8 +624,7 @@ async def _create_stream_completion(
     **kwargs: Any,
 ) -> Any:
     """Create streaming completion with lowest latency, tool repair, and model failover."""
-    # Ensure sufficient token budget so internal reasoning never starves conversational tokens
-    kwargs["max_tokens"] = max(kwargs.get("max_tokens", 200), 500)
+    kwargs["max_tokens"] = kwargs.get("max_tokens", 128)
     primary_model = kwargs.get("model", "qwen/qwen3.8-27b")
     candidate_models = _get_candidate_models(primary_model)
 
@@ -508,7 +651,7 @@ async def _create_stream_completion(
 
             if "tool choice is none" in err_str or "model called a tool" in err_str:
                 repair_kwargs = dict(current_kwargs)
-                repair_kwargs["tools"] = TOOLS
+                repair_kwargs["tools"] = READ_ONLY_TOOLS
                 repair_kwargs["tool_choice"] = "auto"
                 try:
                     return await client.chat.completions.create(**repair_kwargs)
@@ -586,6 +729,234 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    # Detect life-safety emergencies immediately
+    if _is_safety_emergency(req.message):
+        async def emergency_generator() -> AsyncIterator[str]:
+            emergency_text = (
+                "If you smell gas or smoke, or see fire or sparks, please leave the building "
+                "immediately and call 911! Your safety is the top priority."
+            )
+            yield f"event: delta\ndata: {json.dumps({'text': emergency_text})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+        return StreamingResponse(
+            emergency_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # 1. Update and retrieve durable session slots bound to this exact call.
+    slots = await asyncio.to_thread(get_call_slots, active_call_id)
+    new_slots = _extract_slots_from_text(req.message, slots)
+    if new_slots:
+        if booking_details_changed(new_slots):
+            new_slots["confirmation_requested"] = False
+            new_slots["confirmation_fingerprint"] = None
+            if not slots.get("confirmed"):
+                new_slots["confirmed"] = False
+        slots = await asyncio.to_thread(update_call_slots, active_call_id, new_slots)
+        if phone := new_slots.get("phone"):
+            await asyncio.to_thread(update_call_phone, active_call_id, str(phone))
+
+    # 2. Idempotent check for calls already successfully booked
+    if slots.get("confirmed"):
+        if (
+            _is_closing_or_polite_remark(req.message)
+            or is_explicit_booking_confirmation(req.message)
+        ):
+            async def already_confirmed_generator() -> AsyncIterator[str]:
+                msg = (
+                    "You're already all set for your appointment! "
+                    "Our technician will see you then. Thanks for calling and have a great day!"
+                )
+                yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
+                yield f"event: done\ndata: {json.dumps({'outcome': 'booked'})}\n\n"
+
+            return StreamingResponse(
+                already_confirmed_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+    # 3. Deterministic Booking State Machine Routing
+    # Case A: A server recap was previously requested and is awaiting confirmation
+    has_active_recap = bool(
+        slots.get("confirmation_requested") and slots.get("confirmation_fingerprint")
+    )
+    if has_active_recap:
+        expected_fp = str(slots.get("confirmation_fingerprint"))
+        current_fp = booking_confirmation_fingerprint(slots)
+        if expected_fp == current_fp:
+            if is_explicit_booking_confirmation(req.message):
+                phone_arg = str(slots.get("phone", "")).strip()
+                service_arg = str(slots.get("service", "")).strip()
+                date_arg = str(slots.get("date", "")).strip()
+                time_arg = str(slots.get("time", "")).strip()
+                caller_name = slots.get("name")
+                tool_args: dict[str, Any] = {
+                    "phone_number": phone_arg,
+                    "service": service_arg,
+                    "date": date_arg,
+                    "time": time_arg,
+                }
+                if caller_name:
+                    tool_args["name"] = str(caller_name).strip()
+
+                tool_result = await asyncio.to_thread(
+                    _execute_tool, settings, "book_appointment_tool", tool_args
+                )
+                spoken_reply, success = booking_result_text(tool_result)
+                if success:
+                    await asyncio.to_thread(
+                        update_call_slots,
+                        active_call_id,
+                        {
+                            "confirmed": True,
+                            "confirmation_requested": False,
+                            "confirmation_fingerprint": None,
+                        },
+                    )
+                    await asyncio.to_thread(update_call_outcome, active_call_id, "booked")
+                else:
+                    await asyncio.to_thread(
+                        update_call_slots,
+                        active_call_id,
+                        {"confirmation_requested": False, "confirmation_fingerprint": None},
+                    )
+
+                async def execution_generator() -> AsyncIterator[str]:
+                    outcome = "booked" if success else "info_only"
+                    call_data = json.dumps(
+                        {"name": "book_appointment_tool", "result": tool_result}
+                    )
+                    yield f"event: tool_call\ndata: {call_data}\n\n"
+                    yield f"event: delta\ndata: {json.dumps({'text': spoken_reply})}\n\n"
+                    yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
+
+                return StreamingResponse(
+                    execution_generator(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+
+            negations = {
+                "no", "not", "cancel", "stop", "dont", "don't",
+                "nevermind", "wait", "decline",
+            }
+            cleaned_words = set(re.sub(r"[^\w\s]", " ", req.message.lower()).split())
+            if cleaned_words & negations:
+                await asyncio.to_thread(
+                    update_call_slots,
+                    active_call_id,
+                    {"confirmation_requested": False, "confirmation_fingerprint": None},
+                )
+                async def decline_generator() -> AsyncIterator[str]:
+                    decline_msg = (
+                        "No problem at all! Would you like to check a different day or time, "
+                        "or is there something else I can help with?"
+                    )
+                    yield f"event: delta\ndata: {json.dumps({'text': decline_msg})}\n\n"
+                    yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+                return StreamingResponse(
+                    decline_generator(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+
+            if not _is_general_question(req.message):
+                async def clarif_generator() -> AsyncIterator[str]:
+                    clarif_msg = (
+                        "I just need a quick yes or no. Would you like me to go ahead "
+                        "and book that appointment for you?"
+                    )
+                    yield f"event: delta\ndata: {json.dumps({'text': clarif_msg})}\n\n"
+                    yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+                return StreamingResponse(
+                    clarif_generator(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+
+    # Case B: No active recap. Check missing booking fields.
+    missing = booking_missing_fields(slots)
+    if not missing:
+        parsed_dt = _parse_local_datetime(
+            settings, str(slots.get("date")), str(slots.get("time"))
+        )
+        if parsed_dt is None:
+            async def invalid_dt_gen() -> AsyncIterator[str]:
+                msg = (
+                    "I couldn't quite understand that date or time. "
+                    "Could you give me a specific day and time, like tomorrow at 10 AM?"
+                )
+                yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
+                yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+            return StreamingResponse(
+                invalid_dt_gen(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        now_local = datetime.now(parsed_dt.tzinfo or UTC)
+        if parsed_dt < now_local:
+            async def past_dt_gen() -> AsyncIterator[str]:
+                msg = "That time has already passed. What future day and time works best for you?"
+                yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
+                yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+            return StreamingResponse(
+                past_dt_gen(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        fp = booking_confirmation_fingerprint(slots)
+        await asyncio.to_thread(
+            update_call_slots,
+            active_call_id,
+            {"confirmation_requested": True, "confirmation_fingerprint": fp},
+        )
+        recap_text = booking_confirmation_text(settings, slots)
+
+        async def recap_gen() -> AsyncIterator[str]:
+            yield f"event: delta\ndata: {json.dumps({'text': recap_text})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+        return StreamingResponse(
+            recap_gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    elif (
+        missing
+        and _is_booking_flow_active(slots, req.message)
+        and not _is_general_question(req.message)
+    ):
+        next_field = missing[0]
+        if next_field == "service":
+            q_text = "What service do you need help with: AC repair, heating repair, or a tune-up?"
+        elif next_field == "phone":
+            q_text = "What's the best callback phone number for the technician to reach you?"
+        elif next_field == "date":
+            q_text = "What day works best for your appointment?"
+        else:
+            q_text = "What time would you prefer?"
+
+        async def missing_slot_gen() -> AsyncIterator[str]:
+            yield f"event: delta\ndata: {json.dumps({'text': q_text})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+        return StreamingResponse(
+            missing_slot_gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # 4. Conversational LLM Flow for General Inquiries & Lookup
     if not settings.llm_api_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -594,22 +965,11 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
     client = _get_client(settings)
 
-    # 1. Update and retrieve durable session slots bound to this exact call.
-    # DB helpers are sync; run them in a worker thread to keep the event loop
-    # responsive for concurrent SSE/TTS streams.
-    slots = await asyncio.to_thread(get_call_slots, active_call_id)
-    new_slots = _extract_slots_from_text(req.message, slots)
-    if new_slots:
-        slots = await asyncio.to_thread(update_call_slots, active_call_id, new_slots)
-        if phone := new_slots.get("phone"):
-            await asyncio.to_thread(update_call_phone, active_call_id, str(phone))
-
-    # 2. Dynamic prompt grounding with verified slots
     system_content = receptionist_instructions(settings, slots=slots)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
 
-    # Cap history to the last 30 messages (~15 turns) to retain deep conversational nuances
-    recent_history = req.history[-30:] if len(req.history) > 30 else req.history
+    # Cap history to the newest 12 messages (~6 turns)
+    recent_history = req.history[-12:] if len(req.history) > 12 else req.history
     for msg in recent_history:
         if msg.role == "user" and (
             _is_assistant_echo(msg.content)
@@ -619,53 +979,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": req.message})
 
-    # Check if caller is confirming booking details and all prerequisites are known
-    cleaned_msg = "".join(c for c in req.message.lower() if c.isalnum() or c.isspace()).strip()
-    is_affirmative = any(
-        w in cleaned_msg.split()
-        for w in ["yes", "yeah", "yep", "correct", "perfect", "sure", "book", "booked"]
-    ) or any(
-        phrase in cleaned_msg
-        for phrase in [
-            "sounds good",
-            "sounds great",
-            "please book",
-            "go ahead",
-            "that works",
-            "thats fine",
-            "that is fine",
-        ]
-    )
-    has_booking_prereqs = bool(
-        slots.get("phone")
-        and slots.get("service")
-        and (slots.get("time") or slots.get("date"))
-    )
-    is_confirming_now = has_booking_prereqs and is_affirmative and not slots.get("confirmed")
-
-    # 3. Tool Choice & Gating
-    is_polite_closing = False if is_confirming_now else _is_closing_or_polite_remark(req.message)
-    is_reschedule_or_check = any(
-        kw in req.message.lower()
-        for kw in [
-            "change",
-            "reschedule",
-            "cancel",
-            "check",
-            "different time",
-            "another time",
-            "update",
-        ]
-    )
-    if is_polite_closing or (slots.get("confirmed") and not is_reschedule_or_check):
-        tools_to_use = None
-    else:
-        tools_to_use = TOOLS
-
-    if is_confirming_now:
-        tool_choice_to_use: str | None = "required"
-    else:
-        tool_choice_to_use = "auto" if tools_to_use else None
+    is_polite_closing = _is_closing_or_polite_remark(req.message)
+    tools_to_use = None if is_polite_closing else READ_ONLY_TOOLS
+    tool_choice_to_use = "auto" if tools_to_use else None
 
     async def sse_generator() -> AsyncIterator[str]:
         outcome = "info_only"
@@ -676,7 +992,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 "model": settings.llm_model,
                 "messages": messages,
                 "temperature": 0.1,
-                "max_tokens": 200,
+                "max_tokens": 128,
                 "stop": ["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                 "stream": True,
             }
@@ -722,7 +1038,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     streamed_content += delta.content
                     yield f"event: delta\ndata: {json.dumps({'text': delta.content})}\n\n"
 
-            # If the model requested tools: execute them and stream the final answer
+            # If the model requested read-only lookup: execute and stream the final answer
             if tool_calls_accumulator:
                 parsed_args: dict[int, dict[str, Any]] = {}
                 sanitized_tool_calls: list[dict[str, Any]] = []
@@ -758,18 +1074,6 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
                     logger.info("executing_chat_tool", tool=name, argument_names=sorted(args))
                     tool_result = await asyncio.to_thread(_execute_tool, settings, name, args)
-                    if name == "book_appointment_tool" and (
-                        "booked" in tool_result.lower() or "confirmed" in tool_result.lower()
-                    ):
-                        outcome = "booked"
-                        await asyncio.to_thread(
-                            update_call_slots, active_call_id, {"confirmed": True}
-                        )
-                        await asyncio.to_thread(update_call_outcome, active_call_id, "booked")
-                        if args.get("phone_number"):
-                            await asyncio.to_thread(
-                                update_call_phone, active_call_id, str(args["phone_number"])
-                            )
 
                     yield (
                         f"event: tool_call\ndata: "
@@ -790,7 +1094,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     model=settings.llm_model,
                     messages=messages,
                     temperature=0.1,
-                    max_tokens=200,
+                    max_tokens=128,
                     stop=["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                     stream=True,
                 )
@@ -799,61 +1103,6 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta and delta.content:
                         yield f"event: delta\ndata: {json.dumps({'text': delta.content})}\n\n"
-
-            else:
-                # Deterministic Safety Interceptor:
-                # If the LLM claimed the appointment is booked/confirmed in conversational text
-                # without invoking book_appointment_tool, execute the booking deterministically
-                # so the caller's booking is never a phantom hallucination!
-                is_claiming_booked = any(
-                    phrase in streamed_content.lower()
-                    for phrase in [
-                        "is confirmed", "has been confirmed", "have confirmed",
-                        "is scheduled", "has been scheduled", "have scheduled",
-                        "is all set", "all set for", "we look forward to helping you tomorrow",
-                    ]
-                )
-                if is_claiming_booked and not slots.get("confirmed") and has_booking_prereqs:
-                    logger.warning(
-                        "anti_hallucination_auto_booking",
-                        session_id=req.session_id,
-                        present_slots=sorted(key for key, value in slots.items() if value),
-                    )
-                    cust_name = slots.get("name") or "Caller"
-                    cust_phone = slots.get("phone") or ""
-                    cust_service = slots.get("service") or "AC repair"
-                    cust_date = slots.get("date")
-                    cust_time = slots.get("time")
-                    if cust_date and cust_time:
-                        booking_result = await asyncio.to_thread(
-                            _execute_tool,
-                            settings,
-                            "book_appointment_tool",
-                            {
-                                "name": cust_name,
-                                "phone_number": cust_phone,
-                                "service": cust_service,
-                                "date": str(cust_date),
-                                "time": str(cust_time),
-                            },
-                        )
-                        if (
-                            "booked" in booking_result.lower()
-                            or "confirmed" in booking_result.lower()
-                        ):
-                            outcome = "booked"
-                            await asyncio.to_thread(
-                                update_call_slots, active_call_id, {"confirmed": True}
-                            )
-                            await asyncio.to_thread(
-                                update_call_outcome, active_call_id, "booked"
-                            )
-                            if cust_phone:
-                                await asyncio.to_thread(
-                                    update_call_phone, active_call_id, str(cust_phone)
-                                )
-                    else:
-                        logger.warning("booking_claim_rejected_missing_canonical_datetime")
 
             yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
 

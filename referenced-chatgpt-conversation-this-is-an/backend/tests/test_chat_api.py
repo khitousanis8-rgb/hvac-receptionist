@@ -11,13 +11,16 @@ from fastapi.testclient import TestClient
 from app.call_tracking import start_or_get_browser_call
 from app.chat_api import _execute_tool, _is_closing_or_polite_remark
 from app.config import Settings
-from app.db import CallRecord, Customer, init_db, new_session
+from app.db import Appointment, CallRecord, Customer, init_db, new_session
 from app.main import create_app
 
 
 @pytest.fixture(autouse=True)
 def setup_db() -> None:
     init_db()
+    with new_session() as session:
+        session.query(Appointment).delete()
+        session.commit()
 
 
 _CALL_SECRET = "a" * 64
@@ -262,49 +265,53 @@ def test_chat_stream_executes_tool_and_updates_slots() -> None:
     )
     app = create_app(settings)
     client = TestClient(app)
+    from uuid import uuid4
 
-    class ToolFunction:
-        future_date = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
-        name = "book_appointment_tool"
-        arguments = (
-            f'{{"phone_number": "555-0199", "service": "AC Repair", '
-            f'"date": "{future_date}", "time": "10:00"}}'
-        )
+    room = f"booking-test-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+    future_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
 
-    class ToolCall:
-        id = "call_123"
-        function = ToolFunction()
+    # Turn 1: Caller asks to book, but phone number is missing
+    res1 = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(
+            room,
+            call_id,
+            f"Book AC repair for {future_date} 10am",
+        ),
+    )
+    assert res1.status_code == 200
+    assert "best callback phone number" in res1.text
+    assert 'event: done\ndata: {"outcome": "info_only"}' in res1.text
 
-    async def fake_first_call(*args, **kwargs):
-        delta = type("Delta", (), {"content": None, "tool_calls": [ToolCall()]})()
-        class Chunk:
-            choices = [type("Choice", (), {"delta": delta})()]
-        yield Chunk()
+    # Turn 2: Caller provides phone number -> Server produces deterministic recap
+    phone = f"555{1000000 + (abs(hash(room)) % 8999999)}"
+    res2 = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(
+            room,
+            call_id,
+            f"My phone number is {phone}",
+        ),
+    )
+    assert res2.status_code == 200
+    assert "Just to confirm" in res2.text
+    assert "Would you like me to book it?" in res2.text
+    assert 'event: done\ndata: {"outcome": "info_only"}' in res2.text
 
-    async def fake_second_call(*args, **kwargs):
-        delta = type("Delta", (), {"content": "Your appointment is booked.", "tool_calls": None})()
-        class Chunk:
-            choices = [type("Choice", (), {"delta": delta})()]
-        yield Chunk()
-
-    with patch("app.chat_api._get_client") as mock_get_client:
-        mock_openai = AsyncMock()
-        mock_openai.chat.completions.create = AsyncMock(
-            side_effect=[fake_first_call(), fake_second_call()]
-        )
-        mock_get_client.return_value = mock_openai
-
-        res = client.post(
-            "/v1/calls/chat",
-            json=_browser_payload(
-                "booking-test",
-                _start_browser_call("booking-test"),
-                "Book AC repair for next Monday 10am",
-            ),
-        )
-        assert res.status_code == 200
-        text = res.text
-        assert 'event: done\ndata: {"outcome": "booked"}' in text
+    # Turn 3: Caller gives explicit confirmation -> Server directly executes book_appointment_tool
+    res3 = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(
+            room,
+            call_id,
+            "Yes please",
+        ),
+    )
+    assert res3.status_code == 200
+    assert 'event: tool_call\ndata: {"name": "book_appointment_tool"' in res3.text
+    assert "You're all set! I've booked that appointment" in res3.text
+    assert 'event: done\ndata: {"outcome": "booked"}' in res3.text
 
 
 def test_extract_slots_from_text() -> None:
@@ -551,3 +558,257 @@ def test_create_stream_completion_rate_limit_failover() -> None:
     assert attempted_models[0] == "openai/gpt-oss-120b"
     assert len(attempted_models) >= 2
     assert attempted_models[1] in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+
+
+def test_booking_missing_fields_validation() -> None:
+    from app.chat_api import booking_missing_fields
+
+    # Date present, but time missing
+    draft1 = {"service": "AC repair", "phone": "555-123-4567", "date": "2030-05-01"}
+    missing1 = booking_missing_fields(draft1)
+    assert "time" in missing1
+    assert "date" not in missing1
+
+    # Time present, but date missing
+    draft2 = {"service": "AC repair", "phone": "555-123-4567", "time": "10:00"}
+    missing2 = booking_missing_fields(draft2)
+    assert "date" in missing2
+    assert "time" not in missing2
+
+    # All 4 required fields present
+    draft3 = {
+        "service": "AC repair",
+        "phone": "555-123-4567",
+        "date": "2030-05-01",
+        "time": "10:00",
+    }
+    missing3 = booking_missing_fields(draft3)
+    assert len(missing3) == 0
+
+
+def test_is_explicit_booking_confirmation_allowlist_and_rejections() -> None:
+    from app.chat_api import is_explicit_booking_confirmation
+
+    # Allowlist: exact whole phrases
+    positives = [
+        "yes",
+        "yes please",
+        "yes please do",
+        "please book it",
+        "go ahead",
+        "that works",
+        "sounds good",
+        "sounds great",
+        "correct",
+        "confirm it",
+        "sure thing",
+        "perfect",
+        "yep",
+        "yeah",
+    ]
+    for phrase in positives:
+        assert is_explicit_booking_confirmation(phrase) is True, f"Failed for {phrase!r}"
+
+    # Rejections: negations, substring matches, new dates/times, ambiguities
+    negatives = [
+        "I want to book",
+        "maybe",
+        "no",
+        "yes, but change it to Wednesday",
+        "book next Tuesday",
+        "sure tomorrow at 2",
+        "not now",
+        "wait a second",
+        "can you do 3pm instead",
+        "yes wait",
+        "cancel",
+    ]
+    for phrase in negatives:
+        assert is_explicit_booking_confirmation(phrase) is False, f"Failed for {phrase!r}"
+
+
+def test_booking_details_changed_and_fingerprint_invalidation() -> None:
+    from app.chat_api import (
+        booking_confirmation_fingerprint,
+        booking_details_changed,
+    )
+
+    # Details changed detector
+    assert booking_details_changed({"phone": "5551234567"}) is True
+    assert booking_details_changed({"service": "AC repair"}) is True
+    assert booking_details_changed({"date": "2030-05-01"}) is True
+    assert booking_details_changed({"time": "10:00"}) is True
+    assert booking_details_changed({"name": "Alice"}) is False
+    assert booking_details_changed({"notes": "dog in yard"}) is False
+
+    # Fingerprint stability and invalidation
+    slots_a = {
+        "phone": "5551234567",
+        "service": "AC repair",
+        "date": "2030-05-01",
+        "time": "10:00",
+    }
+    fp_a1 = booking_confirmation_fingerprint(slots_a)
+    fp_a2 = booking_confirmation_fingerprint(slots_a)
+    assert fp_a1 == fp_a2
+
+    slots_b = dict(slots_a)
+    slots_b["time"] = "14:00"
+    fp_b = booking_confirmation_fingerprint(slots_b)
+    assert fp_a1 != fp_b
+
+
+def test_booking_result_text_classification() -> None:
+    from app.chat_api import booking_result_text
+
+    # Genuine success
+    reply, success = booking_result_text("Booked AC repair at 2030-05-01T10:00:00-04:00")
+    assert success is True
+    assert "You're all set" in reply
+
+    # Slot unavailable failure
+    reply_fail, success_fail = booking_result_text(
+        "That slot is already booked. Available nearby slots: 11:00 AM, 02:00 PM"
+    )
+    assert success_fail is False
+    assert "wasn't able to book" in reply_fail
+    assert "confirmed" not in reply_fail.lower()
+
+
+def test_sse_repeating_confirmation_does_not_create_second_appointment() -> None:
+    from uuid import uuid4
+
+    settings = Settings(
+        LLM_API_KEY="test-key",
+        BUSINESS_OPENING_HOURS='{"monday":"08:00-18:00","tuesday":"08:00-18:00","wednesday":"08:00-18:00","thursday":"08:00-18:00","friday":"08:00-18:00","saturday":"08:00-18:00","sunday":"08:00-18:00"}',
+        _env_file=None,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"repeat-test-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+    future_date = (datetime.now() + timedelta(days=25)).strftime("%Y-%m-%d")
+    phone = f"555{2000000 + (abs(hash(room)) % 7999999)}"
+
+    # Turn 1: Provide all slots
+    client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, f"Book AC repair for {future_date} 10am"),
+    )
+    res_recap = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, f"My phone is {phone}"),
+    )
+    assert "Just to confirm" in res_recap.text
+
+    # Turn 2: Confirm once
+    res_book = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "Yes please"),
+    )
+    assert 'event: done\ndata: {"outcome": "booked"}' in res_book.text
+
+    # Verify 1 appointment in DB
+    with new_session() as session:
+        count = session.query(Appointment).count()
+        assert count == 1
+
+    # Turn 3: Repeat confirmation
+    res_repeat = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "Yes please"),
+    )
+    assert res_repeat.status_code == 200
+    assert "already all set" in res_repeat.text
+    assert 'event: done\ndata: {"outcome": "booked"}' in res_repeat.text
+
+    # Verify STILL only 1 appointment in DB
+    with new_session() as session:
+        count_after = session.query(Appointment).count()
+        assert count_after == 1
+
+
+def test_sse_revised_time_requires_new_recap() -> None:
+    from uuid import uuid4
+
+    settings = Settings(
+        LLM_API_KEY="test-key",
+        BUSINESS_OPENING_HOURS='{"monday":"08:00-18:00","tuesday":"08:00-18:00","wednesday":"08:00-18:00","thursday":"08:00-18:00","friday":"08:00-18:00","saturday":"08:00-18:00","sunday":"08:00-18:00"}',
+        _env_file=None,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"recap-revise-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+    future_date = (datetime.now() + timedelta(days=26)).strftime("%Y-%m-%d")
+    phone = f"555{3000000 + (abs(hash(room)) % 6999999)}"
+
+    # Provide initial details
+    client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, f"Book AC repair for {future_date} 10am"),
+    )
+    res_recap1 = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, f"My phone is {phone}"),
+    )
+    assert "10:00 AM" in res_recap1.text
+
+    # Revise time to 2pm
+    res_recap2 = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "Actually can we make it 2:00 PM"),
+    )
+    assert res_recap2.status_code == 200
+    assert "02:00 PM" in res_recap2.text or "2:00 PM" in res_recap2.text
+    assert "Would you like me to book it?" in res_recap2.text
+
+    # Now confirm
+    res_confirm = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "Yes please"),
+    )
+    assert 'event: done\ndata: {"outcome": "booked"}' in res_confirm.text
+
+    # Check appointment time in DB is 14:00
+    with new_session() as session:
+        appt = session.query(Appointment).first()
+        assert appt is not None
+        assert appt.scheduled_for.hour in (14, 18)
+
+
+def test_book_appointment_tool_not_in_model_visible_tools() -> None:
+    from app.chat_api import READ_ONLY_TOOLS, TOOLS
+
+    tool_names = [t["function"]["name"] for t in READ_ONLY_TOOLS]
+    assert "book_appointment_tool" not in tool_names
+    assert "check_my_appointments" in tool_names
+
+    legacy_names = [t["function"]["name"] for t in TOOLS]
+    assert "book_appointment_tool" not in legacy_names
+
+
+def test_safety_emergency_instruction_takes_priority() -> None:
+    from uuid import uuid4
+
+    settings = Settings(_env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"emergency-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+
+    res = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(
+            room,
+            call_id,
+            "I smell gas in my basement and the furnace is clicking!",
+        ),
+    )
+    assert res.status_code == 200
+    assert "leave the building immediately" in res.text
+    assert "911" in res.text
+    assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
