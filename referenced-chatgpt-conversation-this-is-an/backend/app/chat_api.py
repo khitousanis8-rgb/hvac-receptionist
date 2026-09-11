@@ -131,6 +131,16 @@ def _is_echo_of_assistant(message: str, history: list[ChatMessage]) -> bool:
     if len(msg_words) < 3:
         return False
 
+    # Never treat genuine affirmative or slot-providing caller responses as echo
+    caller_intent_keywords = {
+        "yes", "yeah", "yep", "sure", "correct", "perfect", "please", "book",
+        "tomorrow", "today", "monday", "tuesday", "wednesday", "thursday",
+        "friday", "saturday", "sunday", "morning", "afternoon", "repair",
+        "broken", "leak", "leaking", "ac", "heat", "heater", "furnace"
+    }
+    if any(w in caller_intent_keywords for w in msg_words):
+        return False
+
     for msg in history[-6:]:
         if msg.role != "assistant":
             continue

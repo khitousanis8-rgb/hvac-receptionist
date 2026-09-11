@@ -57,15 +57,20 @@ function findClauseSplit(
   buffer: string,
   isFirstPhrase: boolean
 ): { sentence: string; rest: string } | null {
-  const re = /[.?!,:!\n]/g;
+  const re = /[.?!,:;\n]/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(buffer)) !== null) {
     const punct = m[0];
     const candidate = buffer.slice(0, m.index);
-    // Skip abbreviation periods: "9 a.m.", "p.m.", "Mr.", initials.
+    // Skip abbreviation periods and decimals: "9 a.m.", "p.m.", "Mr.", "3.5 ton", "$89.50"
     if (punct === ".") {
       const lastWord = (candidate.split(/\s+/).pop() || "").toLowerCase();
-      if (/^[a-z]$/.test(lastWord) || /^(mr|mrs|ms|dr|st|vs|etc|no)$/.test(lastWord)) {
+      if (/^[a-z]$/.test(lastWord) || /^(mr|mrs|ms|dr|st|vs|etc|no|am|pm|a\.m|p\.m)$/.test(lastWord)) {
+        continue;
+      }
+      const charBefore = buffer[m.index - 1] || "";
+      const charAfter = buffer[m.index + 1] || "";
+      if (/\d/.test(charBefore) && /\d/.test(charAfter)) {
         continue;
       }
     }
@@ -75,9 +80,10 @@ function findClauseSplit(
     if (punct === "." || punct === "?" || punct === "!") {
       // A complete sentence is always a natural TTS unit — dispatch immediately.
       if (isFirstPhrase && trimmed.length < 8) continue;
-      return { sentence: trimmed, rest: buffer.slice(m.index + 1) };
+      // Retain terminal punctuation so Edge-TTS renders question and exclamatory prosody
+      return { sentence: trimmed + punct, rest: buffer.slice(m.index + 1) };
     }
-    // Clause boundaries (comma, colon, newline): breath groups only.
+    // Clause boundaries (comma, colon, semicolon, newline): breath groups only.
     if (isFirstPhrase ? trimmed.length >= 8 : trimmed.length >= 25 || buffer.length > 80) {
       return { sentence: trimmed, rest: buffer.slice(m.index + 1) };
     }
@@ -368,6 +374,10 @@ export function KokoroCallSession({
           },
           onBargeIn: () => {
             console.log("[VoiceCall] Caller barged in: interrupting assistant playback");
+            if (abortControllerRef.current) {
+              abortControllerRef.current.abort();
+              abortControllerRef.current = null;
+            }
             neuralVoice.stop();
             setIsAgentSpeaking(false);
             speechRecRef.current?.pauseForAgentPlayback(false);
@@ -431,6 +441,10 @@ export function KokoroCallSession({
   };
 
   const handleInterrupt = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
     neuralVoice.stop();
     setIsAgentSpeaking(false);
     speechRecRef.current?.pauseForAgentPlayback(false);

@@ -65,7 +65,7 @@ export class BrowserSpeechRecognition {
       this.recognition.maxAlternatives = 1;
 
       this.recognition.onresult = (event: any) => {
-        if (this.isMuted) return;
+        if (!this.shouldBeListening || this.isMuted) return;
 
         let interimText = "";
         let finalText = "";
@@ -81,10 +81,11 @@ export class BrowserSpeechRecognition {
 
         const candidateText = (finalText || interimText).trim();
 
-        // Caller Barge-in: if assistant is speaking and caller speaks substantive words, halt assistant immediately
+        // Caller Barge-in: if assistant is speaking and caller speaks substantive words (or interrupt command), halt assistant immediately
         if (this.isPausedForAgent) {
           const words = candidateText.split(/\s+/).filter((w) => w.length >= 2);
-          if ((words.length >= 2 || candidateText.length >= 8) && !this.isAcousticEcho(candidateText)) {
+          const isStopCommand = /^(stop|wait|hold|pause|no)$/i.test(candidateText.trim());
+          if ((words.length >= 2 || candidateText.length >= 8 || isStopCommand) && !this.isAcousticEcho(candidateText)) {
             console.log("[SpeechRecognition] Caller barge-in detected:", candidateText);
             this.isPausedForAgent = false;
             this.onBargeIn?.();
@@ -224,10 +225,13 @@ export class BrowserSpeechRecognition {
     }
 
     // Speaker-feedback echo: the mic picked up the assistant's TTS through the
-    // PC speakers. Fragments are often short ("you're very welcome", "may i
-    // have your name"), so also match by word overlap against recent assistant
-    // speech: if >=70% of the transcript's words appear in a recent assistant
-    // utterance, it is almost certainly echo, not the caller.
+    // PC speakers. Fragments physically only occur during or immediately after playback.
+    const isPlaybackActive = this.isPausedForAgent || (Date.now() - this.lastAgentSpeechEndTime < 400);
+    if (!isPlaybackActive) {
+      return false;
+    }
+
+    const COMMON_STOP_WORDS = new Set(["you", "for", "can", "i", "help", "today", "the", "a", "an", "to", "and", "that", "this", "my", "is"]);
     for (const utterance of this.recentAssistantUtterances) {
       if (utterance.length > 25 && clean.length > 25) {
         if (utterance === clean || utterance.includes(clean)) {
@@ -235,8 +239,8 @@ export class BrowserSpeechRecognition {
         }
       }
 
-      const echoWords = clean.split(" ").filter((w) => w.length >= 2);
-      if (echoWords.length < 3) continue;
+      const echoWords = clean.split(" ").filter((w) => w.length >= 2 && !COMMON_STOP_WORDS.has(w));
+      if (echoWords.length < 2) continue;
       const utteranceWords = new Set(utterance.split(/\s+/));
       let matches = 0;
       for (const w of echoWords) {
