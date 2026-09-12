@@ -81,14 +81,6 @@ export function LiveCallPage({
   const startCall = () => {
     // This must happen synchronously in the click handler to unlock audio autoplay on mobile
     neuralVoice.unlockAudio();
-    // Prime microphone permission during user gesture for mobile Safari/Chrome
-    if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then((stream) => {
-          stream.getTracks().forEach((t) => t.stop());
-        })
-        .catch(() => {});
-    }
     setErrorMessage(null);
     setLastRoom("Voice Assistant Demo");
     setPhase("in-call");

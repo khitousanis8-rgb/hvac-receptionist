@@ -685,15 +685,16 @@ function SettingsPage({ config }: { config: PublicConfig | null }) {
 /**
  * Calls Page
  */
+type CallFilter = "all" | "booked" | "info_only" | "in_progress";
+
 function CallsPage({ calls }: { calls: ApiState<CallRecord> }) {
-  const [filter, setFilter] = useState<"all" | "booked" | "info_only">("all");
+  const [filter, setFilter] = useState<CallFilter>("all");
 
   const filtered = calls.data.filter((c) => {
-    if (filter === "booked") return c.outcome === "booked";
-    if (filter === "info_only") return c.outcome === "info_only";
-    return true;
+    if (filter === "all") return true;
+    return c.outcome === filter;
   });
-  const countFor = (outcome: "all" | "booked" | "info_only") =>
+  const countFor = (outcome: CallFilter) =>
     outcome === "all" ? calls.total : calls.outcomeCounts[outcome] ?? 0;
 
   return (
@@ -709,7 +710,7 @@ function CallsPage({ calls }: { calls: ApiState<CallRecord> }) {
         </div>
 
         <div className="flex items-center gap-1 p-0.5 rounded-lg border border-[#e7e7e7] bg-[#fafafa]">
-          {(["all", "booked", "info_only"] as const).map((t) => (
+          {(["all", "booked", "info_only", "in_progress"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setFilter(t)}
@@ -720,7 +721,7 @@ function CallsPage({ calls }: { calls: ApiState<CallRecord> }) {
                   : "text-[#71717a] hover:text-[#0a0a0a]"
               )}
             >
-              {t.replace("_", " ")} ({countFor(t)})
+              {t === "in_progress" ? "In Progress" : t.replace("_", " ")} ({countFor(t)})
             </button>
           ))}
         </div>

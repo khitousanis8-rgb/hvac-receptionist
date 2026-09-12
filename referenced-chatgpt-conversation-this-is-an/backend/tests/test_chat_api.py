@@ -862,3 +862,82 @@ def test_slang_cool_not_extracted_as_ac_repair() -> None:
     assert _extract_slots_from_text("We need cooling repair", {}).get("service") == "AC repair"
     assert _extract_slots_from_text("Air conditioning is down", {}).get("service") == "AC repair"
 
+
+def test_phone_extraction_international_and_short_digits() -> None:
+    from app.chat_api import _extract_slots_from_text
+
+    slots: dict[str, object] = {}
+    # 8-digit international
+    assert _extract_slots_from_text("It's +12345678", slots).get("phone") == "+12345678"
+    # 9-digit
+    assert _extract_slots_from_text("123456789", slots).get("phone") == "123456789"
+    # 9-digit with prefix
+    assert _extract_slots_from_text("If you're my number it's +123456789", slots).get("phone") == "+123456789"
+    # 7-digit local
+    assert _extract_slots_from_text("My number is 555-1234", slots).get("phone") == "5551234"
+
+
+def test_anti_repetition_and_objection_reaches_llm() -> None:
+    from uuid import uuid4
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    settings = Settings(
+        LLM_API_KEY="test-key",
+        BUSINESS_SERVICES='["AC repair", "Heating repair"]',
+        _env_file=None,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"anti-loop-test-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+
+    async def fake_stream(*args: object, **kwargs: object) -> object:
+        delta = type(
+            "Delta",
+            (),
+            {
+                "content": "Our technician calls 15 minutes before arriving so you know we're on the way!",
+                "tool_calls": None,
+            },
+        )()
+
+        class Chunk:
+            choices = [type("Choice", (), {"delta": delta})()]
+
+        yield Chunk()
+
+    with patch("app.chat_api._get_client") as mock_get_client:
+        mock_openai = AsyncMock()
+        mock_openai.chat.completions.create = AsyncMock(side_effect=fake_stream)
+        mock_get_client.return_value = mock_openai
+
+        # Turn 1: Service is AC repair -> triggers phone elicitation
+        res1 = client.post(
+            "/v1/calls/chat",
+            json=_browser_payload(room, call_id, "My AC isn't cooling well"),
+        )
+        assert res1.status_code == 200
+        assert "best callback phone number" in res1.text
+
+        # Turn 2: User asks "Why are you asking for my number" -> MUST reach LLM, NOT repeat static question
+        res2 = client.post(
+            "/v1/calls/chat",
+            json=_browser_payload(room, call_id, "Why are you asking for my number"),
+        )
+        assert res2.status_code == 200
+        assert "calls 15 minutes before arriving" in res2.text
+
+        # Turn 3: User says "I have no number" -> MUST reach LLM, NOT repeat static question
+        res3 = client.post(
+            "/v1/calls/chat",
+            json=_browser_payload(room, call_id, "I have no number"),
+        )
+        assert res3.status_code == 200
+        # Verified that LLM was called rather than static question repeating
+        assert mock_openai.chat.completions.create.call_count >= 2
+
+

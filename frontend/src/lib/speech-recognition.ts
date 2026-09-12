@@ -143,7 +143,14 @@ export class BrowserSpeechRecognition {
         }
 
         if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-          console.warn("[SpeechRecognition] Permission denied, checking MediaRecorder fallback");
+          console.warn("[SpeechRecognition] Native recognition unavailable, switching permanently to MediaRecorder fallback");
+          this.isSupported = false;
+          if (this.recognition) {
+            try {
+              this.recognition.abort();
+            } catch {}
+            this.recognition = null;
+          }
           this.startMediaRecorderFallback().catch((fallbackErr) => {
             console.error("[SpeechRecognition] Fallback failed:", fallbackErr);
             this.onError?.("Microphone permission denied. Please allow microphone access.");
@@ -159,8 +166,16 @@ export class BrowserSpeechRecognition {
             this.recognition.start();
             this.isListening = true;
             this.onStateChange?.(true);
-          } catch {
-            // Already started or starting
+          } catch (err) {
+            console.warn("[SpeechRecognition] onend restart failed, switching to MediaRecorder fallback:", err);
+            this.isSupported = false;
+            if (this.recognition) {
+              try {
+                this.recognition.abort();
+              } catch {}
+              this.recognition = null;
+            }
+            this.startMediaRecorderFallback().catch(() => {});
           }
         } else {
           this.onStateChange?.(false);
@@ -486,16 +501,23 @@ export class BrowserSpeechRecognition {
    */
   private async startMediaRecorderFallback() {
     try {
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      if (!this.mediaStream || this.mediaStream.getTracks().every((t) => t.readyState === "ended")) {
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      }
 
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
       this.audioCtx = new AudioCtxClass();
+      if (this.audioCtx.state === "suspended") {
+        try {
+          await this.audioCtx.resume();
+        } catch {}
+      }
       const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
       this.analyser = this.audioCtx.createAnalyser();
       this.analyser.fftSize = 256;
@@ -579,6 +601,10 @@ export class BrowserSpeechRecognition {
 
     this.vadInterval = window.setInterval(() => {
       if (!this.analyser || !this.mediaRecorder || this.isMuted || this.isPausedForAgent) return;
+
+      if (this.audioCtx && this.audioCtx.state === "suspended") {
+        this.audioCtx.resume().catch(() => {});
+      }
 
       this.analyser.getByteFrequencyData(dataArray);
       let sum = 0;

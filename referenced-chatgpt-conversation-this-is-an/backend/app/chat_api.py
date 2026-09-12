@@ -200,11 +200,11 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
     # Exclude ISO date patterns so calendar dates are not misclassified as phone numbers
     normalized_for_phone = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", normalized_for_phone)
 
-    phone_match = re.search(r"(\+?\s*[\d\s\-\.\(\)]{8,}\d)", normalized_for_phone)
+    phone_match = re.search(r"(\+?\s*[\d\s\-\.\(\)]{6,}\d)", normalized_for_phone)
     if phone_match:
         matched_str = phone_match.group(1)
         raw_digits = re.sub(r"[^\d]", "", matched_str)
-        if len(raw_digits) >= 10:
+        if len(raw_digits) >= 7:
             prefix = "+" if "+" in matched_str else ""
             updates["phone"] = f"{prefix}{raw_digits}"
 
@@ -394,14 +394,16 @@ def _is_safety_emergency(text: str) -> bool:
 
 
 def _is_general_question(text: str) -> bool:
-    """Detect if caller is asking a general question rather than supplying booking info."""
+    """Detect if caller is asking a general question or objection rather than booking."""
     lower = text.lower().strip()
     if "?" in lower:
         return True
     question_starters = (
         "how much", "what are your", "do you", "can you", "where are", "who are",
         "what hours", "what brands", "what is", "whats", "how does", "pricing",
-        "cost", "rates",
+        "cost", "rates", "why", "why are", "why do", "why would", "what for",
+        "who", "how", "explain", "tell me", "what is the reason", "why you",
+        "i have no", "i don't have", "i dont have", "no number", "no phone",
     )
     return any(lower.startswith(q) or f" {q}" in lower for q in question_starters)
 
@@ -947,6 +949,14 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         missing
         and _is_booking_flow_active(slots, req.message)
         and not _is_general_question(req.message)
+        and slots.get("last_prompted_slot") != missing[0]
+        and not any(
+            kw in req.message.lower()
+            for kw in (
+                "fuck", "shit", "damn", "already", "told you", "gave you",
+                "just give", "listen", "no number", "no phone", "don't have",
+            )
+        )
     ):
         next_field = missing[0]
         if next_field == "service":
@@ -957,6 +967,12 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             q_text = "What day works best for your appointment?"
         else:
             q_text = "What time would you prefer?"
+
+        await asyncio.to_thread(
+            update_call_slots,
+            active_call_id,
+            {"last_prompted_slot": next_field},
+        )
 
         async def missing_slot_gen() -> AsyncIterator[str]:
             yield f"event: delta\ndata: {json.dumps({'text': q_text})}\n\n"
