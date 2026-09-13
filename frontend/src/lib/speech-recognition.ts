@@ -212,7 +212,19 @@ export class BrowserSpeechRecognition {
 
   private isAcousticEcho(transcript: string): boolean {
     const clean = transcript.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-    if (!clean || clean.length < 5) return false;
+    if (!clean || clean.length < 2) return false;
+
+    // Explicit caller booking confirmations and common affirmative answers are NEVER echo
+    const GENUINE_CONFIRMATIONS = new Set([
+      "yes", "yeah", "yep", "sure", "ok", "okay", "go ahead",
+      "yes please", "yes go ahead", "yes please go ahead", "yeah go ahead",
+      "sure go ahead", "yes book it", "yes book that", "go ahead please",
+      "please book it", "please book that", "that works", "sounds good",
+      "correct", "perfect", "absolutely", "no", "nope", "cancel",
+    ]);
+    if (GENUINE_CONFIRMATIONS.has(clean)) {
+      return false;
+    }
 
     // 1. Signature assistant phrases that should NEVER be accepted as caller input
     const SIGNATURE_ASST_PATTERNS = [
@@ -230,6 +242,10 @@ export class BrowserSpeechRecognition {
       "best callback phone number",
       "technician to reach you",
       "would you like me to book it",
+      "i just need a quick yes or no",
+      "quick yes or no",
+      "confirm your appointment",
+      "book your appointment",
       "just to confirm",
       "you re all set",
       "you are all set",
@@ -237,6 +253,10 @@ export class BrowserSpeechRecognition {
       "is there anything else i can help with",
       "is there anything else",
       "sorry i heard an echo of my own voice",
+      "no problem at all",
+      "what day and time works best",
+      "what day and time works",
+      "check a different day or time",
     ];
 
     for (const sig of SIGNATURE_ASST_PATTERNS) {
@@ -251,19 +271,26 @@ export class BrowserSpeechRecognition {
     const COMMON_STOP_WORDS = new Set([
       "the", "a", "an", "and", "or", "to", "in", "at", "for", "with", "is", "it", "that", "this", "my", "you", "of", "on"
     ]);
-    const candidateWords = clean.split(" ").filter((w) => w.length >= 2 && !COMMON_STOP_WORDS.has(w));
-    const rawWords = clean.split(/\s+/);
+    const candidateWords = clean.split(/\s+/).filter((w) => w.length >= 2 && !COMMON_STOP_WORDS.has(w));
+    const rawWords = clean.split(/\s+/).filter(Boolean);
 
     for (const utterance of this.recentAssistantUtterances) {
-      // 2a. Direct substring or full match
-      if (utterance.length >= 12 && clean.length >= 12) {
-        if (utterance.includes(clean) || clean.includes(utterance)) {
-          console.warn("[EchoGuard] Suppressed substring echo match:", transcript);
+      // 2a. Prefix / Suffix match: if candidate is an exact prefix or suffix of the assistant utterance (>= 2 words)
+      // e.g. "hi there", "got it", "no problem at all", "would you like me to book it"
+      if (rawWords.length >= 2) {
+        if (utterance.startsWith(clean) || utterance.endsWith(clean)) {
+          console.warn("[EchoGuard] Suppressed prefix/suffix echo match:", transcript);
           return true;
         }
       }
 
-      // 2b. Contiguous phrase match of 4 or more words appearing in this assistant utterance
+      // 2b. Direct substring match if >= 3 words and >= 8 characters
+      if (rawWords.length >= 3 && clean.length >= 8 && utterance.includes(clean)) {
+        console.warn("[EchoGuard] Suppressed substring echo match:", transcript);
+        return true;
+      }
+
+      // 2c. Contiguous phrase match of 4 or more words appearing in this assistant utterance
       if (rawWords.length >= 4) {
         for (let i = 0; i <= rawWords.length - 4; i++) {
           const phrase = rawWords.slice(i, i + 4).join(" ");
@@ -274,7 +301,7 @@ export class BrowserSpeechRecognition {
         }
       }
 
-      // 2c. Per-utterance >= 70% word overlap against this specific utterance
+      // 2d. Per-utterance >= 70% word overlap against this specific utterance
       if (candidateWords.length >= 3) {
         const uWords = new Set(utterance.split(/\s+/).filter((w) => w.length >= 2 && !COMMON_STOP_WORDS.has(w)));
         if (uWords.size >= 3) {
@@ -353,6 +380,11 @@ export class BrowserSpeechRecognition {
 
   public setMuted(muted: boolean) {
     this.isMuted = muted;
+    if (this.mediaStream) {
+      this.mediaStream.getAudioTracks().forEach((track) => {
+        track.enabled = !muted;
+      });
+    }
     if (muted) {
       if (this.cooldownTimer !== null) {
         window.clearTimeout(this.cooldownTimer);
@@ -390,6 +422,13 @@ export class BrowserSpeechRecognition {
     this.isPausedForAgent = false;
     this.lastAgentSpeechEndTime = 0;
 
+    // Immediately re-enable physical microphone tracks
+    if (this.mediaStream && !this.isMuted) {
+      this.mediaStream.getAudioTracks().forEach((track) => {
+        track.enabled = true;
+      });
+    }
+
     if (!this.shouldBeListening || this.isMuted) return;
 
     if (this.isSupported && this.recognition) {
@@ -419,6 +458,13 @@ export class BrowserSpeechRecognition {
   public pauseForAgentPlayback(isSpeaking: boolean) {
     if (isSpeaking) {
       this.isPausedForAgent = true;
+
+      // True hardware gating: mute physical mediaStream tracks so zero signal reaches AudioContext/VAD
+      if (this.mediaStream) {
+        this.mediaStream.getAudioTracks().forEach((track) => {
+          track.enabled = false;
+        });
+      }
 
       if (this.cooldownTimer !== null) {
         window.clearTimeout(this.cooldownTimer);
@@ -473,6 +519,13 @@ export class BrowserSpeechRecognition {
         this.isPausedForAgent = false;
         if (!this.shouldBeListening || this.isMuted) return;
 
+        // Re-enable hardware media tracks after speaker reverberation has fully settled
+        if (this.mediaStream) {
+          this.mediaStream.getAudioTracks().forEach((track) => {
+            track.enabled = true;
+          });
+        }
+
         // Resume exactly one active input method
         if (this.isSupported && this.recognition) {
           try {
@@ -511,6 +564,12 @@ export class BrowserSpeechRecognition {
         });
       }
 
+      if (this.isPausedForAgent || this.isMuted) {
+        this.mediaStream.getAudioTracks().forEach((track) => {
+          track.enabled = false;
+        });
+      }
+
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
       this.audioCtx = new AudioCtxClass();
       if (this.audioCtx.state === "suspended") {
@@ -534,13 +593,16 @@ export class BrowserSpeechRecognition {
       this.audioChunks = [];
 
       this.mediaRecorder.ondataavailable = (event) => {
+        if (this.isPausedForAgent || this.isMuted) {
+          return;
+        }
         if (event.data && event.data.size > 0) {
           this.audioChunks.push(event.data);
         }
       };
 
       this.mediaRecorder.onstop = async () => {
-        if (!this.shouldBeListening || this.isPausedForAgent) {
+        if (!this.shouldBeListening || this.isPausedForAgent || this.isMuted) {
           this.audioChunks = [];
           return;
         }
@@ -556,7 +618,7 @@ export class BrowserSpeechRecognition {
           reader.readAsDataURL(blob);
           reader.onloadend = async () => {
             try {
-              if (!this.shouldBeListening) return;
+              if (!this.shouldBeListening || this.isPausedForAgent || this.isMuted) return;
               const result = reader.result as string;
               const base64 = result.split(",")[1];
               if (base64) {
@@ -566,9 +628,13 @@ export class BrowserSpeechRecognition {
                   content_type: actualType,
                   filename: `audio.${ext}`,
                 });
-                if (!this.shouldBeListening) return;
+                if (!this.shouldBeListening || this.isPausedForAgent || this.isMuted) return;
                 const text = res.text || res.transcript;
                 if (text && text.trim()) {
+                  if (this.isAcousticEcho(text.trim())) {
+                    console.warn("[EchoGuard] Suppressed fallback acoustic echo:", text.trim());
+                    return;
+                  }
                   this.onTranscript?.(text.trim(), true);
                 }
               }

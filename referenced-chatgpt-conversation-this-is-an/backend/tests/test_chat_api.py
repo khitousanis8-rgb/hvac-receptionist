@@ -941,3 +941,121 @@ def test_anti_repetition_and_objection_reaches_llm() -> None:
         assert mock_openai.chat.completions.create.call_count >= 2
 
 
+def test_echo_detection_prefix_suffix_and_substring() -> None:
+    from app.chat_api import ChatMessage, _is_echo_of_assistant
+
+    history = [
+        ChatMessage(
+            role="assistant",
+            content="Thanks for calling Example HVAC! This is Sarah — how can I help with your heating or cooling today?",
+        ),
+        ChatMessage(
+            role="user",
+            content="My AC is blowing warm air.",
+        ),
+        ChatMessage(
+            role="assistant",
+            content="Got it, AC repair. What's the best callback phone number for the technician to reach you?",
+        ),
+        ChatMessage(
+            role="user",
+            content="555-123-4567",
+        ),
+        ChatMessage(
+            role="assistant",
+            content="I have an opening tomorrow at 9:00 AM. Would you like me to book it?",
+        ),
+    ]
+
+    # Prefix echoes
+    assert _is_echo_of_assistant("Thanks for calling Example HVAC", history) is True
+    assert _is_echo_of_assistant("Got it", history) is True
+
+    # Suffix echoes
+    assert _is_echo_of_assistant("heating or cooling today", history) is True
+    assert _is_echo_of_assistant("Would you like me to book it", history) is True
+
+    # Substring echo
+    assert _is_echo_of_assistant("best callback phone number", history) is True
+
+    # Genuine caller response must NOT be treated as echo
+    assert _is_echo_of_assistant("ac repair", history) is False
+    assert _is_echo_of_assistant("yes go ahead", history) is False
+    assert _is_echo_of_assistant("tomorrow morning", history) is False
+
+
+def test_explicit_booking_confirmation_variations() -> None:
+    from app.chat_api import is_explicit_booking_confirmation
+
+    confirmations = [
+        "yes",
+        "yes please",
+        "yes go ahead",
+        "yes please go ahead",
+        "go ahead please",
+        "yeah go ahead",
+        "sure go ahead",
+        "yes book it",
+        "yes book that",
+        "yes please book that",
+        "definitely",
+        "yes definitely",
+        "yes that works",
+        "yeah that works",
+        "yes sounds good",
+        "yeah sounds good",
+        "that works for me",
+        "sounds good",
+        "confirm it",
+    ]
+    for phrase in confirmations:
+        assert is_explicit_booking_confirmation(phrase) is True, f"Failed for: {phrase}"
+
+    non_confirmations = [
+        "why are you asking",
+        "no",
+        "tomorrow at 10 am",
+        "what time works",
+        "hello",
+    ]
+    for phrase in non_confirmations:
+        assert is_explicit_booking_confirmation(phrase) is False, f"Expected False for: {phrase}"
+
+
+def test_chat_endpoint_echo_returns_silent_noop() -> None:
+    from uuid import uuid4
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    settings = Settings(
+        LLM_API_KEY="test-key",
+        BUSINESS_SERVICES='["AC repair", "Heating repair"]',
+        _env_file=None,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"echo-noop-test-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+
+    history = [
+        {
+            "role": "assistant",
+            "content": "Got it, AC repair. What's the best callback phone number for the technician to reach you?",
+        }
+    ]
+
+    payload = _browser_payload(room, call_id, "Got it")
+    payload["history"] = history
+
+    res = client.post("/v1/calls/chat", json=payload)
+    assert res.status_code == 200
+    # Must contain ONLY event: done and NO event: delta
+    assert "event: done" in res.text
+    assert "event: delta" not in res.text
+    assert '{"outcome": "info_only"}' in res.text
+
+
+

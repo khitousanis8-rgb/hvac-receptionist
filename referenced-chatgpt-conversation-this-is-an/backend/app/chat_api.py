@@ -130,34 +130,45 @@ def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
 def _is_echo_of_assistant(message: str, history: list[ChatMessage]) -> bool:
     """Detect speaker-feedback echo: the mic re-captured the assistant's TTS.
 
-    If >=75% of the transcript's words appear in a recent assistant message
-    from the caller's own session history, the "user" turn is almost certainly
-    the caller's speakers being re-transcribed, not the caller speaking.
+    If the user utterance is an exact prefix, suffix, substring (>=2 words),
+    or >=75% word overlap with a recent assistant utterance from the caller's
+    own session history, it is flagged as echo.
     """
     clean_msg = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", message.lower())).strip()
     if not clean_msg:
-        return False
-    msg_words = [w for w in clean_msg.split() if len(w) >= 2]
-    # Acoustic echoes re-captured from speakers are full sentences/clauses.
-    # Responses under 8 words (e.g. "Monday at 10 AM works for me", "Can you book that for me",
-    # "That is for cooling") must NEVER be flagged as echo because callers mirror prompt words.
-    if len(msg_words) < 8:
         return False
 
     # Never treat genuine affirmative caller responses as echo
     if is_explicit_booking_confirmation(message):
         return False
 
+    msg_words = [w for w in clean_msg.split() if len(w) >= 2]
+    if not msg_words:
+        return False
+
     for msg in history[-6:]:
         if msg.role != "assistant":
             continue
-        clean_asst = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", msg.content.lower()))
-        asst_words = set(clean_asst.split())
-        if not asst_words:
+        clean_asst = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", msg.content.lower())).strip()
+        if not clean_asst:
             continue
-        overlap = sum(1 for w in msg_words if w in asst_words) / len(msg_words)
-        if overlap >= 0.75:
-            return True
+
+        # 1. Exact prefix or suffix match for short echoed phrases (>= 2 words)
+        # e.g. "hi there", "got it", "would you like me to book it", "no problem at all"
+        if len(msg_words) >= 2:
+            if clean_asst.startswith(clean_msg) or clean_asst.endswith(clean_msg):
+                return True
+            # Interior substring match if >= 3 words and >= 8 characters
+            if len(msg_words) >= 3 and len(clean_msg) >= 8 and clean_msg in clean_asst:
+                return True
+
+        # 2. High word overlap for longer utterances (>= 4 words)
+        if len(msg_words) >= 4:
+            asst_words = set(clean_asst.split())
+            if asst_words:
+                overlap = sum(1 for w in msg_words if w in asst_words) / len(msg_words)
+                if overlap >= 0.75:
+                    return True
     return False
 
 
@@ -305,8 +316,16 @@ def is_explicit_booking_confirmation(text: str) -> bool:
         "book it",
         "book that",
         "go ahead",
+        "go ahead please",
         "go ahead and book it",
         "go ahead and book",
+        "yes go ahead",
+        "yes please go ahead",
+        "yeah go ahead",
+        "sure go ahead",
+        "yes book it",
+        "yes book that",
+        "yes please book that",
         "that works",
         "that works for me",
         "sounds good",
@@ -319,8 +338,15 @@ def is_explicit_booking_confirmation(text: str) -> bool:
         "confirm",
         "sure",
         "sure thing",
+        "sure please",
         "perfect",
         "absolutely",
+        "definitely",
+        "yes definitely",
+        "yes that works",
+        "yeah that works",
+        "yes sounds good",
+        "yeah sounds good",
     }
     return normalized in accepted_phrases
 

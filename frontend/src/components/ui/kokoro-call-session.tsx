@@ -186,8 +186,13 @@ export function KokoroCallSession({
       setCurrentCallerText("");
       setCurrentAssistantText("");
 
+      // Immediately pause speech recognition so mic is completely dead while agent thinks & responds
+      speechRecRef.current?.pauseForAgentPlayback(true);
+
       // Interrupt any current speech and cancel any in-flight request
       neuralVoice.stop();
+      // Ensure microphone remains locked in paused state after neuralVoice.stop()
+      speechRecRef.current?.pauseForAgentPlayback(true);
 
       abortControllerRef.current?.abort();
       const controller = new AbortController();
@@ -396,7 +401,10 @@ export function KokoroCallSession({
           },
         });
 
-        // Start listening immediately so microphone is primed
+        // Pause microphone immediately so opening greeting audio is not captured as echo
+        speech.pauseForAgentPlayback(true);
+
+        // Start listening (in paused state) so permission is requested and mic is primed
         speech.start();
 
         // Trigger initial greeting in parallel
