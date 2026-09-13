@@ -432,6 +432,10 @@ export function KokoroCallSession({
       const callId = callIdRef.current;
       if (callId && !callEndRequestedRef.current) {
         callEndRequestedRef.current = true;
+        const rawSummary = transcriptHistoryRef.current
+          .map((m) => `${m.role}: ${m.content}`)
+          .join("\n");
+        const safeSummary = rawSummary ? rawSummary.slice(0, 3000) : "Call ended";
         void fetch(apiUrl("/v1/calls/end"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -440,9 +444,7 @@ export function KokoroCallSession({
             call_id: callId,
             call_secret: callSecretRef.current,
             outcome: callOutcomeRef.current,
-            summary: transcriptHistoryRef.current
-              .map((m) => `${m.role}: ${m.content}`)
-              .join("\n"),
+            summary: safeSummary,
           }),
           keepalive: true,
         });
@@ -479,18 +481,32 @@ export function KokoroCallSession({
       abortControllerRef.current.abort();
     }
 
+    const rawSummary = transcriptHistoryRef.current
+      .map((m) => `${m.role}: ${m.content}`)
+      .join("\n");
+    const safeSummary = rawSummary ? rawSummary.slice(0, 3000) : "Call completed";
+
     try {
       await apiPost("/v1/calls/end", {
         session_id: sessionIdRef.current,
         call_id: callIdRef.current,
         call_secret: callSecretRef.current,
         outcome: callOutcomeRef.current,
-        summary: transcriptHistoryRef.current
-          .map((m) => `${m.role}: ${m.content}`)
-          .join("\n"),
+        summary: safeSummary,
       });
     } catch (err) {
-      console.warn("[KokoroCall] call log finalization failed:", err);
+      console.warn("[KokoroCall] call log finalization failed, retrying minimal payload:", err);
+      try {
+        await apiPost("/v1/calls/end", {
+          session_id: sessionIdRef.current,
+          call_id: callIdRef.current,
+          call_secret: callSecretRef.current,
+          outcome: callOutcomeRef.current,
+          summary: "Call completed",
+        });
+      } catch (retryErr) {
+        console.error("[KokoroCall] minimal call finalization failed:", retryErr);
+      }
     }
 
     onCallEnded(durationRef.current);

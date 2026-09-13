@@ -801,15 +801,19 @@ def test_sse_revised_time_requires_new_recap() -> None:
         assert appt.scheduled_for.hour in (14, 18)
 
 
-def test_book_appointment_tool_not_in_model_visible_tools() -> None:
-    from app.chat_api import READ_ONLY_TOOLS, TOOLS
+def test_read_only_tools_vs_booking_tools() -> None:
+    from app.chat_api import BOOKING_TOOLS, READ_ONLY_TOOLS, TOOLS
 
-    tool_names = [t["function"]["name"] for t in READ_ONLY_TOOLS]
-    assert "book_appointment_tool" not in tool_names
-    assert "check_my_appointments" in tool_names
+    read_only_names = [t["function"]["name"] for t in READ_ONLY_TOOLS]
+    assert "book_appointment_tool" not in read_only_names
+    assert "check_my_appointments" in read_only_names
+
+    booking_names = [t["function"]["name"] for t in BOOKING_TOOLS]
+    assert "book_appointment_tool" in booking_names
+    assert "check_my_appointments" in booking_names
 
     legacy_names = [t["function"]["name"] for t in TOOLS]
-    assert "book_appointment_tool" not in legacy_names
+    assert "book_appointment_tool" in legacy_names
 
 
 def test_safety_emergency_instruction_takes_priority() -> None:
@@ -1056,6 +1060,80 @@ def test_chat_endpoint_echo_returns_silent_noop() -> None:
     assert "event: done" in res.text
     assert "event: delta" not in res.text
     assert '{"outcome": "info_only"}' in res.text
+
+
+def test_end_call_long_summary_does_not_422() -> None:
+    settings = Settings(ADMIN_API_KEY="test-key", _env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = "test-long-summary-room"
+    call_id = _start_browser_call(room)
+
+    # 6000 character summary from multi-turn transcript
+    long_summary = "Turn: User asked about AC repair. Sarah answered.\n" * 120
+    assert len(long_summary) > 5000
+
+    res = client.post(
+        "/v1/calls/end",
+        json={
+            "session_id": room,
+            "call_id": call_id,
+            "call_secret": _CALL_SECRET,
+            "outcome": "info_only",
+            "summary": long_summary,
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert data["call_id"] == call_id
+
+    # Verify call record was actually closed and summary persisted
+    with new_session() as session:
+        record = session.get(CallRecord, call_id)
+        assert record is not None
+        assert record.ended_at is not None
+        assert record.transcript_summary is not None
+        assert len(record.transcript_summary) <= 4000
+
+
+def test_natural_time_extraction() -> None:
+    from app.chat_api import _extract_slots_from_text
+
+    slots = _extract_slots_from_text("Can you come tomorrow morning for AC repair?", {})
+    assert slots.get("service") == "AC repair"
+    assert slots.get("date") == "tomorrow"
+    assert slots.get("time") == "09:00 AM"
+
+    slots2 = _extract_slots_from_text("Let's do tomorrow afternoon", {})
+    assert slots2.get("date") == "tomorrow"
+    assert slots2.get("time") == "02:00 PM"
+
+    slots3 = _extract_slots_from_text("How about tomorrow at 10?", {})
+    assert slots3.get("date") == "tomorrow"
+    assert slots3.get("time") == "10:00 AM"
+
+    slots4 = _extract_slots_from_text("Tomorrow at 3 in the afternoon", {})
+    assert slots4.get("date") == "tomorrow"
+    assert slots4.get("time") == "03:00 PM"
+
+    slots5 = _extract_slots_from_text("Tomorrow around 10 o'clock", {})
+    assert slots5.get("date") == "tomorrow"
+    assert slots5.get("time") == "10:00 AM"
+
+    slots6 = _extract_slots_from_text("Tomorrow at noon", {})
+    assert slots6.get("date") == "tomorrow"
+    assert slots6.get("time") == "12:00 PM"
+
+
+def test_booking_tools_available() -> None:
+    from app.chat_api import BOOKING_TOOLS
+
+    tool_names = [t["function"]["name"] for t in BOOKING_TOOLS]
+    assert "book_appointment_tool" in tool_names
+    assert "check_my_appointments" in tool_names
+
 
 
 

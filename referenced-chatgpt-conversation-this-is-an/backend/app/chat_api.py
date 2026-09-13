@@ -71,7 +71,7 @@ class EndCallRequest(BaseModel):
     call_id: int = Field(ge=1)
     call_secret: str = Field(min_length=32, max_length=128)
     outcome: str = Field(default="info_only", pattern="^(booked|info_only)$")
-    summary: str | None = Field(default=None, max_length=2000)
+    summary: str | None = Field(default=None, max_length=50_000)
 
 
 def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
@@ -243,6 +243,36 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
     )
     if time_match:
         updates["time"] = time_match.group(1)
+    else:
+        oclock_m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*o'?clock\b", lower)
+        at_m = re.search(r"\b(?:at|around)\s+(\d{1,2})(?::(\d{2}))?\b", lower)
+        hour_candidate: int | None = None
+        min_candidate = "00"
+        if oclock_m:
+            hour_candidate = int(oclock_m.group(1))
+            if oclock_m.group(2):
+                min_candidate = oclock_m.group(2)
+        elif at_m:
+            hour_candidate = int(at_m.group(1))
+            if at_m.group(2):
+                min_candidate = at_m.group(2)
+
+        if hour_candidate is not None and 1 <= hour_candidate <= 23:
+            if "afternoon" in lower or "evening" in lower or "night" in lower or "pm" in lower:
+                period = "PM"
+            elif "morning" in lower or "am" in lower:
+                period = "AM"
+            else:
+                period = "PM" if 1 <= hour_candidate <= 6 else "AM"
+            updates["time"] = f"{hour_candidate:02d}:{min_candidate} {period}"
+        elif re.search(r"\bnoon\b|\bmidday\b", lower):
+            updates["time"] = "12:00 PM"
+        elif re.search(r"\bmorning\b", lower):
+            updates["time"] = "09:00 AM"
+        elif re.search(r"\bafternoon\b", lower):
+            updates["time"] = "02:00 PM"
+        elif re.search(r"\bevening\b", lower):
+            updates["time"] = "05:00 PM"
 
     return updates
 
@@ -531,7 +561,55 @@ READ_ONLY_TOOLS = [
     },
 ]
 
-TOOLS = READ_ONLY_TOOLS
+BOOKING_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "book_appointment_tool",
+            "description": (
+                "Book an HVAC service appointment during business hours. "
+                "Call this tool when the caller provides their phone number, "
+                "service, date, and time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "phone_number": {
+                        "type": "string",
+                        "description": "The caller's callback phone number, e.g. +15555550100",
+                    },
+                    "service": {
+                        "type": "string",
+                        "description": (
+                            "The requested HVAC service (e.g. AC repair, Heating repair, "
+                            "HVAC tune-up)"
+                        ),
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "Appointment date (e.g. YYYY-MM-DD, tomorrow, Monday)",
+                    },
+                    "time": {
+                        "type": "string",
+                        "description": "Appointment start time (e.g. 09:00 AM, 02:00 PM)",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "The caller's name, if provided",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional details or symptoms about the HVAC problem",
+                    },
+                },
+                "required": ["phone_number", "service", "date", "time"],
+            },
+        },
+    },
+    READ_ONLY_TOOLS[0],
+]
+
+TOOLS = BOOKING_TOOLS
 
 
 def _is_closing_or_polite_remark(text: str) -> bool:
@@ -1034,7 +1112,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     messages.append({"role": "user", "content": req.message})
 
     is_polite_closing = _is_closing_or_polite_remark(req.message)
-    tools_to_use = None if is_polite_closing else READ_ONLY_TOOLS
+    tools_to_use = None if is_polite_closing else BOOKING_TOOLS
     tool_choice_to_use = "auto" if tools_to_use else None
 
     async def sse_generator() -> AsyncIterator[str]:
@@ -1128,6 +1206,25 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
                     logger.info("executing_chat_tool", tool=name, argument_names=sorted(args))
                     tool_result = await asyncio.to_thread(_execute_tool, settings, name, args)
+
+                    if name == "book_appointment_tool" and (
+                        tool_result.startswith("Booked ")
+                        or "already confirmed" in tool_result.lower()
+                    ):
+                        outcome = "booked"
+                        if active_call_id is not None:
+                            await asyncio.to_thread(update_call_outcome, active_call_id, "booked")
+                            slot_updates: dict[str, Any] = {"confirmed": True}
+                            if svc := args.get("service"):
+                                slot_updates["service"] = str(svc)
+                            if dt := args.get("date"):
+                                slot_updates["date"] = str(dt)
+                            if tm := args.get("time"):
+                                slot_updates["time"] = str(tm)
+                            if ph := args.get("phone_number"):
+                                slot_updates["phone"] = str(ph)
+                                await asyncio.to_thread(update_call_phone, active_call_id, str(ph))
+                            await asyncio.to_thread(update_call_slots, active_call_id, slot_updates)
 
                     yield (
                         f"event: tool_call\ndata: "
@@ -1286,13 +1383,14 @@ async def transcribe_audio(req: TranscribeRequest, request: Request) -> dict[str
 @router.post("/end")
 async def end_call_record(req: EndCallRequest) -> dict[str, Any]:
     """Finalize only the caller's own active browser call."""
+    safe_summary = req.summary[:4000] if req.summary else None
     finalized = await asyncio.to_thread(
         end_browser_call,
         req.call_id,
         req.session_id,
         req.call_secret,
         req.outcome,
-        req.summary,
+        safe_summary,
     )
     if not finalized:
         raise HTTPException(

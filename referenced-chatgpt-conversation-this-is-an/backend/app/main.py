@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import uuid4
 
@@ -168,6 +169,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Runs in a worker thread so the sync SQLAlchemy session never
             # blocks the event loop serving concurrent SSE/TTS streams.
             with new_session() as session:
+                cutoff = datetime.now(UTC) - timedelta(minutes=20)
+                stale_records = (
+                    session.query(CallRecord)
+                    .filter(
+                        CallRecord.ended_at.is_(None),
+                        CallRecord.started_at < cutoff,
+                    )
+                    .all()
+                )
+                if stale_records:
+                    for stale in stale_records:
+                        stale.ended_at = stale.started_at + timedelta(minutes=3)
+                        if stale.outcome == "in_progress":
+                            stale.outcome = (
+                                "booked"
+                                if (
+                                    stale.session_slots
+                                    and '"confirmed": true' in stale.session_slots.lower()
+                                )
+                                else "info_only"
+                            )
+                        if not stale.transcript_summary:
+                            stale.transcript_summary = (
+                                "Call completed (session automatically finalized)."
+                            )
+                    session.commit()
+
                 base_query = session.query(CallRecord)
                 total = base_query.count()
                 records = (

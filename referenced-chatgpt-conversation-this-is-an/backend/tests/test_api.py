@@ -231,3 +231,38 @@ def test_transcribe_rate_limiting() -> None:
             )
             assert res_limit.status_code == 429
 
+
+def test_calls_stale_reaper_finalizes_abandoned_sessions(tmp_path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.call_tracking import start_call
+    from app.db import CallRecord, init_db, new_session, reset_engine
+
+    db_url = f"sqlite:///{(tmp_path / 'test_stale_reaper.db').as_posix()}"
+    reset_engine()
+    init_db(db_url)
+    try:
+        settings = Settings(ADMIN_API_KEY="test-admin", DATABASE_URL=db_url, _env_file=None)
+        headers = {"X-Admin-Key": "test-admin"}
+
+        call_id = start_call("stale-room-1")
+        # Backdate started_at to 30 minutes ago
+        with new_session() as session:
+            record = session.get(CallRecord, call_id)
+            assert record is not None
+            record.started_at = datetime.now(UTC) - timedelta(minutes=30)
+            session.commit()
+
+        with TestClient(create_app(settings)) as client:
+            res = client.get("/v1/calls", headers=headers)
+            assert res.status_code == 200
+            data = res.json()
+            assert data["total"] == 1
+            item = data["items"][0]
+            assert item["ended_at"] is not None
+            assert item["outcome"] == "info_only"
+            assert "automatically finalized" in item["transcript_summary"]
+    finally:
+        reset_engine()
+
+
