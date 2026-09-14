@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --port 3000",
     "build": "tsc -b && vite build",
-    "preview": "vite preview --port 3000"
+    "preview": "vite preview --port 3000",
+    "test": "node --experimental-strip-types src/lib/run-tests.mjs"
   },
   "dependencies": {
     "@livekit/components-react": "^2.9.24",

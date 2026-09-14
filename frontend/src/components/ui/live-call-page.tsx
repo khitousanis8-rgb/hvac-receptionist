@@ -79,16 +79,34 @@ export function LiveCallPage({
   const [lastDuration, setLastDuration] = useState<number>(0);
   const [lastRoom, setLastRoom] = useState<string | null>(null);
   const [lastTelemetry, setLastTelemetry] = useState<ClientTelemetry | null>(null);
+  const [initialMediaStream, setInitialMediaStream] = useState<MediaStream | null>(null);
 
   useEffect(() => {
     onCallStateChange?.(phase === "in-call");
   }, [phase, onCallStateChange]);
 
-  const startCall = () => {
+  const startCall = async () => {
     // This must happen synchronously in the click handler to unlock audio autoplay on mobile
     neuralVoice.unlockAudio();
     setErrorMessage(null);
     setLastRoom("Voice Assistant Demo");
+
+    // Direct gesture microphone permission (Phase 3)
+    let stream: MediaStream | null = null;
+    if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      } catch (err: any) {
+        console.warn("[LiveCallPage] getUserMedia in user gesture:", err);
+      }
+    }
+    setInitialMediaStream(stream);
     setPhase("in-call");
   };
 
@@ -162,6 +180,7 @@ export function LiveCallPage({
 
       {phase === "in-call" && (
         <KokoroCallSession
+          initialMediaStream={initialMediaStream}
           companyName={companyName}
           onCallEnded={handleCallEnded}
           onError={(msg) => {

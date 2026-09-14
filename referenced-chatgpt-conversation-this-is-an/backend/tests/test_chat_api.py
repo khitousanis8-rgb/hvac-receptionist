@@ -803,8 +803,10 @@ def test_read_only_tools_vs_booking_tools() -> None:
     assert "book_appointment_tool" in booking_names
     assert "check_my_appointments" in booking_names
 
-    legacy_names = [t["function"]["name"] for t in TOOLS]
-    assert "book_appointment_tool" in legacy_names
+    # Phase 4: General conversational tools must expose only READ_ONLY_TOOLS
+    general_names = [t["function"]["name"] for t in TOOLS]
+    assert "book_appointment_tool" not in general_names
+    assert "check_my_appointments" in general_names
 
 
 def test_safety_emergency_instruction_takes_priority() -> None:
@@ -1435,6 +1437,55 @@ def test_client_telemetry_schema_validation_rejections() -> None:
         },
     )
     assert res2.status_code == 422
+
+
+def test_error_recovery_does_not_falsely_confirm_booking() -> None:
+    """Verify that tool-choice errors yield neutral retry text and NEVER say 'You are all set!'."""
+    from unittest.mock import patch
+
+    settings = Settings(_env_file=None, llm_api_key="sk-fake-test-key")
+    app = create_app(settings)
+    client = TestClient(app)
+
+    call_id = _start_browser_call("test-error-recovery-01")
+
+    # Force an exception simulating tool error
+    with patch("app.chat_api._create_stream_completion", side_effect=RuntimeError("Model called a tool but tool choice is none")):
+        res = client.post(
+            "/v1/calls/chat",
+            json=_browser_payload("test-error-recovery-01", call_id, "Do you service commercial heat pumps?"),
+        )
+        assert res.status_code == 200
+        text = res.text
+        # Must NEVER falsely claim all set or booked
+        assert "you are all set" not in text.lower()
+        assert "booked" not in text.lower()
+        # Must provide honest apology / neutral retry prompt
+        assert "apologize" in text.lower()
+        assert "repeat" in text.lower()
+
+
+def test_update_call_phone_allows_caller_corrections() -> None:
+    """Verify update_call_phone updates the phone even if previously set, supporting caller corrections."""
+    from app.call_tracking import update_call_phone
+    from app.db import CallRecord, new_session
+
+    call_id = _start_browser_call("test-phone-correction-01")
+
+    # Initial phone
+    update_call_phone(call_id, "555-111-2222")
+    with new_session() as session:
+        rec = session.get(CallRecord, call_id)
+        assert rec is not None
+        assert rec.caller_phone == "555-111-2222"
+
+    # Caller corrected phone number
+    update_call_phone(call_id, "+15559998888")
+    with new_session() as session:
+        rec = session.get(CallRecord, call_id)
+        assert rec is not None
+        assert rec.caller_phone == "+15559998888"
+
 
 
 

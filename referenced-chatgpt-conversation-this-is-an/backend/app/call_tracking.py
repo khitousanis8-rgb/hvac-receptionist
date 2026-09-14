@@ -258,11 +258,14 @@ def update_call_slots(call_id: int, updates: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_call_phone(call_id: int, phone: str) -> None:
-    """Set the phone number for the exact active call record, once."""
+    """Set or update the phone number for the active call record (allows caller corrections)."""
+    clean_phone = str(phone).strip()[:32]
+    if not clean_phone:
+        return
     with new_session() as session:
         record = session.get(CallRecord, call_id)
-        if record and record.ended_at is None and not record.caller_phone:
-            record.caller_phone = str(phone).strip()[:32]
+        if record and record.ended_at is None:
+            record.caller_phone = clean_phone
 
 
 def update_call_outcome(call_id: int, outcome: str) -> None:

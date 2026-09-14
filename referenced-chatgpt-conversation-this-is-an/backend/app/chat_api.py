@@ -613,7 +613,7 @@ BOOKING_TOOLS = [
     READ_ONLY_TOOLS[0],
 ]
 
-TOOLS = BOOKING_TOOLS
+TOOLS = READ_ONLY_TOOLS
 
 
 def _is_closing_or_polite_remark(text: str) -> bool:
@@ -1120,7 +1120,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     messages.append({"role": "user", "content": req.message})
 
     is_polite_closing = _is_closing_or_polite_remark(req.message)
-    tools_to_use = None if is_polite_closing else BOOKING_TOOLS
+    tools_to_use = None if is_polite_closing else READ_ONLY_TOOLS
     tool_choice_to_use = "auto" if tools_to_use else None
 
     async def sse_generator() -> AsyncIterator[str]:
@@ -1273,7 +1273,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 or "model called a tool" in err_msg.lower()
             ):
                 recovery_text = (
-                    "You are all set! Is there anything else I can assist you with today?"
+                    "I apologize for the moment, let me help you with that. "
+                    "Could you please repeat what you need?"
                 )
                 yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
                 yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"

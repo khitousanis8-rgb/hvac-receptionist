@@ -46,12 +46,15 @@ export class BrowserSpeechRecognition {
   private vadInterval: number | null = null;
   private audioCtx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
-  private silenceTimer: number | null = null;
   private lastSpeechTime: number = 0;
   private recentAssistantUtterances: string[] = [];
   private lastAgentSpeechEndTime: number = 0;
+  private captureEpoch: number = 0;
 
-  constructor() {
+  constructor(initialStream?: MediaStream | null) {
+    if (initialStream) {
+      this.mediaStream = initialStream;
+    }
     const SpeechRecognitionClass =
       typeof window !== "undefined"
         ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
@@ -61,6 +64,10 @@ export class BrowserSpeechRecognition {
       this.isSupported = true;
       this.initNativeRecognition(SpeechRecognitionClass);
     }
+  }
+
+  public setMediaStream(stream: MediaStream | null): void {
+    this.mediaStream = stream;
   }
 
   private initNativeRecognition(SpeechRecognitionClass: any) {
@@ -415,6 +422,7 @@ export class BrowserSpeechRecognition {
       });
     }
     if (muted) {
+      this.captureEpoch++;
       if (this.cooldownTimer !== null) {
         window.clearTimeout(this.cooldownTimer);
         this.cooldownTimer = null;
@@ -437,6 +445,12 @@ export class BrowserSpeechRecognition {
    * Immediately resume speech recognition without waiting for acoustic cooldown
    * when the caller explicitly clicks "Interrupt" or presses Spacebar.
    */
+  /**
+   * Snappy 200ms interrupt cooldown with tail-audio drain.
+   * When caller interrupts Sarah, abort current recognition/recorder buffers immediately,
+   * bump captureEpoch to discard in-flight frames, wait 200ms for speaker tail-energy to dissipate,
+   * then resume input.
+   */
   public resumeImmediatelyForInterrupt(): void {
     if (this.cooldownTimer !== null) {
       window.clearTimeout(this.cooldownTimer);
@@ -446,36 +460,66 @@ export class BrowserSpeechRecognition {
       window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    this.captureEpoch++;
     this.accumulatedFinalText = "";
     this.audioChunks = [];
-    this.isPausedForAgent = false;
+    this.isPausedForAgent = true;
     this.lastAgentSpeechEndTime = 0;
 
-    // Immediately re-enable physical microphone tracks
-    if (this.mediaStream && !this.isMuted) {
+    // Keep physical microphone tracks muted during the 200ms tail-drain window
+    if (this.mediaStream) {
       this.mediaStream.getAudioTracks().forEach((track) => {
-        track.enabled = true;
+        track.enabled = false;
       });
     }
 
-    if (!this.shouldBeListening || this.isMuted) return;
-
-    if (this.isSupported && this.recognition) {
+    if (this.recognition) {
       try {
-        this.recognition.start();
-        this.isListening = true;
-        this.onStateChange?.(true);
-      } catch (err: any) {
-        if (err?.name === "InvalidStateError") {
+        this.recognition.abort();
+      } catch {
+        // ignore
+      }
+    }
+
+    if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
+      try {
+        this.mediaRecorder.stop();
+      } catch {
+        // ignore
+      }
+    }
+
+    // 200ms tail-audio drain cooldown
+    this.cooldownTimer = window.setTimeout(() => {
+      this.cooldownTimer = null;
+      this.isPausedForAgent = false;
+
+      // Re-enable physical microphone tracks after speaker tail-energy settled
+      if (this.mediaStream && !this.isMuted) {
+        this.mediaStream.getAudioTracks().forEach((track) => {
+          track.enabled = true;
+        });
+      }
+
+      if (!this.shouldBeListening || this.isMuted) return;
+
+      if (this.isSupported && this.recognition) {
+        try {
+          this.recognition.start();
           this.isListening = true;
           this.onStateChange?.(true);
+        } catch (err: any) {
+          if (err?.name === "InvalidStateError") {
+            this.isListening = true;
+            this.onStateChange?.(true);
+          }
         }
+      } else {
+        this.startMediaRecorderFallback().catch((err) => {
+          console.warn("[SpeechRecognition] Fallback start on interrupt:", err);
+        });
       }
-    } else {
-      this.startMediaRecorderFallback().catch((err) => {
-        console.warn("[SpeechRecognition] Fallback start on interrupt:", err);
-      });
-    }
+    }, 200);
   }
 
   /**
@@ -486,6 +530,7 @@ export class BrowserSpeechRecognition {
    */
   public pauseForAgentPlayback(isSpeaking: boolean) {
     if (isSpeaking) {
+      this.captureEpoch++;
       this.isPausedForAgent = true;
 
       // True hardware gating: mute physical mediaStream tracks so zero signal reaches AudioContext/VAD
@@ -580,6 +625,7 @@ export class BrowserSpeechRecognition {
 
   /**
    * MediaRecorder Fallback implementation for browsers without Web Speech API.
+   * Efficiently reuses MediaStream and AudioContext across pauses/resumes.
    */
   private async startMediaRecorderFallback() {
     this.isSupported = false;
@@ -603,16 +649,18 @@ export class BrowserSpeechRecognition {
       }
 
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
-      this.audioCtx = new AudioCtxClass();
+      if (!this.audioCtx || this.audioCtx.state === "closed") {
+        this.audioCtx = new AudioCtxClass();
+        const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
+        this.analyser = this.audioCtx.createAnalyser();
+        this.analyser.fftSize = 256;
+        source.connect(this.analyser);
+      }
       if (this.audioCtx.state === "suspended") {
         try {
           await this.audioCtx.resume();
         } catch {}
       }
-      const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
-      this.analyser = this.audioCtx.createAnalyser();
-      this.analyser.fftSize = 256;
-      source.connect(this.analyser);
 
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
@@ -621,67 +669,76 @@ export class BrowserSpeechRecognition {
         : "";
 
       const options = mimeType ? { mimeType } : undefined;
-      this.mediaRecorder = new MediaRecorder(this.mediaStream, options);
-      this.audioChunks = [];
-
-      this.mediaRecorder.ondataavailable = (event) => {
-        if (this.isPausedForAgent || this.isMuted) {
-          return;
-        }
-        if (event.data && event.data.size > 0) {
-          this.audioChunks.push(event.data);
-        }
-      };
-
-      this.mediaRecorder.onstop = async () => {
-        if (!this.shouldBeListening || this.isPausedForAgent || this.isMuted) {
-          this.audioChunks = [];
-          return;
-        }
-        if (this.audioChunks.length === 0) return;
-        const actualType = mimeType || "audio/webm";
-        const blob = new Blob(this.audioChunks, { type: actualType });
+      if (!this.mediaRecorder || this.mediaRecorder.state === "inactive") {
+        this.mediaRecorder = new MediaRecorder(this.mediaStream, options);
         this.audioChunks = [];
 
-        if (blob.size < 1000) return; // Skip tiny clicks
+        this.mediaRecorder.ondataavailable = (event) => {
+          if (this.isPausedForAgent || this.isMuted) {
+            return;
+          }
+          if (event.data && event.data.size > 0) {
+            this.audioChunks.push(event.data);
+          }
+        };
 
-        try {
-          const reader = new FileReader();
-          reader.readAsDataURL(blob);
-          reader.onloadend = async () => {
-            try {
-              if (!this.shouldBeListening || this.isPausedForAgent || this.isMuted) return;
-              const result = reader.result as string;
-              const base64 = result.split(",")[1];
-              if (base64) {
-                const ext = actualType.includes("mp4") ? "mp4" : "webm";
-                const res = await apiPost<{ text?: string; transcript?: string }>("/v1/calls/transcribe", {
-                  audio_base64: base64,
-                  content_type: actualType,
-                  filename: `audio.${ext}`,
-                });
+        this.mediaRecorder.onstop = async () => {
+          const epoch = this.captureEpoch;
+          if (!this.shouldBeListening || this.isPausedForAgent || this.isMuted) {
+            this.audioChunks = [];
+            return;
+          }
+          if (this.audioChunks.length === 0) return;
+          const actualType = mimeType || "audio/webm";
+          const blob = new Blob(this.audioChunks, { type: actualType });
+          this.audioChunks = [];
+
+          if (blob.size < 1000) return; // Skip tiny clicks
+
+          try {
+            const reader = new FileReader();
+            reader.readAsDataURL(blob);
+            reader.onloadend = async () => {
+              try {
+                if (epoch !== this.captureEpoch) return;
                 if (!this.shouldBeListening || this.isPausedForAgent || this.isMuted) return;
-                const text = res.text || res.transcript;
-                if (text && text.trim()) {
-                  if (this.isAcousticEcho(text.trim())) {
-                    console.warn("[EchoGuard] Suppressed fallback acoustic echo:", text.trim());
-                    return;
+                const result = reader.result as string;
+                const base64 = result?.split(",")[1];
+                if (base64) {
+                  const ext = actualType.includes("mp4") ? "mp4" : "webm";
+                  const res = await apiPost<{ text?: string; transcript?: string }>("/v1/calls/transcribe", {
+                    audio_base64: base64,
+                    content_type: actualType,
+                    filename: `audio.${ext}`,
+                  });
+                  if (epoch !== this.captureEpoch) return;
+                  if (!this.shouldBeListening || this.isPausedForAgent || this.isMuted) return;
+                  const text = res.text || res.transcript;
+                  if (text && text.trim()) {
+                    if (this.isAcousticEcho(text.trim())) {
+                      console.warn("[EchoGuard] Suppressed fallback acoustic echo:", text.trim());
+                      return;
+                    }
+                    this.onTranscript?.(text.trim(), true);
                   }
-                  this.onTranscript?.(text.trim(), true);
                 }
+              } catch (innerErr) {
+                if (epoch !== this.captureEpoch) return;
+                this.sttErrorCount++;
+                console.warn("[SpeechRecognition] Fallback transcription request failed:", innerErr);
               }
-            } catch (innerErr) {
-              this.sttErrorCount++;
-              console.warn("[SpeechRecognition] Fallback transcription request failed:", innerErr);
-            }
-          };
-        } catch (err) {
-          this.sttErrorCount++;
-          console.error("[SpeechRecognition] Fallback transcription failed:", err);
-        }
-      };
+            };
+          } catch (err) {
+            if (epoch !== this.captureEpoch) return;
+            this.sttErrorCount++;
+            console.error("[SpeechRecognition] Fallback transcription failed:", err);
+          }
+        };
+      }
 
-      this.mediaRecorder.start();
+      if (this.mediaRecorder.state === "inactive") {
+        this.mediaRecorder.start();
+      }
       this.isListening = true;
       this.onStateChange?.(true);
 
@@ -696,6 +753,10 @@ export class BrowserSpeechRecognition {
 
   private monitorFallbackVAD() {
     if (!this.analyser) return;
+    if (this.vadInterval !== null) {
+      window.clearInterval(this.vadInterval);
+      this.vadInterval = null;
+    }
 
     const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
     let speaking = false;
@@ -739,6 +800,7 @@ export class BrowserSpeechRecognition {
   }
 
   private stopMediaRecorderFallback() {
+    this.captureEpoch++;
     if (this.vadInterval) {
       clearInterval(this.vadInterval);
       this.vadInterval = null;

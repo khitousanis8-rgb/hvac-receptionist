@@ -26,6 +26,7 @@ import {
   detectBrowserEngine,
   queryMicPermission,
 } from "@/lib/telemetry";
+import { normalizeSpokenText } from "@/lib/text-normalization";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -34,6 +35,7 @@ interface ChatMessage {
 
 interface KokoroCallSessionProps {
   companyName?: string;
+  initialMediaStream?: MediaStream | null;
   onCallEnded: (duration: number, telemetry?: ClientTelemetry) => void;
   onError: (msg: string) => void;
 }
@@ -114,6 +116,7 @@ function createCallSecret(): string {
 
 export function KokoroCallSession({
   companyName,
+  initialMediaStream,
   onCallEnded,
   onError,
 }: KokoroCallSessionProps) {
@@ -318,15 +321,22 @@ export function KokoroCallSession({
                   // demanded a following space + word, so sentences ending in "."
                   // or "!" waited in silence until the next sentence started
                   // streaming (or until the whole stream closed).
-                  const split = findClauseSplit(sentenceBuffer, !hasEmittedFirstChunk);
-                  if (split && split.sentence) {
+                  // Phase 5: Drain every completed sentence from sentenceBuffer in a loop
+                  while (true) {
+                    const split = findClauseSplit(sentenceBuffer, !hasEmittedFirstChunk);
+                    if (!split || !split.sentence) {
+                      break;
+                    }
                     sentenceBuffer = split.rest;
                     if (!hasEmittedFirstChunk) {
                       hasEmittedFirstChunk = true;
                     }
                     if (!split.sentence.toLowerCase().includes("echo of my own voice")) {
                       speechRecRef.current?.registerAssistantSpeech(split.sentence);
-                      neuralVoice.speakSentence(split.sentence);
+                      const spoken = normalizeSpokenText(split.sentence);
+                      if (spoken.trim()) {
+                        neuralVoice.speakSentence(spoken);
+                      }
                     }
                   }
                 } else if (currentEvent === "done") {
@@ -347,12 +357,16 @@ export function KokoroCallSession({
           }
         }
 
-        // Speak remaining sentence buffer if any
+        // Speak remaining sentence buffer if any (Phase 5 sentence draining)
         if (sentenceBuffer.trim()) {
           if (!sentenceBuffer.toLowerCase().includes("echo of my own voice")) {
             speechRecRef.current?.registerAssistantSpeech(sentenceBuffer.trim());
-            neuralVoice.speakSentence(sentenceBuffer.trim());
+            const spoken = normalizeSpokenText(sentenceBuffer.trim());
+            if (spoken.trim()) {
+              neuralVoice.speakSentence(spoken);
+            }
           }
+          sentenceBuffer = "";
         }
         neuralVoice.endTurnQueue();
 
@@ -417,8 +431,12 @@ export function KokoroCallSession({
           }
         });
 
+        if (initialMediaStream) {
+          micPermissionRef.current = "granted";
+        }
+
         // Setup speech recognition
-        const speech = new BrowserSpeechRecognition();
+        const speech = new BrowserSpeechRecognition(initialMediaStream);
         speechRecRef.current = speech;
 
         speech.setCallbacks({
