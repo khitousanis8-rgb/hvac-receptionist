@@ -18,6 +18,14 @@ import { neuralVoice } from "@/lib/neural-audio-player";
 import { BrowserSpeechRecognition } from "@/lib/speech-recognition";
 import { apiUrl, apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import {
+  type ClientTelemetry,
+  type MicPermissionState,
+  type EndReason,
+  detectPlatformClass,
+  detectBrowserEngine,
+  queryMicPermission,
+} from "@/lib/telemetry";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -26,7 +34,7 @@ interface ChatMessage {
 
 interface KokoroCallSessionProps {
   companyName?: string;
-  onCallEnded: (duration: number) => void;
+  onCallEnded: (duration: number, telemetry?: ClientTelemetry) => void;
   onError: (msg: string) => void;
 }
 
@@ -129,7 +137,30 @@ export function KokoroCallSession({
   const speechRecRef = useRef<BrowserSpeechRecognition | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptHistoryRef = useRef<ChatMessage[]>([]);
-  
+
+  // Telemetry tracking refs
+  const callStartTimeRef = useRef<number>(Date.now());
+  const firstAssistantAudioMsRef = useRef<number | null>(null);
+  const firstCallerTranscriptMsRef = useRef<number | null>(null);
+  const ttsErrorCountRef = useRef<number>(0);
+  const endReasonRef = useRef<EndReason>("caller_hangup");
+  const micPermissionRef = useRef<MicPermissionState>("unknown");
+
+  const getFullTelemetry = useCallback((): ClientTelemetry => {
+    return {
+      platform_class: detectPlatformClass(),
+      browser_engine: detectBrowserEngine(),
+      input_path: speechRecRef.current?.getInputPath() ?? "native_web_speech",
+      mic_permission: micPermissionRef.current,
+      first_assistant_audio_ms: firstAssistantAudioMsRef.current,
+      first_caller_transcript_ms: firstCallerTranscriptMsRef.current,
+      echo_suppressions: speechRecRef.current?.getEchoSuppressionCount() ?? 0,
+      stt_errors: speechRecRef.current?.getSttErrorCount() ?? 0,
+      tts_errors: ttsErrorCountRef.current,
+      end_reason: endReasonRef.current,
+    };
+  }, []);
+
   const onErrorRef = useRef(onError);
   useEffect(() => {
     onErrorRef.current = onError;
@@ -163,6 +194,9 @@ export function KokoroCallSession({
   useEffect(() => {
     neuralVoice.setPlaybackStateCallback((playing) => {
       setIsAgentSpeaking(playing);
+      if (playing && firstAssistantAudioMsRef.current === null) {
+        firstAssistantAudioMsRef.current = Date.now() - callStartTimeRef.current;
+      }
     });
     neuralVoice.setTurnStateCallback((turnActive) => {
       if (turnActive) {
@@ -208,6 +242,13 @@ export function KokoroCallSession({
       const recentHistory = currentHistory.length > 30 ? currentHistory.slice(-30) : currentHistory;
 
       try {
+        const startTelemetry: ClientTelemetry = {
+          platform_class: detectPlatformClass(),
+          browser_engine: detectBrowserEngine(),
+          input_path: speechRecRef.current?.getInputPath() ?? "native_web_speech",
+          mic_permission: micPermissionRef.current,
+        };
+
         const response = await fetch(apiUrl("/v1/calls/chat"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -217,6 +258,7 @@ export function KokoroCallSession({
             history: recentHistory.map((m) => ({ role: m.role, content: m.content })),
             call_id: callIdRef.current,
             call_secret: callSecretRef.current,
+            client_telemetry: startTelemetry,
           }),
           signal: controller.signal,
         });
@@ -295,6 +337,7 @@ export function KokoroCallSession({
                   }
                   setActiveTool(null);
                 } else if (currentEvent === "error") {
+                  ttsErrorCountRef.current++;
                   console.warn("[KokoroCall] Assistant stream notice:", data.error);
                 }
               } catch {
@@ -323,6 +366,7 @@ export function KokoroCallSession({
         }
       } catch (err: any) {
         if (err.name !== "AbortError" || timedOut) {
+          ttsErrorCountRef.current++;
           console.warn("[KokoroCall] chat hiccup:", err);
           setIsAgentThinking(false);
           // Graceful in-call recovery: speak a polite apology and keep the call alive!
@@ -366,6 +410,13 @@ export function KokoroCallSession({
         setIsModelReady(true);
         setInitProgress(null);
 
+        // Query microphone permission state asynchronously
+        void queryMicPermission().then((perm) => {
+          if (perm !== "unknown") {
+            micPermissionRef.current = perm;
+          }
+        });
+
         // Setup speech recognition
         const speech = new BrowserSpeechRecognition();
         speechRecRef.current = speech;
@@ -373,6 +424,12 @@ export function KokoroCallSession({
         speech.setCallbacks({
           onTranscript: (text, isFinal) => {
             if (isCancelled) return;
+            if (text.trim()) {
+              micPermissionRef.current = "granted";
+              if (firstCallerTranscriptMsRef.current === null) {
+                firstCallerTranscriptMsRef.current = Date.now() - callStartTimeRef.current;
+              }
+            }
             if (isFinal) {
               setCurrentCallerText("");
               const historyBefore = transcriptHistoryRef.current;
@@ -398,6 +455,13 @@ export function KokoroCallSession({
           },
           onError: (err) => {
             console.warn("[VoiceCall] speech notice:", err);
+            if (
+              typeof err === "string" &&
+              (err.toLowerCase().includes("denied") || err.toLowerCase().includes("not-allowed"))
+            ) {
+              micPermissionRef.current = "denied";
+              endReasonRef.current = "mic_denied";
+            }
           },
         });
 
@@ -412,6 +476,7 @@ export function KokoroCallSession({
       } catch (err: any) {
         if (!isCancelled) {
           console.error("[VoiceCall] init failed:", err);
+          endReasonRef.current = "error";
           onErrorRef.current(err?.message || "Failed to initialize voice assistant");
         }
       }
@@ -432,10 +497,17 @@ export function KokoroCallSession({
       const callId = callIdRef.current;
       if (callId && !callEndRequestedRef.current) {
         callEndRequestedRef.current = true;
+        if (callOutcomeRef.current === "booked") {
+          endReasonRef.current = "assistant_completed";
+        } else if (endReasonRef.current === "caller_hangup") {
+          endReasonRef.current = "session_aborted";
+        }
         const rawSummary = transcriptHistoryRef.current
           .map((m) => `${m.role}: ${m.content}`)
           .join("\n");
         const safeSummary = rawSummary ? rawSummary.slice(0, 3000) : "Call ended";
+        const fullTelemetry = getFullTelemetry();
+
         void fetch(apiUrl("/v1/calls/end"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -445,12 +517,65 @@ export function KokoroCallSession({
             call_secret: callSecretRef.current,
             outcome: callOutcomeRef.current,
             summary: safeSummary,
+            client_telemetry: fullTelemetry,
           }),
           keepalive: true,
         });
       }
     };
-  }, [sendMessageToAgent]);
+  }, [sendMessageToAgent, getFullTelemetry]);
+
+  // Pagehide listener for tab close/navigation beacon finalization
+  useEffect(() => {
+    const handlePageHide = () => {
+      const callId = callIdRef.current;
+      if (callId && !callEndRequestedRef.current) {
+        callEndRequestedRef.current = true;
+        endReasonRef.current = "page_unload";
+
+        const rawSummary = transcriptHistoryRef.current
+          .map((m) => `${m.role}: ${m.content}`)
+          .join("\n");
+        const safeSummary = rawSummary
+          ? rawSummary.slice(0, 3000)
+          : "Call terminated due to page unload";
+
+        const telemetryPayload = getFullTelemetry();
+        telemetryPayload.end_reason = "page_unload";
+
+        const payload = JSON.stringify({
+          session_id: sessionIdRef.current,
+          call_id: callId,
+          call_secret: callSecretRef.current,
+          outcome: callOutcomeRef.current,
+          summary: safeSummary,
+          client_telemetry: telemetryPayload,
+        });
+
+        const sent =
+          typeof navigator !== "undefined" &&
+          typeof navigator.sendBeacon === "function" &&
+          navigator.sendBeacon(
+            apiUrl("/v1/calls/end"),
+            new Blob([payload], { type: "application/json" })
+          );
+
+        if (!sent) {
+          void fetch(apiUrl("/v1/calls/end"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: payload,
+            keepalive: true,
+          });
+        }
+      }
+    };
+
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+    };
+  }, [getFullTelemetry]);
 
   // 5. User Controls
   const toggleMute = () => {
@@ -473,6 +598,12 @@ export function KokoroCallSession({
   const handleEndCall = async () => {
     if (callEndRequestedRef.current) return;
     callEndRequestedRef.current = true;
+    if (callOutcomeRef.current === "booked") {
+      endReasonRef.current = "assistant_completed";
+    } else if (!endReasonRef.current || endReasonRef.current === "caller_hangup") {
+      endReasonRef.current = "caller_hangup";
+    }
+
     neuralVoice.stop();
     if (speechRecRef.current) {
       speechRecRef.current.stop();
@@ -485,6 +616,7 @@ export function KokoroCallSession({
       .map((m) => `${m.role}: ${m.content}`)
       .join("\n");
     const safeSummary = rawSummary ? rawSummary.slice(0, 3000) : "Call completed";
+    const fullTelemetry = getFullTelemetry();
 
     try {
       await apiPost("/v1/calls/end", {
@@ -493,6 +625,7 @@ export function KokoroCallSession({
         call_secret: callSecretRef.current,
         outcome: callOutcomeRef.current,
         summary: safeSummary,
+        client_telemetry: fullTelemetry,
       });
     } catch (err) {
       console.warn("[KokoroCall] call log finalization failed, retrying minimal payload:", err);
@@ -503,13 +636,14 @@ export function KokoroCallSession({
           call_secret: callSecretRef.current,
           outcome: callOutcomeRef.current,
           summary: "Call completed",
+          client_telemetry: fullTelemetry,
         });
       } catch (retryErr) {
         console.error("[KokoroCall] minimal call finalization failed:", retryErr);
       }
     }
 
-    onCallEnded(durationRef.current);
+    onCallEnded(durationRef.current, fullTelemetry);
   };
 
   // Keyboard shortcuts

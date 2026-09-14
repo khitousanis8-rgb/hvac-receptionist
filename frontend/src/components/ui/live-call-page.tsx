@@ -14,6 +14,11 @@ import { cn } from "@/lib/utils";
 import { neuralVoice } from "@/lib/neural-audio-player";
 import { KokoroCallSession } from "./kokoro-call-session";
 import { HoverRevealCards, CardItem } from "./hover-reveal-cards";
+import {
+  type ClientTelemetry,
+  detectPlatformClass,
+  detectBrowserEngine,
+} from "@/lib/telemetry";
 
 type CallPhase = "idle" | "in-call" | "ended" | "error";
 
@@ -73,6 +78,7 @@ export function LiveCallPage({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lastDuration, setLastDuration] = useState<number>(0);
   const [lastRoom, setLastRoom] = useState<string | null>(null);
+  const [lastTelemetry, setLastTelemetry] = useState<ClientTelemetry | null>(null);
 
   useEffect(() => {
     onCallStateChange?.(phase === "in-call");
@@ -86,8 +92,9 @@ export function LiveCallPage({
     setPhase("in-call");
   };
 
-  const handleCallEnded = useCallback((durationSeconds: number) => {
+  const handleCallEnded = useCallback((durationSeconds: number, telemetry?: ClientTelemetry) => {
     setLastDuration(durationSeconds);
+    setLastTelemetry(telemetry ?? null);
     setPhase("ended");
   }, []);
 
@@ -168,6 +175,7 @@ export function LiveCallPage({
         <EndedState
           duration={lastDuration}
           roomName={lastRoom}
+          telemetry={lastTelemetry}
           onStartAgain={startCall}
           onViewCalls={onNavigateToCalls}
         />
@@ -256,14 +264,21 @@ function IdleState({
 function EndedState({
   duration,
   roomName,
+  telemetry,
   onStartAgain,
   onViewCalls,
 }: {
   duration: number;
   roomName: string | null;
+  telemetry?: ClientTelemetry | null;
   onStartAgain: () => void;
   onViewCalls?: () => void;
 }) {
+  const platform = telemetry?.platform_class ?? detectPlatformClass();
+  const engine = telemetry?.browser_engine ?? detectBrowserEngine();
+  const inputPath = telemetry?.input_path ?? "native_web_speech";
+  const echoCount = telemetry?.echo_suppressions ?? 0;
+
   return (
     <div className="rounded-2xl border border-[#e7e7e7] bg-white p-6 space-y-5 shadow-xs">
       <div className="flex items-center gap-3">
@@ -277,6 +292,37 @@ function EndedState({
           <p className="text-[12px] text-[#71717a] text-pretty">
             The conversation summary and outcome are available in the dashboard for follow-up.
           </p>
+        </div>
+      </div>
+
+      {/* Session Attribution Pill */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-xl border border-[#e7e7e7] bg-[#fafafa]">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-[#0b5ed7]" aria-hidden="true" />
+          <span className="text-[11px] font-semibold text-[#0a0a0a]">
+            Session Attribution
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white border border-[#e7e7e7] text-[#0a0a0a]">
+            <span className="text-[#71717a]">Platform:</span>
+            <span className="capitalize font-semibold">{platform}</span>
+            <span className="text-[#71717a] text-[10px] font-mono">({engine})</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white border border-[#e7e7e7] text-[#0a0a0a]">
+            <span className="text-[#71717a]">Input Path:</span>
+            <span className="font-mono text-[10px] uppercase font-semibold text-[#0b5ed7]">
+              {inputPath === "media_recorder_transcription"
+                ? "Whisper Fallback"
+                : "Native Web Speech"}
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white border border-[#e7e7e7] text-[#0a0a0a]">
+            <span className="text-[#71717a]">Echo Suppressions:</span>
+            <span className="font-mono tabular-nums font-semibold text-[#059669]">
+              {echoCount}
+            </span>
+          </span>
         </div>
       </div>
 

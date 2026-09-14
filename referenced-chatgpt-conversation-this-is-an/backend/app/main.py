@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import uuid4
 
 import structlog
@@ -19,6 +19,11 @@ from sqlalchemy import func
 
 from app.agent.dispatch import CredentialsMissingError, DispatchError, create_room_and_token
 from app.auth import require_admin
+from app.call_tracking import (
+    ClientTelemetry,
+    apply_client_telemetry,
+    reap_stale_calls,
+)
 from app.chat_api import router as chat_router
 from app.config import Settings, get_settings
 from app.dashboard import router as dashboard_router
@@ -83,6 +88,7 @@ class CallTokenRequest(BaseModel):
         pattern=r"^[a-zA-Z0-9_-]+$",
         description="Optional alphanumeric caller identity identifier",
     )
+    client_telemetry: ClientTelemetry | None = None
 
 
 class CallTokenResponse(BaseModel):
@@ -92,14 +98,60 @@ class CallTokenResponse(BaseModel):
 
 
 
+async def _stale_call_reaper_loop(interval_seconds: float = 60.0) -> None:
+    """Independent background worker periodically finalizing abandoned calls."""
+    logger = structlog.get_logger(__name__)
+    logger.info("stale_call_reaper_started", interval_seconds=interval_seconds)
+    try:
+        # Perform an immediate initial sweep upon startup
+        try:
+            reaped = await asyncio.to_thread(reap_stale_calls)
+            if reaped > 0:
+                logger.info("stale_calls_reaped", count=reaped, phase="initial")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("stale_call_reaper_error", error=str(exc), phase="initial")
+
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                reaped = await asyncio.to_thread(reap_stale_calls)
+                if reaped > 0:
+                    logger.info("stale_calls_reaped", count=reaped, phase="periodic")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("stale_call_reaper_error", error=str(exc), phase="periodic")
+    except asyncio.CancelledError:
+        logger.info("stale_call_reaper_stopped")
+        raise
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings: Settings = application.state.settings
     configure_logging(settings.log_level)
     init_db(settings.database_url)
     structlog.get_logger(__name__).info("api_started", environment=settings.app_env)
-    yield
-    structlog.get_logger(__name__).info("api_stopped")
+
+    reaper_task: asyncio.Task[None] | None = None
+    enable_reaper = getattr(settings, "enable_stale_call_reaper", True) and getattr(
+        application.state, "enable_stale_call_reaper", True
+    )
+    if enable_reaper:
+        reaper_task = asyncio.create_task(_stale_call_reaper_loop())
+
+    try:
+        yield
+    finally:
+        if reaper_task is not None:
+            reaper_task.cancel()
+            try:
+                await reaper_task
+            except asyncio.CancelledError:
+                pass
+        structlog.get_logger(__name__).info("api_stopped")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -165,37 +217,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, object]:
         """Page through private call records, newest first, with accurate totals."""
 
+        def _parse_client_metrics(metrics: str | None) -> dict[str, Any] | None:
+            if not metrics:
+                return None
+            try:
+                parsed = json.loads(metrics)
+                return parsed if isinstance(parsed, dict) else None
+            except Exception:
+                return None
+
         def _query_calls() -> dict[str, object]:
             # Runs in a worker thread so the sync SQLAlchemy session never
             # blocks the event loop serving concurrent SSE/TTS streams.
             with new_session() as session:
-                cutoff = datetime.now(UTC) - timedelta(minutes=20)
-                stale_records = (
-                    session.query(CallRecord)
-                    .filter(
-                        CallRecord.ended_at.is_(None),
-                        CallRecord.started_at < cutoff,
-                    )
-                    .all()
-                )
-                if stale_records:
-                    for stale in stale_records:
-                        stale.ended_at = stale.started_at + timedelta(minutes=3)
-                        if stale.outcome == "in_progress":
-                            stale.outcome = (
-                                "booked"
-                                if (
-                                    stale.session_slots
-                                    and '"confirmed": true' in stale.session_slots.lower()
-                                )
-                                else "info_only"
-                            )
-                        if not stale.transcript_summary:
-                            stale.transcript_summary = (
-                                "Call completed (session automatically finalized)."
-                            )
-                    session.commit()
-
                 base_query = session.query(CallRecord)
                 total = base_query.count()
                 records = (
@@ -228,6 +262,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             "ended_at": record.ended_at.isoformat().replace("+00:00", "Z")
                             if record.ended_at
                             else None,
+                            "platform_class": record.platform_class,
+                            "browser_engine": record.browser_engine,
+                            "input_path": record.input_path,
+                            "mic_permission": record.mic_permission,
+                            "end_reason": record.end_reason,
+                            "client_metrics": _parse_client_metrics(record.client_metrics),
                         }
                         for record in records
                     ],
@@ -319,6 +359,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 room_name=room_name,
                 identity=identity,
             )
+            if payload and payload.client_telemetry:
+                await asyncio.to_thread(apply_client_telemetry, room, payload.client_telemetry)
             return CallTokenResponse(url=url, token=token, room=room)
         except CredentialsMissingError as err:
             raise HTTPException(

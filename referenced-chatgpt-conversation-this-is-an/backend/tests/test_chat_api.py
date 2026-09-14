@@ -2,26 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.call_tracking import start_or_get_browser_call
 from app.chat_api import _execute_tool, _is_closing_or_polite_remark
 from app.config import Settings
-from app.db import Appointment, CallRecord, Customer, init_db, new_session
+from app.db import Appointment, CallRecord, Customer, new_session
 from app.main import create_app
-
-
-@pytest.fixture(autouse=True)
-def setup_db() -> None:
-    init_db()
-    with new_session() as session:
-        session.query(Appointment).delete()
-        session.commit()
-
 
 _CALL_SECRET = "a" * 64
 
@@ -1133,6 +1124,317 @@ def test_booking_tools_available() -> None:
     tool_names = [t["function"]["name"] for t in BOOKING_TOOLS]
     assert "book_appointment_tool" in tool_names
     assert "check_my_appointments" in tool_names
+
+
+def test_end_call_accepts_and_persists_client_telemetry() -> None:
+    """Verify POST /v1/calls/end persists client telemetry into CallRecord columns and JSON metrics."""
+    settings = Settings(_env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    session_id = "test-call-telemetry-end-01"
+    call_id = _start_browser_call(session_id)
+
+    telemetry_payload = {
+        "platform_class": "mobile",
+        "browser_engine": "webkit",
+        "input_path": "media_recorder_transcription",
+        "mic_permission": "granted",
+        "first_assistant_audio_ms": 1350,
+        "first_caller_transcript_ms": 2980,
+        "echo_suppressions": 2,
+        "stt_errors": 1,
+        "tts_errors": 0,
+        "end_reason": "user_hangup",
+    }
+
+    response = client.post(
+        "/v1/calls/end",
+        json={
+            "session_id": session_id,
+            "call_id": call_id,
+            "call_secret": _CALL_SECRET,
+            "outcome": "info_only",
+            "summary": "Caller hung up after hearing opening hours.",
+            "client_telemetry": telemetry_payload,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "call_id": call_id,
+        "outcome": "info_only",
+    }
+
+    with new_session() as session:
+        record = session.get(CallRecord, call_id)
+        assert record is not None
+        assert record.ended_at is not None
+        assert record.outcome == "info_only"
+        assert record.transcript_summary == "Caller hung up after hearing opening hours."
+        # Verify categorical columns
+        assert record.platform_class == "mobile"
+        assert record.browser_engine == "webkit"
+        assert record.input_path == "media_recorder_transcription"
+        assert record.mic_permission == "granted"
+        assert record.end_reason == "user_hangup"
+
+        # Verify structured metrics JSON
+        assert record.client_metrics is not None
+        metrics = json.loads(record.client_metrics)
+        assert metrics["first_assistant_audio_ms"] == 1350
+        assert metrics["first_caller_transcript_ms"] == 2980
+        assert metrics["echo_suppressions"] == 2
+        assert metrics["stt_errors"] == 1
+        assert metrics["tts_errors"] == 0
+        assert metrics["end_reason"] == "user_hangup"
+
+
+def test_client_telemetry_discards_pii_and_extra_fields() -> None:
+    """Verify that extra telemetry fields (raw UA, raw audio, IP, PII) are strictly discarded."""
+    settings = Settings(_env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    session_id = "test-call-privacy-safe-02"
+    call_id = _start_browser_call(session_id)
+
+    raw_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15"
+    raw_audio_b64 = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
+    ip_addr = "192.168.1.155"
+    caller_pii = "Alice Resident"
+    caller_ssn = "123-45-6789"
+    raw_transcript_text = "I have a gas leak at 742 Evergreen Terrace"
+
+    payload_with_forbidden_data = {
+        "session_id": session_id,
+        "call_id": call_id,
+        "call_secret": _CALL_SECRET,
+        "outcome": "info_only",
+        "client_telemetry": {
+            "platform_class": "desktop",
+            "browser_engine": "chromium",
+            "input_path": "native_web_speech",
+            "mic_permission": "granted",
+            "first_assistant_audio_ms": 1100,
+            "echo_suppressions": 0,
+            "end_reason": "completed",
+            # FORBIDDEN EXTRA FIELDS & PII:
+            "user_agent": raw_ua,
+            "raw_audio": raw_audio_b64,
+            "ip_address": ip_addr,
+            "caller_name": caller_pii,
+            "ssn": caller_ssn,
+            "raw_transcript": raw_transcript_text,
+            "arbitrary_client_metadata": {"gpu": "NVIDIA", "battery": 95},
+        },
+    }
+
+    res = client.post("/v1/calls/end", json=payload_with_forbidden_data)
+    assert res.status_code == 200
+
+    with new_session() as session:
+        record = session.get(CallRecord, call_id)
+        assert record is not None
+        # Legitimate fields persisted
+        assert record.platform_class == "desktop"
+        assert record.browser_engine == "chromium"
+        assert record.input_path == "native_web_speech"
+        assert record.mic_permission == "granted"
+        assert record.end_reason == "completed"
+
+        # Check client_metrics JSON keys strictly
+        assert record.client_metrics is not None
+        metrics_dict = json.loads(record.client_metrics)
+
+        allowed_metric_keys = {
+            "first_assistant_audio_ms",
+            "first_caller_transcript_ms",
+            "echo_suppressions",
+            "stt_errors",
+            "tts_errors",
+            "end_reason",
+        }
+        for k in metrics_dict.keys():
+            assert k in allowed_metric_keys, f"Unexpected/forbidden key '{k}' found in client_metrics!"
+
+        # Exhaustive substring scan across all serialized record columns
+        metrics_serialized = record.client_metrics
+        for forbidden in [
+            "user_agent",
+            "Mozilla",
+            "raw_audio",
+            "UklGR",
+            "ip_address",
+            "192.168.1.155",
+            "Alice Resident",
+            "123-45-6789",
+            "gas leak",
+            "Evergreen Terrace",
+            "arbitrary_client_metadata",
+            "NVIDIA",
+        ]:
+            assert forbidden not in metrics_serialized, (
+                f"Forbidden string '{forbidden}' leaked into persisted client_metrics!"
+            )
+
+
+def test_chat_greeting_records_telemetry_on_creation() -> None:
+    """Verify that POST /v1/calls/chat (__GREETING__) attaches client telemetry to the new call record."""
+    settings = Settings(
+        BUSINESS_COMPANY_NAME="Alpine Air Heating & Cooling",
+        _env_file=None,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+
+    session_id = "test-greeting-telemetry-session-03"
+    call_secret = "c" * 64
+
+    res = client.post(
+        "/v1/calls/chat",
+        json={
+            "session_id": session_id,
+            "message": "__GREETING__",
+            "call_secret": call_secret,
+            "client_telemetry": {
+                "platform_class": "mobile",
+                "browser_engine": "webkit",
+                "input_path": "native_web_speech",
+                "mic_permission": "granted",
+            },
+        },
+    )
+    assert res.status_code == 200
+    assert "text/event-stream" in res.headers["content-type"]
+
+    text = res.text
+    assert "event: call_started" in text
+
+    call_id: int | None = None
+    for line in text.splitlines():
+        if line.startswith("data: ") and "call_id" in line:
+            data = json.loads(line[len("data: ") :])
+            if "call_id" in data:
+                call_id = int(data["call_id"])
+                break
+
+    assert call_id is not None, "Failed to extract call_id from SSE call_started event"
+
+    with new_session() as session:
+        record = session.get(CallRecord, call_id)
+        assert record is not None
+        assert record.room_name == session_id
+        assert record.outcome == "in_progress"
+        assert record.ended_at is None
+        assert record.platform_class == "mobile"
+        assert record.browser_engine == "webkit"
+        assert record.input_path == "native_web_speech"
+        assert record.mic_permission == "granted"
+
+
+def test_telemetry_lifecycle_merge_greeting_and_end() -> None:
+    """Verify telemetry persistence across full lifecycle: greeting turn creates, end call enriches."""
+    settings = Settings(BUSINESS_COMPANY_NAME="Comfort HVAC", _env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    session_id = "test-call-full-lifecycle-04"
+    call_secret = "d" * 64
+
+    # 1. Greeting turn records initial platform detection
+    greeting_res = client.post(
+        "/v1/calls/chat",
+        json={
+            "session_id": session_id,
+            "message": "__GREETING__",
+            "call_secret": call_secret,
+            "client_telemetry": {
+                "platform_class": "desktop",
+                "browser_engine": "chromium",
+                "input_path": "native_web_speech",
+                "mic_permission": "granted",
+            },
+        },
+    )
+    assert greeting_res.status_code == 200
+    call_id: int | None = None
+    for line in greeting_res.text.splitlines():
+        if line.startswith("data: ") and "call_id" in line:
+            call_id = int(json.loads(line[len("data: ") :])["call_id"])
+            break
+    assert call_id is not None
+
+    # 2. End call submits final metrics and end reason
+    end_res = client.post(
+        "/v1/calls/end",
+        json={
+            "session_id": session_id,
+            "call_id": call_id,
+            "call_secret": call_secret,
+            "outcome": "booked",
+            "summary": "Customer confirmed booking for tomorrow.",
+            "client_telemetry": {
+                "first_assistant_audio_ms": 1150,
+                "first_caller_transcript_ms": 2400,
+                "echo_suppressions": 1,
+                "stt_errors": 0,
+                "tts_errors": 0,
+                "end_reason": "completed",
+            },
+        },
+    )
+    assert end_res.status_code == 200
+
+    # 3. Verify merged record
+    with new_session() as session:
+        record = session.get(CallRecord, call_id)
+        assert record is not None
+        # Platform fields from greeting turn retained
+        assert record.platform_class == "desktop"
+        assert record.browser_engine == "chromium"
+        assert record.input_path == "native_web_speech"
+        assert record.mic_permission == "granted"
+        # End fields from end call recorded
+        assert record.end_reason == "completed"
+        assert record.outcome == "booked"
+        # Metrics merged
+        metrics = json.loads(record.client_metrics or "{}")
+        assert metrics["first_assistant_audio_ms"] == 1150
+        assert metrics["first_caller_transcript_ms"] == 2400
+        assert metrics["echo_suppressions"] == 1
+
+
+def test_client_telemetry_schema_validation_rejections() -> None:
+    """Verify that invalid categorical enums or negative metrics return HTTP 422."""
+    app = create_app(Settings(_env_file=None))
+    client = TestClient(app)
+    call_id = _start_browser_call("test-invalid-telemetry-05")
+
+    # Invalid platform_class
+    res1 = client.post(
+        "/v1/calls/end",
+        json={
+            "session_id": "test-invalid-telemetry-05",
+            "call_id": call_id,
+            "call_secret": _CALL_SECRET,
+            "client_telemetry": {"platform_class": "smart_thermostat"},
+        },
+    )
+    assert res1.status_code == 422
+
+    # Negative latency value
+    res2 = client.post(
+        "/v1/calls/end",
+        json={
+            "session_id": "test-invalid-telemetry-05",
+            "call_id": call_id,
+            "call_secret": _CALL_SECRET,
+            "client_telemetry": {"first_assistant_audio_ms": -500},
+        },
+    )
+    assert res2.status_code == 422
 
 
 

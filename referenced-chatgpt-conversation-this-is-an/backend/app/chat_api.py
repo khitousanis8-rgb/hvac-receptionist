@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field
 
 from app.agent.prompts import receptionist_instructions
 from app.call_tracking import (
+    ClientTelemetry,
+    apply_client_telemetry,
     end_browser_call,
     get_call_slots,
     is_authorized_active_call,
@@ -64,6 +66,7 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = Field(default_factory=list)
     call_id: int | None = Field(default=None, ge=1)
     call_secret: str = Field(min_length=32, max_length=128)
+    client_telemetry: ClientTelemetry | None = None
 
 
 class EndCallRequest(BaseModel):
@@ -72,6 +75,7 @@ class EndCallRequest(BaseModel):
     call_secret: str = Field(min_length=32, max_length=128)
     outcome: str = Field(default="info_only", pattern="^(booked|info_only)$")
     summary: str | None = Field(default=None, max_length=50_000)
+    client_telemetry: ClientTelemetry | None = None
 
 
 def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
@@ -802,7 +806,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             f"Thanks for calling {settings.business_company_name}! "
             f"This is Sarah — how can I help with your heating or cooling today?"
         )
-        call_id = start_or_get_browser_call(req.session_id, req.call_secret)
+        call_id = start_or_get_browser_call(
+            req.session_id, req.call_secret, client_telemetry=req.client_telemetry
+        )
 
         async def greeting_generator() -> AsyncIterator[str]:
             yield f"event: call_started\ndata: {json.dumps({'call_id': call_id})}\n\n"
@@ -826,6 +832,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             detail="This call session is invalid or has already ended.",
         )
     active_call_id: int = req.call_id
+    if req.client_telemetry is not None:
+        await asyncio.to_thread(apply_client_telemetry, active_call_id, req.client_telemetry)
 
     # Detect acoustic echo of assistant speech picked up by the microphone:
     # either the greeting pattern or any fragment of recent assistant turns.
@@ -1391,6 +1399,7 @@ async def end_call_record(req: EndCallRequest) -> dict[str, Any]:
         req.call_secret,
         req.outcome,
         safe_summary,
+        req.client_telemetry,
     )
     if not finalized:
         raise HTTPException(

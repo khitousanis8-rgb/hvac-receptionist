@@ -6,11 +6,13 @@
  */
 
 import { apiPost } from "./api";
+import { type InputPath } from "./telemetry";
 
 export type SpeechTranscriptCallback = (text: string, isFinal: boolean) => void;
 export type SpeechStateCallback = (isListening: boolean) => void;
 export type SpeechErrorCallback = (error: string) => void;
 export type SpeechBargeInCallback = () => void;
+export type SpeechInputPathCallback = (path: InputPath) => void;
 
 interface TranscribeResponse {
   transcript: string;
@@ -28,6 +30,10 @@ export class BrowserSpeechRecognition {
   private onStateChange: SpeechStateCallback | null = null;
   private onError: SpeechErrorCallback | null = null;
   private onBargeIn: SpeechBargeInCallback | null = null;
+  private onInputPathChange: SpeechInputPathCallback | null = null;
+
+  private echoSuppressionCount: number = 0;
+  private sttErrorCount: number = 0;
 
   private debounceTimer: number | null = null;
   private cooldownTimer: number | null = null;
@@ -123,6 +129,7 @@ export class BrowserSpeechRecognition {
         // "no-speech" is normal when caller pauses; do not trigger error state
         if (event.error === "no-speech" || event.error === "aborted") return;
 
+        this.sttErrorCount++;
         console.warn("[SpeechRecognition] Event error:", event.error);
         // "network" or "audio-capture" are recoverable browser session timeouts, not fatal errors
         if (event.error === "network" || event.error === "audio-capture") {
@@ -145,6 +152,7 @@ export class BrowserSpeechRecognition {
         if (event.error === "not-allowed" || event.error === "service-not-allowed") {
           console.warn("[SpeechRecognition] Native recognition unavailable, switching permanently to MediaRecorder fallback");
           this.isSupported = false;
+          this.onInputPathChange?.("media_recorder_transcription");
           if (this.recognition) {
             try {
               this.recognition.abort();
@@ -169,6 +177,7 @@ export class BrowserSpeechRecognition {
           } catch (err) {
             console.warn("[SpeechRecognition] onend restart failed, switching to MediaRecorder fallback:", err);
             this.isSupported = false;
+            this.onInputPathChange?.("media_recorder_transcription");
             if (this.recognition) {
               try {
                 this.recognition.abort();
@@ -185,6 +194,7 @@ export class BrowserSpeechRecognition {
       console.warn("[SpeechRecognition] Initialization failed:", err);
       this.isSupported = false;
       this.recognition = null;
+      this.onInputPathChange?.("media_recorder_transcription");
     }
   }
 
@@ -193,11 +203,25 @@ export class BrowserSpeechRecognition {
     onStateChange?: SpeechStateCallback;
     onError?: SpeechErrorCallback;
     onBargeIn?: SpeechBargeInCallback;
+    onInputPathChange?: SpeechInputPathCallback;
   }) {
     if (callbacks.onTranscript) this.onTranscript = callbacks.onTranscript;
     if (callbacks.onStateChange) this.onStateChange = callbacks.onStateChange;
     if (callbacks.onError) this.onError = callbacks.onError;
     if (callbacks.onBargeIn) this.onBargeIn = callbacks.onBargeIn;
+    if (callbacks.onInputPathChange) this.onInputPathChange = callbacks.onInputPathChange;
+  }
+
+  public getEchoSuppressionCount(): number {
+    return this.echoSuppressionCount;
+  }
+
+  public getSttErrorCount(): number {
+    return this.sttErrorCount;
+  }
+
+  public getInputPath(): InputPath {
+    return this.isSupported ? "native_web_speech" : "media_recorder_transcription";
   }
 
   public registerAssistantSpeech(text: string): void {
@@ -261,6 +285,7 @@ export class BrowserSpeechRecognition {
 
     for (const sig of SIGNATURE_ASST_PATTERNS) {
       if (clean.includes(sig)) {
+        this.echoSuppressionCount++;
         console.warn("[EchoGuard] Suppressed signature assistant phrase echo:", transcript);
         return true;
       }
@@ -279,6 +304,7 @@ export class BrowserSpeechRecognition {
       // e.g. "hi there", "got it", "no problem at all", "would you like me to book it"
       if (rawWords.length >= 2) {
         if (utterance.startsWith(clean) || utterance.endsWith(clean)) {
+          this.echoSuppressionCount++;
           console.warn("[EchoGuard] Suppressed prefix/suffix echo match:", transcript);
           return true;
         }
@@ -286,6 +312,7 @@ export class BrowserSpeechRecognition {
 
       // 2b. Direct substring match if >= 3 words and >= 8 characters
       if (rawWords.length >= 3 && clean.length >= 8 && utterance.includes(clean)) {
+        this.echoSuppressionCount++;
         console.warn("[EchoGuard] Suppressed substring echo match:", transcript);
         return true;
       }
@@ -295,6 +322,7 @@ export class BrowserSpeechRecognition {
         for (let i = 0; i <= rawWords.length - 4; i++) {
           const phrase = rawWords.slice(i, i + 4).join(" ");
           if (phrase.length >= 14 && utterance.includes(phrase)) {
+            this.echoSuppressionCount++;
             console.warn("[EchoGuard] Suppressed contiguous 4-word phrase echo:", phrase);
             return true;
           }
@@ -311,6 +339,7 @@ export class BrowserSpeechRecognition {
           }
           const overlap = matches / candidateWords.length;
           if (overlap >= 0.7) {
+            this.echoSuppressionCount++;
             console.warn("[EchoGuard] Suppressed per-utterance >=70% overlap echo:", transcript);
             return true;
           }
@@ -553,6 +582,9 @@ export class BrowserSpeechRecognition {
    * MediaRecorder Fallback implementation for browsers without Web Speech API.
    */
   private async startMediaRecorderFallback() {
+    this.isSupported = false;
+    this.onInputPathChange?.("media_recorder_transcription");
+
     try {
       if (!this.mediaStream || this.mediaStream.getTracks().every((t) => t.readyState === "ended")) {
         this.mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -639,10 +671,12 @@ export class BrowserSpeechRecognition {
                 }
               }
             } catch (innerErr) {
+              this.sttErrorCount++;
               console.warn("[SpeechRecognition] Fallback transcription request failed:", innerErr);
             }
           };
         } catch (err) {
+          this.sttErrorCount++;
           console.error("[SpeechRecognition] Fallback transcription failed:", err);
         }
       };
@@ -654,6 +688,7 @@ export class BrowserSpeechRecognition {
       // Simple voice activity energy monitor to detect pauses
       this.monitorFallbackVAD();
     } catch (err: any) {
+      this.sttErrorCount++;
       console.error("[SpeechRecognition] Fallback mic access error:", err);
       this.onError?.("Microphone access denied: " + err.message);
     }

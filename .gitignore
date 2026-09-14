@@ -41,3 +41,4 @@ fly_auth_*.txt
 
 # Cloned reference repos
 agent-skills/
+.agents/

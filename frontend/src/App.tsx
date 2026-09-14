@@ -22,6 +22,10 @@ import {
   ArrowUpRight,
   Sparkles,
   TrendingUp,
+  Monitor,
+  Smartphone,
+  Activity,
+  Mic,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn, cleanTelHref } from "@/lib/utils";
@@ -33,6 +37,19 @@ import { MobileAgendaView } from "@/components/ui/mobile-agenda-view";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Reveal } from "@/components/ui/reveal";
 
+export interface ClientMetricsData {
+  first_assistant_audio_ms?: number | null;
+  first_caller_transcript_ms?: number | null;
+  echo_suppressions?: number;
+  stt_errors?: number;
+  tts_errors?: number;
+  end_reason?: string | null;
+  platform_class?: string | null;
+  browser_engine?: string | null;
+  input_path?: string | null;
+  mic_permission?: string | null;
+}
+
 interface CallRecord {
   id: number;
   room_name: string;
@@ -41,6 +58,13 @@ interface CallRecord {
   transcript_summary: string | null;
   started_at: string | null;
   ended_at: string | null;
+  platform_class?: string | null;
+  browser_engine?: string | null;
+  input_path?: string | null;
+  mic_permission?: string | null;
+  end_reason?: string | null;
+  client_telemetry?: ClientMetricsData | null;
+  client_metrics?: ClientMetricsData | null;
 }
 
 interface Appointment {
@@ -224,6 +248,62 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function PlatformBadge({
+  platform,
+  engine,
+}: {
+  platform?: string | null;
+  engine?: string | null;
+}) {
+  const isMobile = platform?.toLowerCase() === "mobile";
+  const Icon = isMobile ? Smartphone : Monitor;
+  const platformLabel = isMobile ? "Mobile" : "Desktop";
+  const rawEngine = engine?.toLowerCase();
+  const engineLabel =
+    rawEngine === "chromium"
+      ? "Chrome"
+      : rawEngine === "webkit"
+      ? "Safari"
+      : rawEngine === "gecko"
+      ? "Firefox"
+      : engine
+      ? engine.charAt(0).toUpperCase() + engine.slice(1)
+      : null;
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border",
+        isMobile
+          ? "bg-[#faf5ff] text-[#7e22ce] border-[#f3e8ff]"
+          : "bg-[#f8fafc] text-[#334155] border-[#e2e8f0]"
+      )}
+    >
+      <Icon className="w-3 h-3 shrink-0 text-current" aria-hidden="true" />
+      <span>{platformLabel}</span>
+      {engineLabel && (
+        <span className="text-[10px] opacity-75 font-mono">({engineLabel})</span>
+      )}
+    </span>
+  );
+}
+
+function InputPathBadge({ inputPath }: { inputPath?: string | null }) {
+  const isNative = inputPath === "native_web_speech";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono uppercase tracking-wider font-semibold border",
+        isNative
+          ? "bg-[#ecfdf5] text-[#047857] border-[#a7f3d0]"
+          : "bg-[#fff7ed] text-[#c2410c] border-[#ffedd5]"
+      )}
+    >
+      {isNative ? "Web Speech" : "Whisper Fallback"}
+    </span>
+  );
+}
+
 function StatCard({
   value,
   label,
@@ -287,19 +367,20 @@ function CallsTable({ calls, loading }: { calls: CallRecord[]; loading?: boolean
   const [expanded, setExpanded] = useState<number | null>(null);
   if (loading) {
     return (
-      <table className="w-full min-w-[540px] text-left">
-        <tbody><SkeletonRows cols={4} /></tbody>
+      <table className="w-full min-w-[640px] text-left">
+        <tbody><SkeletonRows cols={5} /></tbody>
       </table>
     );
   }
   if (calls.length === 0) return <Empty text="No call records yet." />;
 
   return (
-    <table className="w-full min-w-[540px] text-left">
+    <table className="w-full min-w-[640px] text-left">
       <thead>
         <tr className="text-[11px] font-semibold uppercase tracking-wider text-[#71717a] bg-[#fafafa] border-b border-[#e7e7e7]">
           <th className="px-4 py-2">Timestamp</th>
           <th className="px-4 py-2">Outcome</th>
+          <th className="px-4 py-2">Platform / Input</th>
           <th className="px-4 py-2">Caller Phone</th>
           <th className="px-4 py-2">Transcript Summary</th>
         </tr>
@@ -327,6 +408,15 @@ function CallRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const metrics = call.client_metrics || call.client_telemetry;
+  const echoSuppressions = metrics?.echo_suppressions ?? 0;
+  const sttErrors = metrics?.stt_errors ?? 0;
+  const ttsErrors = metrics?.tts_errors ?? 0;
+  const firstAudioMs = metrics?.first_assistant_audio_ms;
+  const firstTranscriptMs = metrics?.first_caller_transcript_ms;
+  const endReason = call.end_reason || metrics?.end_reason || null;
+  const micPermission = call.mic_permission || metrics?.mic_permission || null;
+
   return (
     <>
       <tr
@@ -338,6 +428,12 @@ function CallRow({
         </td>
         <td className="px-4 py-2.5">
           <OutcomeBadge outcome={call.outcome} />
+        </td>
+        <td className="px-4 py-2.5 whitespace-nowrap">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <PlatformBadge platform={call.platform_class} engine={call.browser_engine} />
+            <InputPathBadge inputPath={call.input_path} />
+          </div>
         </td>
         <td className="px-4 py-2.5 whitespace-nowrap font-mono tabular-nums text-[11px] text-[#4e505b]">
           {call.caller_phone ? (
@@ -367,14 +463,67 @@ function CallRow({
       </tr>
       {expanded && (
         <tr className="bg-[#fafafa] text-[12px]">
-          <td colSpan={4} className="px-4 py-3">
+          <td colSpan={5} className="px-4 py-3 space-y-3">
             <div className="text-[12px] text-[#0a0a0a] whitespace-pre-wrap break-words leading-relaxed text-pretty">
               {call.transcript_summary ?? "No summary recorded for this call."}
             </div>
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono tabular-nums text-[#71717a]">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono tabular-nums text-[#71717a]">
               <span>Room: {call.room_name}</span>
               <span>Duration: {duration(call.started_at, call.ended_at)}</span>
               {call.ended_at && <span>Ended: {fmt(call.ended_at)}</span>}
+            </div>
+
+            {/* Telemetry Metrics Drawer */}
+            <div className="rounded-lg border border-[#e2e8f0] bg-white p-3 space-y-2.5 shadow-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#f1f5f9] pb-2">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#1e293b]">
+                  <Activity className="w-3.5 h-3.5 text-[#0b5ed7]" aria-hidden="true" />
+                  <span>Client Telemetry & Diagnostics</span>
+                </div>
+                {endReason && (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#f8fafc] border border-[#e2e8f0] text-[#475569]">
+                    End Reason: <strong className="text-[#0f172a]">{endReason}</strong>
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
+                <div className="p-2 rounded-md bg-[#f8fafc] border border-[#e2e8f0]">
+                  <div className="text-[9px] uppercase tracking-wider text-[#64748b]">Echo Suppressions</div>
+                  <div className="text-[13px] font-semibold text-[#0f172a] mt-0.5 tabular-nums">
+                    {echoSuppressions}
+                  </div>
+                </div>
+
+                <div className="p-2 rounded-md bg-[#f8fafc] border border-[#e2e8f0]">
+                  <div className="text-[9px] uppercase tracking-wider text-[#64748b]">STT / TTS Errors</div>
+                  <div className="text-[13px] font-semibold text-[#0f172a] mt-0.5 tabular-nums">
+                    {sttErrors} / {ttsErrors}
+                  </div>
+                </div>
+
+                <div className="p-2 rounded-md bg-[#f8fafc] border border-[#e2e8f0]">
+                  <div className="text-[9px] uppercase tracking-wider text-[#64748b]">1st Audio Latency</div>
+                  <div className="text-[13px] font-semibold text-[#0f172a] mt-0.5 tabular-nums">
+                    {firstAudioMs != null ? `${Math.round(firstAudioMs)}ms` : "—"}
+                  </div>
+                </div>
+
+                <div className="p-2 rounded-md bg-[#f8fafc] border border-[#e2e8f0]">
+                  <div className="text-[9px] uppercase tracking-wider text-[#64748b]">1st Transcript Latency</div>
+                  <div className="text-[13px] font-semibold text-[#0f172a] mt-0.5 tabular-nums">
+                    {firstTranscriptMs != null ? `${Math.round(firstTranscriptMs)}ms` : "—"}
+                  </div>
+                </div>
+              </div>
+
+              {micPermission && (
+                <div className="flex items-center gap-1.5 text-[10px] text-[#64748b]">
+                  <Mic className="w-3 h-3 text-[#64748b]" aria-hidden="true" />
+                  <span>Microphone Permission:</span>
+                  <span className="font-semibold uppercase tracking-wider text-[#334155]">{micPermission}</span>
+                </div>
+              )}
             </div>
           </td>
         </tr>
@@ -395,6 +544,15 @@ function MobileCallsList({ calls }: { calls: CallRecord[] }) {
     <div className="space-y-2.5">
       {calls.map((call) => {
         const isExpanded = expandedId === call.id;
+        const metrics = call.client_metrics || call.client_telemetry;
+        const echoSuppressions = metrics?.echo_suppressions ?? 0;
+        const sttErrors = metrics?.stt_errors ?? 0;
+        const ttsErrors = metrics?.tts_errors ?? 0;
+        const firstAudioMs = metrics?.first_assistant_audio_ms;
+        const firstTranscriptMs = metrics?.first_caller_transcript_ms;
+        const endReason = call.end_reason || metrics?.end_reason || null;
+        const micPermission = call.mic_permission || metrics?.mic_permission || null;
+
         return (
           <div
             key={call.id}
@@ -410,6 +568,11 @@ function MobileCallsList({ calls }: { calls: CallRecord[] }) {
               <span className="text-[10px] font-mono tabular-nums text-[#71717a]">
                 {duration(call.started_at, call.ended_at)}
               </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <PlatformBadge platform={call.platform_class} engine={call.browser_engine} />
+              <InputPathBadge inputPath={call.input_path} />
             </div>
 
             <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#f4f4f5]">
@@ -462,10 +625,53 @@ function MobileCallsList({ calls }: { calls: CallRecord[] }) {
                       exit={{ opacity: 0, height: 0 }}
                       className="overflow-hidden"
                     >
-                      <div className="mt-2 p-2.5 rounded-lg bg-[#fafafa] border border-[#e7e7e7] text-[11px] text-[#4e505b] leading-relaxed text-pretty">
-                        {call.transcript_summary}
-                        <div className="mt-2 pt-2 border-t border-[#e7e7e7] font-mono tabular-nums text-[10px] text-[#71717a]">
+                      <div className="mt-2 p-2.5 rounded-lg bg-[#fafafa] border border-[#e7e7e7] text-[11px] text-[#4e505b] leading-relaxed text-pretty space-y-2">
+                        <div>{call.transcript_summary}</div>
+                        <div className="pt-2 border-t border-[#e7e7e7] font-mono tabular-nums text-[10px] text-[#71717a]">
                           Room: {call.room_name}
+                        </div>
+
+                        {/* Mobile Telemetry Details */}
+                        <div className="pt-2 border-t border-[#e7e7e7] space-y-1.5">
+                          <div className="flex items-center justify-between text-[10px] font-semibold text-[#1e293b]">
+                            <span className="flex items-center gap-1">
+                              <Activity className="w-3 h-3 text-[#0b5ed7]" aria-hidden="true" />
+                              Telemetry Diagnostics
+                            </span>
+                            {endReason && (
+                              <span className="font-mono text-[#64748b]">
+                                End: {endReason}
+                              </span>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono">
+                            <div className="p-1.5 rounded bg-white border border-[#e7e7e7]">
+                              <span className="text-[#64748b] block text-[9px]">Echo Suppressed:</span>
+                              <span className="font-semibold text-[#0f172a]">{echoSuppressions}</span>
+                            </div>
+                            <div className="p-1.5 rounded bg-white border border-[#e7e7e7]">
+                              <span className="text-[#64748b] block text-[9px]">STT/TTS Errors:</span>
+                              <span className="font-semibold text-[#0f172a]">{sttErrors} / {ttsErrors}</span>
+                            </div>
+                            <div className="p-1.5 rounded bg-white border border-[#e7e7e7]">
+                              <span className="text-[#64748b] block text-[9px]">1st Audio:</span>
+                              <span className="font-semibold text-[#0f172a]">
+                                {firstAudioMs != null ? `${Math.round(firstAudioMs)}ms` : "—"}
+                              </span>
+                            </div>
+                            <div className="p-1.5 rounded bg-white border border-[#e7e7e7]">
+                              <span className="text-[#64748b] block text-[9px]">1st Transcript:</span>
+                              <span className="font-semibold text-[#0f172a]">
+                                {firstTranscriptMs != null ? `${Math.round(firstTranscriptMs)}ms` : "—"}
+                              </span>
+                            </div>
+                          </div>
+                          {micPermission && (
+                            <div className="text-[10px] text-[#64748b] flex items-center gap-1">
+                              <Mic className="w-2.5 h-2.5" aria-hidden="true" />
+                              <span>Mic: {micPermission}</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </motion.div>
