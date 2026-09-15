@@ -188,7 +188,7 @@ async def _synthesize_voice(text: str, voice: str, request: Request | None) -> R
         ) from err
 
     should_cache = len(clean_text) < _MAX_CACHED_TEXT_LEN
-    stream_iter = None
+    stream_iter: Any = None
     semaphore_transferred = False
     try:
         communicate = edge_tts.Communicate(
@@ -204,8 +204,8 @@ async def _synthesize_voice(text: str, voice: str, request: Request | None) -> R
         first_audio: bytes | None = None
         async with asyncio.timeout(10.0):
             async for chunk in stream_iter:
-                if chunk["type"] == "audio":
-                    first_audio = chunk["data"]
+                if chunk.get("type") == "audio" and "data" in chunk:
+                    first_audio = bytes(chunk["data"])
                     break
 
         if first_audio is None:
@@ -246,12 +246,13 @@ async def _synthesize_voice(text: str, voice: str, request: Request | None) -> R
         collected_bytes: list[bytes] = [first_audio] if should_cache else []
         try:
             yield first_audio
-            async for chunk in stream_iter:
-                if chunk["type"] == "audio":
-                    data = chunk["data"]
-                    if should_cache:
-                        collected_bytes.append(data)
-                    yield data
+            if stream_iter is not None:
+                async for chunk in stream_iter:
+                    if chunk.get("type") == "audio" and "data" in chunk:
+                        data = bytes(chunk["data"])
+                        if should_cache:
+                            collected_bytes.append(data)
+                        yield data
 
             # Cache short sentences (< 250 chars) for repeat turns
             if should_cache and collected_bytes:
@@ -264,7 +265,8 @@ async def _synthesize_voice(text: str, voice: str, request: Request | None) -> R
             logger.warning("edge_tts_stream_interrupted", error=str(exc), voice=voice_clean)
         finally:
             try:
-                await stream_iter.aclose()
+                if stream_iter is not None:
+                    await stream_iter.aclose()
             finally:
                 _TTS_SEMAPHORE.release()
 

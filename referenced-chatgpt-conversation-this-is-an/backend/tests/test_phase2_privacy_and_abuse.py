@@ -1,3 +1,6 @@
+# pyright: reportCallIssue=false
+# pydantic-settings accepts env-var kwargs dynamically; pyright cannot see them.
+
 """Comprehensive test suite for Phase 2: Privacy, Authorization & Abuse Controls.
 
 Verifies:
@@ -13,9 +16,11 @@ Verifies:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 from unittest.mock import patch
 
 import pytest
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from app.agent.tools import build_receptionist_tools
@@ -158,7 +163,7 @@ def test_chat_rate_limit_http_429() -> None:
     for _ in range(30):
         check_chat_rate_limit(test_ip)
 
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         check_chat_rate_limit(test_ip)
 
     assert exc_info.value.status_code == 429
@@ -183,12 +188,12 @@ def test_trusted_proxy_client_ip_resolution() -> None:
             self.headers = Headers(raw=raw_headers)
 
     # Case A: Untrusted client attempts to spoof X-Forwarded-For
-    untrusted_req = DummyRequest("203.0.113.5", forwarded_for="198.51.100.1")
+    untrusted_req = cast(Request, DummyRequest("203.0.113.5", forwarded_for="198.51.100.1"))
     settings_no_proxy = Settings(trusted_proxies="", _env_file=None)
     assert get_client_ip(untrusted_req, settings_no_proxy) == "203.0.113.5"
 
     # Case B: Connecting socket is a configured trusted proxy (e.g. Render / Cloudflare proxy)
-    proxy_req = DummyRequest("10.0.0.1", forwarded_for="198.51.100.42, 10.0.0.1")
+    proxy_req = cast(Request, DummyRequest("10.0.0.1", forwarded_for="198.51.100.42, 10.0.0.1"))
     settings_with_proxy = Settings(trusted_proxies="10.0.0.1, 10.0.0.2", _env_file=None)
     assert get_client_ip(proxy_req, settings_with_proxy) == "198.51.100.42"
 
