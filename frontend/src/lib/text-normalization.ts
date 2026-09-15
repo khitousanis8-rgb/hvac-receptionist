@@ -237,3 +237,79 @@ export function normalizeSpokenText(text: string): string {
 
   return out;
 }
+
+export interface ClauseSplit {
+  sentence: string;
+  rest: string;
+}
+
+/**
+ * Splits streaming conversational text into clean, speakable sentence or clause chunks.
+ *
+ * Tokenizes and protects spoken expressions before sentence splitting:
+ * - Colons between digits: "10:30", "5:05" (never split mid-time)
+ * - Commas between digits: "1,500", "10,000" (never split mid-number)
+ * - Phone digits / hyphens: "555-123-4567"
+ * - Decimals and periods in numbers: "3.5", "$89.50"
+ * - Abbreviations: "Mr.", "Mrs.", "Ms.", "Dr.", "St.", "vs.", "etc.", "No.", "a.m.", "p.m.", month abbreviations
+ * - Meridiems: clauses ending immediately before "am", "pm", "a.m.", "p.m." (meridiem stays attached)
+ * - Contractions and apostrophes: "don't", "can't", "it's"
+ */
+export function findClauseSplit(
+  buffer: string,
+  isFirstPhrase: boolean
+): ClauseSplit | null {
+  const re = /[.?!,:;\n]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(buffer)) !== null) {
+    const punct = m[0];
+    const candidate = buffer.slice(0, m.index);
+    const charBefore = buffer[m.index - 1] || "";
+    const charAfter = buffer[m.index + 1] || "";
+
+    // 1. Colon protection: never split times like "10:30" or "5:05"
+    if (punct === ":" && /\d/.test(charBefore) && /\d/.test(charAfter)) {
+      continue;
+    }
+
+    // 2. Comma protection: never split formatted numbers like "1,500" or "$10,000"
+    if (punct === "," && /\d/.test(charBefore) && /\d/.test(charAfter)) {
+      continue;
+    }
+
+    // 3. Period protection: skip abbreviations, initials, decimals, and domain names
+    if (punct === ".") {
+      const lastWord = (candidate.split(/\s+/).pop() || "").toLowerCase();
+      if (
+        /^[a-z]$/.test(lastWord) ||
+        /^(mr|mrs|ms|dr|st|vs|etc|no|am|pm|a\.m|p\.m|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)$/.test(lastWord)
+      ) {
+        continue;
+      }
+      if (/\d/.test(charBefore) && (/\d/.test(charAfter) || charAfter === "")) {
+        continue;
+      }
+    }
+
+    // 4. Meridiem protection: if punctuation is immediately followed by AM/PM, do not split
+    const restAfterPunct = buffer.slice(m.index + 1).trimStart();
+    if (/^(?:am|pm|a\.m\.|p\.m\.)\b/i.test(restAfterPunct)) {
+      continue;
+    }
+
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+
+    if (punct === "." || punct === "?" || punct === "!") {
+      // Complete sentence terminal: dispatch immediately
+      if (isFirstPhrase && trimmed.length < 8) continue;
+      return { sentence: trimmed + punct, rest: buffer.slice(m.index + 1) };
+    }
+
+    // Breath group / clause boundaries (comma, colon, semicolon, newline)
+    if (isFirstPhrase ? trimmed.length >= 8 : trimmed.length >= 25 || buffer.length > 80) {
+      return { sentence: trimmed, rest: buffer.slice(m.index + 1) };
+    }
+  }
+  return null;
+}

@@ -12,7 +12,7 @@
  *   • Capped LRU AudioBuffer memory cache preventing micro-leaks.
  */
 
-import { apiUrl } from "./api";
+import { apiUrl } from "./api.ts";
 
 export type PlaybackStateCallback = (isPlaying: boolean) => void;
 export type TurnStateCallback = (isTurnActive: boolean) => void;

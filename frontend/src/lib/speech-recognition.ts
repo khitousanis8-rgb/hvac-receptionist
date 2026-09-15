@@ -5,8 +5,8 @@
  * Provides automatic fallback to MediaRecorder + Groq Whisper API for browsers without Web Speech support.
  */
 
-import { apiPost } from "./api";
-import { type InputPath } from "./telemetry";
+import { apiPost } from "./api.ts";
+import { type InputPath } from "./telemetry.ts";
 
 export type SpeechTranscriptCallback = (text: string, isFinal: boolean) => void;
 export type SpeechStateCallback = (isListening: boolean) => void;

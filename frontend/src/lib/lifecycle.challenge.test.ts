@@ -96,12 +96,42 @@ class MockKokoroLifecycleHarness {
     };
   }
 
+  visibilityGraceTimer: any = null;
+
+  handleVisibilityChange = (state: "hidden" | "visible") => {
+    if (state === "hidden") {
+      if (!this.visibilityGraceTimer && !this.callEndRequestedRef.current) {
+        this.visibilityGraceTimer = setTimeout(() => {
+          this.visibilityGraceTimer = null;
+          this.handleFinalize("page_unload");
+        }, 45000);
+      }
+    } else if (state === "visible") {
+      if (this.visibilityGraceTimer) {
+        clearTimeout(this.visibilityGraceTimer);
+        this.visibilityGraceTimer = null;
+      }
+    }
+  };
+
+  handlePageHide = () => {
+    if (this.visibilityGraceTimer) {
+      clearTimeout(this.visibilityGraceTimer);
+      this.visibilityGraceTimer = null;
+    }
+    this.handleFinalize("page_unload");
+  };
+
   // Exact reproduction of handleFinalize from kokoro-call-session.tsx
-  handleFinalize = () => {
+  handleFinalize = (reason: string = "page_unload") => {
+    if (this.visibilityGraceTimer) {
+      clearTimeout(this.visibilityGraceTimer);
+      this.visibilityGraceTimer = null;
+    }
     const callId = this.callIdRef.current;
     if (callId && !this.callEndRequestedRef.current) {
       this.callEndRequestedRef.current = true;
-      this.endReasonRef.current = "page_unload";
+      this.endReasonRef.current = reason;
 
       const rawSummary = this.transcriptHistoryRef.current
         .map((m) => `${m.role}: ${m.content}`)
@@ -111,7 +141,7 @@ class MockKokoroLifecycleHarness {
         : "Call terminated due to page unload";
 
       const telemetryPayload = this.getFullTelemetry();
-      telemetryPayload.end_reason = "page_unload";
+      telemetryPayload.end_reason = reason;
 
       const payload = JSON.stringify({
         session_id: this.sessionIdRef.current,
@@ -402,6 +432,32 @@ async function runAdversarialLifecycleTests() {
     assert(payload.outcome === "booked" || payload.outcome === "info_only", "outcome matches backend enum pattern");
     assert(payload.summary.length <= 50000, "summary is within backend 50k limit (and bounded by 3000 char frontend clamp)");
     assert(payload.client_telemetry !== null && typeof payload.client_telemetry === "object", "client_telemetry is present object");
+  }
+
+  // SUITE 10: Mobile Visibility Grace Period & Suspension
+  console.log("\n--- SUITE 10: Mobile Visibility Grace Period (45s) & Suspension ---");
+  {
+    const harness = new MockKokoroLifecycleHarness();
+
+    // 10.1: Switching away (visibility hidden) does NOT immediately terminate the call
+    harness.handleVisibilityChange("hidden");
+    assert(harness.visibilityGraceTimer !== null, "Grace timer is scheduled when document hidden");
+    assert(!harness.callEndRequestedRef.current, "Call is NOT terminated immediately on visibility hidden");
+    assert(harness.fetchDispatches.length === 0, "No /v1/calls/end request sent during initial suspension");
+
+    // 10.2: Switching back (visibility visible) cancels the grace timer
+    harness.handleVisibilityChange("visible");
+    assert(harness.visibilityGraceTimer === null, "Grace timer cancelled when document becomes visible again");
+    assert(!harness.callEndRequestedRef.current, "Call remains active and alive after returning from background");
+    assert(harness.fetchDispatches.length === 0, "Zero disconnect requests dispatched for brief app switches");
+
+    // 10.3: Switching away followed by pagehide triggers immediate finalization and cancels timer
+    harness.handleVisibilityChange("hidden");
+    assert(harness.visibilityGraceTimer !== null, "Grace timer started on second hidden event");
+    harness.handlePageHide();
+    assert(harness.visibilityGraceTimer === null, "Grace timer cancelled when pagehide occurs");
+    assert(harness.callEndRequestedRef.current === true, "Call finalized immediately on pagehide");
+    assert(harness.fetchDispatches.length === 1, "Exactly 1 disconnect request sent on terminal pagehide");
   }
 
   console.log("\n=================================================================");

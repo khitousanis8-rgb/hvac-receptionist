@@ -10,7 +10,7 @@
  * - Symbols, markdown, URLs, and punctuation
  */
 
-import { normalizeSpokenText } from "./text-normalization.ts";
+import { normalizeSpokenText, findClauseSplit } from "./text-normalization.ts";
 
 export interface TestCase {
   id: number;
@@ -205,6 +205,88 @@ export const HVAC_TEST_CASES: TestCase[] = [
   },
 ];
 
+export const CLAUSE_SPLIT_TEST_CASES = [
+  {
+    name: "Time protection: 10:30 AM is never split at the colon",
+    input: "We can schedule your AC maintenance for tomorrow at 10:30 AM, does that work for you?",
+    test: () => {
+      const split = findClauseSplit(
+        "We can schedule your AC maintenance for tomorrow at 10:30 AM, does that work for you?",
+        false
+      );
+      if (!split) throw new Error("Expected a split at the comma");
+      if (split.sentence.endsWith("10:") || split.sentence.endsWith("10")) {
+        throw new Error(`Split fragmented time expression: '${split.sentence}'`);
+      }
+      if (!split.sentence.includes("10:30 AM")) {
+        throw new Error(`Expected '10:30 AM' intact in: '${split.sentence}'`);
+      }
+    },
+  },
+  {
+    name: "Number protection: $1,500 is never split at the comma",
+    input: "The total estimate for replacing the evaporator coil is $1,500, including parts and labor.",
+    test: () => {
+      const split = findClauseSplit(
+        "The total estimate for replacing the evaporator coil is $1,500, including parts and labor.",
+        false
+      );
+      if (!split) throw new Error("Expected a split at the comma");
+      if (split.sentence.endsWith("$1") || split.sentence.endsWith("1")) {
+        throw new Error(`Split fragmented formatted number: '${split.sentence}'`);
+      }
+      if (!split.sentence.includes("$1,500")) {
+        throw new Error(`Expected '$1,500' intact in: '${split.sentence}'`);
+      }
+    },
+  },
+  {
+    name: "Phone number protection: 555-123-4567 is not fragmented",
+    input: "Our technician will call you at 555-123-4567 before heading over.",
+    test: () => {
+      const split = findClauseSplit(
+        "Our technician will call you at 555-123-4567 before heading over.",
+        false
+      );
+      if (!split) throw new Error("Expected a split at the period");
+      if (!split.sentence.includes("555-123-4567")) {
+        throw new Error(`Expected phone number intact in: '${split.sentence}'`);
+      }
+    },
+  },
+  {
+    name: "Abbreviation protection: Dr. and p.m. do not cause premature splits",
+    input: "Dr. Smith confirmed an appointment for 3:00 p.m. today.",
+    test: () => {
+      const split = findClauseSplit(
+        "Dr. Smith confirmed an appointment for 3:00 p.m. today.",
+        false
+      );
+      if (!split) throw new Error("Expected a split at terminal period");
+      if (split.sentence === "Dr.") {
+        throw new Error(`Premature split at abbreviation 'Dr.': '${split.sentence}'`);
+      }
+      if (split.sentence.includes("3:") && !split.sentence.includes("3:00")) {
+        throw new Error(`Split inside time: '${split.sentence}'`);
+      }
+    },
+  },
+  {
+    name: "Terminal prosody: question mark retains prosody mark",
+    input: "Thanks for calling Apex Air! How can I help you today?",
+    test: () => {
+      const split = findClauseSplit(
+        "Thanks for calling Apex Air! How can I help you today?",
+        true
+      );
+      if (!split) throw new Error("Expected a split at exclamation mark");
+      if (split.sentence !== "Thanks for calling Apex Air!") {
+        throw new Error(`Expected 'Thanks for calling Apex Air!' but got '${split.sentence}'`);
+      }
+    },
+  },
+];
+
 export function runAllTests(): { passed: number; failed: number } {
   let passed = 0;
   let failed = 0;
@@ -216,6 +298,16 @@ export function runAllTests(): { passed: number; failed: number } {
       passed++;
     } catch (err: any) {
       console.error(`FAILED Test #${tc.id} [${tc.description}]:`, err.message, "Output:", result);
+      failed++;
+    }
+  }
+
+  for (const tc of CLAUSE_SPLIT_TEST_CASES) {
+    try {
+      tc.test();
+      passed++;
+    } catch (err: any) {
+      console.error(`FAILED Clause Split Test [${tc.name}]:`, err.message);
       failed++;
     }
   }

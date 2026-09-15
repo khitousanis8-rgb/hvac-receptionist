@@ -26,7 +26,7 @@ import {
   detectBrowserEngine,
   queryMicPermission,
 } from "@/lib/telemetry";
-import { normalizeSpokenText } from "@/lib/text-normalization";
+import { normalizeSpokenText, findClauseSplit } from "@/lib/text-normalization";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -52,54 +52,6 @@ async function readChatError(response: Response): Promise<string> {
     // The API may return an empty or non-JSON response when an upstream proxy fails.
   }
   return `The assistant service returned HTTP ${response.status}.`;
-}
-
-/**
- * Find the first acceptable split point in the buffered stream text.
- *
- * Dispatches a sentence the moment its terminal punctuation arrives — even if
- * it is the last character of the buffer. The previous regex required a
- * following space + word, so any sentence ending in "." or "!" sat silent in
- * the buffer until the NEXT sentence began streaming (or until the stream
- * closed), producing long dead-air pauses exactly at "!" and ".".
- */
-function findClauseSplit(
-  buffer: string,
-  isFirstPhrase: boolean
-): { sentence: string; rest: string } | null {
-  const re = /[.?!,:;\n]/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(buffer)) !== null) {
-    const punct = m[0];
-    const candidate = buffer.slice(0, m.index);
-    // Skip abbreviation periods and decimals: "9 a.m.", "p.m.", "Mr.", "3.5 ton", "$89.50"
-    if (punct === ".") {
-      const lastWord = (candidate.split(/\s+/).pop() || "").toLowerCase();
-      if (/^[a-z]$/.test(lastWord) || /^(mr|mrs|ms|dr|st|vs|etc|no|am|pm|a\.m|p\.m)$/.test(lastWord)) {
-        continue;
-      }
-      const charBefore = buffer[m.index - 1] || "";
-      const charAfter = buffer[m.index + 1] || "";
-      if (/\d/.test(charBefore) && (/\d/.test(charAfter) || charAfter === "")) {
-        continue;
-      }
-    }
-    const trimmed = candidate.trim();
-    if (!trimmed) continue;
-
-    if (punct === "." || punct === "?" || punct === "!") {
-      // A complete sentence is always a natural TTS unit — dispatch immediately.
-      if (isFirstPhrase && trimmed.length < 8) continue;
-      // Retain terminal punctuation so Edge-TTS renders question and exclamatory prosody
-      return { sentence: trimmed + punct, rest: buffer.slice(m.index + 1) };
-    }
-    // Clause boundaries (comma, colon, semicolon, newline): breath groups only.
-    if (isFirstPhrase ? trimmed.length >= 8 : trimmed.length >= 25 || buffer.length > 80) {
-      return { sentence: trimmed, rest: buffer.slice(m.index + 1) };
-    }
-    // Too short a breath group: keep scanning for a sentence end.
-  }
-  return null;
 }
 
 function formatDuration(seconds: number): string {
@@ -140,6 +92,7 @@ export function KokoroCallSession({
   const speechRecRef = useRef<BrowserSpeechRecognition | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptHistoryRef = useRef<ChatMessage[]>([]);
+  const visibilityGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Telemetry tracking refs
   const callStartTimeRef = useRef<number>(Date.now());
@@ -512,6 +465,10 @@ export function KokoroCallSession({
       if (speechRecRef.current) {
         speechRecRef.current.stop();
       }
+      if (visibilityGraceTimerRef.current) {
+        clearTimeout(visibilityGraceTimerRef.current);
+        visibilityGraceTimerRef.current = null;
+      }
       const callId = callIdRef.current;
       if (callId && !callEndRequestedRef.current) {
         callEndRequestedRef.current = true;
@@ -543,13 +500,17 @@ export function KokoroCallSession({
     };
   }, [sendMessageToAgent, getFullTelemetry]);
 
-  // Dual lifecycle listener: pagehide + visibilitychange for reliable Android mobile finalization
+  // Lifecycle listeners: pagehide for immediate unload, visibilitychange with 45s grace period for mobile continuity
   useEffect(() => {
-    const handleFinalize = () => {
+    const handleFinalize = (reason: EndReason = "page_unload") => {
+      if (visibilityGraceTimerRef.current) {
+        clearTimeout(visibilityGraceTimerRef.current);
+        visibilityGraceTimerRef.current = null;
+      }
       const callId = callIdRef.current;
       if (callId && !callEndRequestedRef.current) {
         callEndRequestedRef.current = true;
-        endReasonRef.current = "page_unload";
+        endReasonRef.current = reason;
 
         const rawSummary = transcriptHistoryRef.current
           .map((m) => `${m.role}: ${m.content}`)
@@ -559,7 +520,7 @@ export function KokoroCallSession({
           : "Call terminated due to page unload";
 
         const telemetryPayload = getFullTelemetry();
-        telemetryPayload.end_reason = "page_unload";
+        telemetryPayload.end_reason = reason;
 
         const payload = JSON.stringify({
           session_id: sessionIdRef.current,
@@ -592,15 +553,35 @@ export function KokoroCallSession({
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
-        handleFinalize();
+        // Mobile continuity: start 45s grace period before finalizing
+        if (!visibilityGraceTimerRef.current && !callEndRequestedRef.current) {
+          visibilityGraceTimerRef.current = setTimeout(() => {
+            visibilityGraceTimerRef.current = null;
+            handleFinalize("page_unload");
+          }, 45_000);
+        }
+      } else if (document.visibilityState === "visible") {
+        // User switched back before grace period expired
+        if (visibilityGraceTimerRef.current) {
+          clearTimeout(visibilityGraceTimerRef.current);
+          visibilityGraceTimerRef.current = null;
+        }
       }
     };
 
-    window.addEventListener("pagehide", handleFinalize);
+    const handlePageHide = () => {
+      handleFinalize("page_unload");
+    };
+
+    window.addEventListener("pagehide", handlePageHide);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      window.removeEventListener("pagehide", handleFinalize);
+      if (visibilityGraceTimerRef.current) {
+        clearTimeout(visibilityGraceTimerRef.current);
+        visibilityGraceTimerRef.current = null;
+      }
+      window.removeEventListener("pagehide", handlePageHide);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [getFullTelemetry]);
@@ -624,6 +605,10 @@ export function KokoroCallSession({
   };
 
   const handleEndCall = async () => {
+    if (visibilityGraceTimerRef.current) {
+      clearTimeout(visibilityGraceTimerRef.current);
+      visibilityGraceTimerRef.current = null;
+    }
     if (callEndRequestedRef.current) return;
     callEndRequestedRef.current = true;
     if (callOutcomeRef.current === "booked") {
