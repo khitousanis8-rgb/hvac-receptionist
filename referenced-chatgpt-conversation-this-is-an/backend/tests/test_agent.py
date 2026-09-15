@@ -1,3 +1,4 @@
+# pyright: reportCallIssue=false
 from unittest.mock import MagicMock, patch
 
 import pytest

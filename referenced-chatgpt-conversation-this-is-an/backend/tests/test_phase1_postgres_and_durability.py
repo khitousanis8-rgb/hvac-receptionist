@@ -1,3 +1,4 @@
+# pyright: reportCallIssue=false, reportAttributeAccessIssue=false
 """Tests for Phase 1: PostgreSQL support, dialect engine settings, fail-closed policy, and slot reuse upon cancellation."""
 
 from __future__ import annotations

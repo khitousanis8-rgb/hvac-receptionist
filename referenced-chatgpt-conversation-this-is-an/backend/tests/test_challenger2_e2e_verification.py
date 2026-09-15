@@ -1,3 +1,4 @@
+# pyright: reportCallIssue=false
 """Milestone 5 Challenger 2 Empirical Verification Test Suite.
 
 Rigorously verifies:

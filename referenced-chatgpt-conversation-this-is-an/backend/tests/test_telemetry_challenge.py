@@ -1,3 +1,4 @@
+# pyright: reportCallIssue=false
 """Adversarial stress test suite for Milestone 3: Privacy-Safe Client Platform & Audio Telemetry.
 
 This module empirically challenges:

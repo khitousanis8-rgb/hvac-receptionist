@@ -1,3 +1,4 @@
+# pyright: reportCallIssue=false
 """Automated verification suite ensuring 100% test database isolation and zero runtime DB pollution."""
 
 from __future__ import annotations

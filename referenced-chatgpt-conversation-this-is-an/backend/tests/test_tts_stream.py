@@ -1,3 +1,4 @@
+# pyright: reportCallIssue=false
 """Tests for streaming neural TTS voice endpoint."""
 
 from __future__ import annotations

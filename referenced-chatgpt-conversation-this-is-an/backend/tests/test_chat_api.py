@@ -1,3 +1,4 @@
+# pyright: reportCallIssue=false
 """Tests for the in-browser streaming chat API router."""
 
 from __future__ import annotations
