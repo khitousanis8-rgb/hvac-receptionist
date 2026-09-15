@@ -103,6 +103,7 @@ class Appointment(Base):
             "scheduled_for",
             unique=True,
             sqlite_where=text("status = 'booked'"),
+            postgresql_where=text("status = 'booked'"),
         ),
     )
 
@@ -175,10 +176,20 @@ def get_engine(database_url: str | None = None) -> Engine:
                 _SessionLocal = None
 
             if _engine is None:
-                create_url = database_url or get_settings().database_url
+                settings = get_settings()
+                create_url = database_url or settings.database_url
+                url_obj = make_url(create_url)
+                engine_kwargs: dict[str, Any] = {}
+                if url_obj.get_backend_name() == "sqlite":
+                    engine_kwargs["connect_args"] = {"check_same_thread": False}
+                else:
+                    engine_kwargs["pool_size"] = settings.db_pool_size
+                    engine_kwargs["max_overflow"] = settings.db_max_overflow
+                    engine_kwargs["pool_recycle"] = settings.db_pool_recycle
+                    engine_kwargs["pool_pre_ping"] = settings.db_pool_pre_ping
                 _engine = create_engine(
                     create_url,
-                    connect_args={"check_same_thread": False},
+                    **engine_kwargs,
                 )
                 _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     assert _engine is not None
@@ -196,65 +207,62 @@ def reset_engine() -> None:
 
 
 def init_db(database_url: str | None = None) -> None:
-    """Create tables and apply the small, backwards-compatible SQLite migrations."""
+    """Create tables and apply dialect-aware, backwards-compatible migrations."""
     engine = get_engine(database_url)
     Base.metadata.create_all(engine)
 
-    # This project predates a migration framework. Keep the deployed SQLite
-    # database usable while adding the fields required for secure call ownership
-    # and durable session state. New installations receive these via create_all.
-    if engine.dialect.name != "sqlite":
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    if "call_records" not in existing_tables:
         return
-    columns = {column["name"] for column in inspect(engine).get_columns("call_records")}
+
+    columns = {column["name"] for column in inspector.get_columns("call_records")}
+    is_sqlite = engine.dialect.name == "sqlite"
+    is_postgres = engine.dialect.name == "postgresql"
+
     with engine.begin() as connection:
-        if "session_slots" not in columns:
-            connection.execute(text("ALTER TABLE call_records ADD COLUMN session_slots TEXT"))
-        if "access_token_hash" not in columns:
+        for col_name, col_type in [
+            ("session_slots", "TEXT"),
+            ("access_token_hash", "VARCHAR(64)"),
+            ("platform_class", "VARCHAR(20)"),
+            ("browser_engine", "VARCHAR(20)"),
+            ("input_path", "VARCHAR(40)"),
+            ("mic_permission", "VARCHAR(20)"),
+            ("end_reason", "VARCHAR(40)"),
+            ("client_metrics", "TEXT"),
+        ]:
+            if col_name not in columns:
+                if is_postgres:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE call_records ADD COLUMN IF NOT EXISTS "
+                            f"{col_name} {col_type}"
+                        )
+                    )
+                else:
+                    connection.execute(
+                        text(f"ALTER TABLE call_records ADD COLUMN {col_name} {col_type}")
+                    )
+
+        if is_sqlite or is_postgres:
             connection.execute(
-                text("ALTER TABLE call_records ADD COLUMN access_token_hash VARCHAR(64)")
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_call_records_access_token_hash "
+                    "ON call_records (access_token_hash)"
+                )
             )
-        if "platform_class" not in columns:
             connection.execute(
-                text("ALTER TABLE call_records ADD COLUMN platform_class VARCHAR(20)")
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_call_records_platform_class "
+                    "ON call_records (platform_class)"
+                )
             )
-        if "browser_engine" not in columns:
             connection.execute(
-                text("ALTER TABLE call_records ADD COLUMN browser_engine VARCHAR(20)")
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_appointments_booked_scheduled_for "
+                    "ON appointments (scheduled_for) WHERE status = 'booked'"
+                )
             )
-        if "input_path" not in columns:
-            connection.execute(
-                text("ALTER TABLE call_records ADD COLUMN input_path VARCHAR(40)")
-            )
-        if "mic_permission" not in columns:
-            connection.execute(
-                text("ALTER TABLE call_records ADD COLUMN mic_permission VARCHAR(20)")
-            )
-        if "end_reason" not in columns:
-            connection.execute(
-                text("ALTER TABLE call_records ADD COLUMN end_reason VARCHAR(40)")
-            )
-        if "client_metrics" not in columns:
-            connection.execute(
-                text("ALTER TABLE call_records ADD COLUMN client_metrics TEXT")
-            )
-        connection.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_call_records_access_token_hash "
-                "ON call_records (access_token_hash)"
-            )
-        )
-        connection.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_call_records_platform_class "
-                "ON call_records (platform_class)"
-            )
-        )
-        connection.execute(
-            text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_appointments_booked_scheduled_for "
-                "ON appointments (scheduled_for) WHERE status = 'booked'"
-            )
-        )
 
 
 @contextmanager

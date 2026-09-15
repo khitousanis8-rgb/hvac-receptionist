@@ -29,6 +29,7 @@ from app.config import Settings, get_settings
 from app.dashboard import router as dashboard_router
 from app.db import Appointment, CallRecord, Customer, init_db, new_session
 from app.logging import configure_logging
+from app.scheduling import cancel_appointment
 from app.tts_stream import router as tts_router
 
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -316,6 +317,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ]
 
         return await asyncio.to_thread(_query_appointments)
+
+    @app.delete(
+        "/v1/appointments/{appointment_id}",
+        tags=["dashboard"],
+        dependencies=[Depends(require_admin)],
+    )
+    async def cancel_appointment_endpoint(
+        appointment_id: int,
+    ) -> dict[str, object]:
+        """Cancel an appointment, freeing the slot for new bookings."""
+
+        def _cancel() -> bool:
+            with new_session() as session:
+                return cancel_appointment(session, appointment_id)
+
+        success = await asyncio.to_thread(_cancel)
+        if not success:
+            raise HTTPException(status_code=404, detail="Appointment not found")
+        return {"status": "cancelled", "appointment_id": appointment_id}
 
     @app.post(
         "/v1/calls/token",

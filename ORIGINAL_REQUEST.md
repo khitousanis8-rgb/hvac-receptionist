@@ -102,4 +102,61 @@ Integrity mode: development
 - [ ] Strict type-checking (`python -m mypy --strict app`) and linting (`python -m ruff check .`) pass with 0 errors.
 - [ ] Live Render production endpoints (`https://hvac-receptionist.onrender.com/health`) remain healthy.
 
+## Follow-up — 2026-09-15T12:59:00Z
 
+Implement Phases 1 through 4 of the production-hardening plan for this HVAC receptionist. Start from the current clean main branch and create small, reviewable commits. Do not modify the voice-provider setup, add a third-party identity provider, or deploy until the implementation and tests are complete.
+
+Working directory: c:/Users/TL/Documents/Codex/2026-08-27
+Integrity mode: development
+
+## Requirements
+
+### R1. Phase 1 — Durable Booking & Call-Log Storage (PostgreSQL & Migrations)
+- Replace ephemeral production SQLite with managed PostgreSQL and repeatable migrations; make engine configuration dialect-aware (pass `check_same_thread: False` only to SQLite, handle connection pool settings for Postgres).
+- Require `DATABASE_URL` in production; fail closed without silent fallback to ephemeral in-container SQLite (allow SQLite only in development/test or if explicitly configured).
+- Preserve the booked-slot partial unique index (`uq_appointments_booked_scheduled_for` where `status = 'booked'`) across both PostgreSQL and SQLite.
+- Ensure cancellation allows time slots to be reused cleanly and idempotently.
+
+### R2. Phase 2 — Privacy, Authorization & Abuse Controls
+- Remove `check_my_appointments` from anonymous browser voice turns and LiveKit tool exposure. Provide a neutral spoken fallback stating that the receptionist can help arrange a new visit, while checking or modifying existing appointments requires a verified channel.
+- Centralize strict 10-digit NANP phone normalization and validation across all entrypoints (slots, API request models, scheduling, and phone updates). Reject 7-digit or malformed numbers from booking.
+- Enforce maximum chat history count and character limits at the request boundary (Pydantic models) before parsing, prompt assembly, or LLM invocation (reject oversized history payloads with HTTP 422).
+- Enforce server-side rate limits on session creation and chat messages before calling the LLM.
+- Trust forwarded IP headers (`X-Forwarded-For`) only when arriving from an explicitly configured trusted proxy list/CIDR.
+- Move TTS text to a POST request body endpoint (or support POST for `/v1/voice/stream`) and set `Cache-Control: private, no-store` on user-specific synthesized speech responses.
+
+### R3. Phase 3 — Voice Correctness & Mobile Continuity
+- Tokenize and protect spoken expressions (times like `10:30 AM`, `5:05 PM`, phone numbers, contractions, and abbreviations) before sentence splitting so that clauses never split in the middle of time or number expressions.
+- Treat document visibility changes (`visibilitychange: hidden`) on mobile as suspended with a grace period (e.g. 30-60s) rather than an immediate terminal unload.
+- Ensure terminal finalization occurs only upon explicit hangup, actual page unload (`pagehide`), or grace period expiration.
+
+### R4. Phase 4 — Executable Regression Tests & Safe Alternate Paths
+- Ensure all voice challenger suites (normalization, audio, speech, lifecycle, touch targets) are integrated and executable from the standard frontend test runner (`npm test`).
+- Enforce the server-side deterministic booking state machine as the sole authority for creating bookings across all routes, ensuring any LiveKit or alternate voice paths cannot bypass server validation or recap/confirmation.
+
+## Acceptance Criteria
+
+### Data Durability & Migrations
+- [ ] Database engine connects to PostgreSQL and SQLite cleanly with dialect-appropriate options.
+- [ ] Missing `DATABASE_URL` in production fails closed with a clear configuration error.
+- [ ] Booked-slot partial unique index functions identically on PostgreSQL and SQLite, allowing slot reuse upon cancellation.
+- [ ] Migration scripts apply cleanly from scratch and idempotently on existing databases.
+
+### Privacy & Abuse Controls
+- [ ] Anonymous voice callers cannot access or query existing appointment details by phone number alone.
+- [ ] Oversized chat history (> limit) is rejected with HTTP 422 at request validation before LLM invocation.
+- [ ] Rate limits return HTTP 429 before invoking the model when thresholds are exceeded.
+- [ ] Client IP extraction ignores untrusted `X-Forwarded-For` headers unless configured.
+- [ ] Seven-digit phone numbers are rejected from booking; only valid 10-digit NANP numbers succeed.
+- [ ] Synthesized voice responses for dynamic text use POST and include `Cache-Control: private, no-store`.
+
+### Voice Chunking & Mobile Continuity
+- [ ] Spoken-text normalizer and sentence chunker protect times (`10:30 AM`), phone numbers, and contractions from mid-expression fragmentation.
+- [ ] Short background/foreground switching on mobile does not terminate the call session.
+- [ ] Explicit call end cleanly finalizes the call once.
+
+### Automated Test & Production Integrity
+- [ ] `npm test` in `frontend/` runs all test suites with 100% pass rate.
+- [ ] `npm run build` in `frontend/` succeeds with 0 errors.
+- [ ] `python -m pytest` passes 100% in `referenced-chatgpt-conversation-this-is-an/backend`.
+- [ ] `python -m ruff check .` and `python -m mypy --strict app` pass with 0 errors.

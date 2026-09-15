@@ -6,8 +6,18 @@ import json
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+def normalize_database_url(database_url: str) -> str:
+    """Normalize database URL for SQLAlchemy 2.0 and installed drivers."""
+    trimmed = database_url.strip() if database_url else ""
+    if trimmed.startswith("postgres://"):
+        return "postgresql+psycopg://" + trimmed[len("postgres://") :]
+    if trimmed.startswith("postgresql://") and not trimmed.startswith("postgresql+"):
+        return "postgresql+psycopg://" + trimmed[len("postgresql://") :]
+    return trimmed
 
 
 class Settings(BaseSettings):
@@ -27,6 +37,11 @@ class Settings(BaseSettings):
         "http://localhost:3000,http://localhost:5173,https://hvac-receptionist-umber.vercel.app"
     )
     database_url: str = "sqlite:///./hvac_receptionist.db"
+    allow_sqlite_in_production: bool = False
+    db_pool_size: Annotated[int, Field(ge=1, le=50)] = 5
+    db_max_overflow: Annotated[int, Field(ge=0, le=50)] = 10
+    db_pool_recycle: Annotated[int, Field(ge=60, le=86400)] = 1800
+    db_pool_pre_ping: bool = True
     # Required to read customer records or use the private operations dashboard.
     # Keep this server-side only; never compile it into the public frontend.
     admin_api_key: SecretStr | None = None
@@ -52,6 +67,30 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_base_url: AnyHttpUrl = AnyHttpUrl("https://api.groq.com/openai/v1")
     llm_model: Annotated[str, Field(min_length=1)] = "qwen/qwen3.8-27b"
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def normalize_db_url(cls, value: str) -> str:
+        return normalize_database_url(value)
+
+    @model_validator(mode="after")
+    def validate_production_database(self) -> Settings:
+        if self.app_env == "production" and not self.allow_sqlite_in_production:
+            raw_url = (self.database_url or "").strip()
+            if not raw_url:
+                raise ValueError(
+                    "Production configuration error: DATABASE_URL must be configured "
+                    "in production. Empty or missing DATABASE_URL is not allowed."
+                )
+            clean_url = raw_url.lower()
+            if clean_url.startswith("sqlite:") or clean_url.startswith("sqlite:///"):
+                raise ValueError(
+                    f"Production configuration error: Ephemeral SQLite database "
+                    f"'{self.database_url}' is not permitted in production. A durable "
+                    f"managed database (e.g. PostgreSQL) must be configured via "
+                    f"DATABASE_URL, or set allow_sqlite_in_production=True if explicitly permitted."
+                )
+        return self
 
     @field_validator("business_opening_hours", mode="before")
     @classmethod

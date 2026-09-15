@@ -240,3 +240,13 @@ def parse_local_datetime(settings: Settings, date_str: str, time_str: str) -> da
             continue
 
     return None
+
+
+def cancel_appointment(session: Session, appointment_id: int) -> bool:
+    """Cancel an appointment by ID, freeing the booked slot for reuse."""
+    appointment = session.get(Appointment, appointment_id)
+    if appointment is None:
+        return False
+    appointment.status = "cancelled"
+    session.flush()
+    return True
