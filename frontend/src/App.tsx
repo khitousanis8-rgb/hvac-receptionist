@@ -590,7 +590,7 @@ function MobileCallsList({ calls }: { calls: CallRecord[] }) {
               {call.caller_phone && (
                 <a
                   href={cleanTelHref(call.caller_phone)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-[#eff6ff] text-[#0b5ed7] border border-[#bfdbfe]"
+                  className="inline-flex items-center gap-1 min-h-[44px] px-3 py-1.5 rounded-md text-[11px] font-medium bg-[#eff6ff] text-[#0b5ed7] border border-[#bfdbfe]"
                 >
                   <Phone className="w-3 h-3" aria-hidden="true" />
                   <span>Call Back</span>
@@ -915,13 +915,13 @@ function CallsPage({ calls }: { calls: ApiState<CallRecord> }) {
           </p>
         </div>
 
-        <div className="flex items-center gap-1 p-0.5 rounded-lg border border-[#e7e7e7] bg-[#fafafa]">
+        <div className="flex items-center gap-1 p-0.5 rounded-lg border border-[#e7e7e7] bg-[#fafafa] max-w-full overflow-x-auto no-scrollbar flex-nowrap shrink-0">
           {(["all", "booked", "info_only", "in_progress"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setFilter(t)}
               className={cn(
-                "px-2.5 py-1 text-[11px] font-medium rounded-md capitalize transition-colors duration-150 cursor-pointer",
+                "min-h-[44px] px-3 py-2 text-[11px] font-medium rounded-md capitalize transition-colors duration-150 cursor-pointer inline-flex items-center justify-center",
                 filter === t
                   ? "bg-white text-[#0a0a0a] border border-[#e7e7e7] font-semibold shadow-xs"
                   : "text-[#71717a] hover:text-[#0a0a0a]"
@@ -1277,7 +1277,7 @@ export default function App() {
   ];
 
   return (
-    <div className="app-shell relative flex flex-col md:flex-row h-screen w-full overflow-hidden">
+    <div className="app-shell relative flex flex-col md:flex-row min-h-[100dvh] h-[100dvh] w-full overflow-hidden">
       {/* Desktop Collapsible Sidebar (Hidden on mobile < md) */}
       <Sidebar open={open} setOpen={setOpen}>
         <SidebarBody className="app-sidebar justify-between gap-6 border-r border-[#e7e7e7]">
@@ -1363,7 +1363,7 @@ export default function App() {
         <button
           type="button"
           onClick={updateAdminKey}
-          className="md:hidden rounded-full border border-[#e7e7e7] bg-white px-2.5 py-1 text-[10px] font-semibold text-[#4e505b]"
+          className="md:hidden rounded-full border border-[#e7e7e7] bg-white min-h-[44px] px-3.5 py-1.5 text-[10px] font-semibold text-[#4e505b]"
         >
           {adminKey ? "Records" : "Unlock"}
         </button>
@@ -1372,7 +1372,7 @@ export default function App() {
         {config?.emergency_phone && (
           <a
             href={cleanTelHref(config.emergency_phone)}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#fff1f2] border border-[#fecdd3] text-[#e11d48] text-[11px] font-semibold shadow-2xs active:scale-95 transition-transform"
+            className="flex items-center gap-1 min-h-[44px] px-3 py-1.5 rounded-full bg-[#fff1f2] border border-[#fecdd3] text-[#e11d48] text-[11px] font-semibold shadow-2xs active:scale-95 transition-transform"
             aria-label="Call Emergency Hotline"
           >
             <ShieldAlert className="w-3.5 h-3.5" aria-hidden="true" />

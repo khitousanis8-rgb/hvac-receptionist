@@ -97,6 +97,7 @@ export function LiveCallPage({
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
+            channelCount: 1,
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
@@ -244,7 +245,7 @@ function IdleState({
             whileTap={{ scale: 0.96 }}
             onClick={onStart}
             aria-label="Start voice demo"
-            className="inline-flex items-center justify-center gap-2.5 px-6 py-3.5 sm:py-3 rounded-xl text-[13px] font-semibold text-white bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] focus-visible:ring-offset-2 cursor-pointer whitespace-nowrap shadow-sm shadow-blue-500/20 w-full md:w-auto shrink-0"
+            className="inline-flex items-center justify-center gap-2.5 min-h-[44px] px-6 py-3.5 sm:py-3 rounded-xl text-[13px] font-semibold text-white bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] focus-visible:ring-offset-2 cursor-pointer whitespace-nowrap shadow-sm shadow-blue-500/20 w-full md:w-auto shrink-0"
           >
             <PhoneCall className="w-4 h-4" aria-hidden="true" />
             <span>Start voice demo</span>
@@ -378,7 +379,7 @@ function EndedState({
             type="button"
             whileTap={{ scale: 0.96 }}
             onClick={onViewCalls}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-[#0b5ed7] hover:bg-[#0a53be] active:bg-[#0948a3] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
           >
             <span>View call log</span>
             <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
@@ -388,7 +389,7 @@ function EndedState({
         <button
           type="button"
           onClick={onStartAgain}
-          className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12px] font-semibold bg-white border border-[#e7e7e7] text-[#0a0a0a] hover:bg-[#fafafa] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
+          className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 py-2.5 rounded-xl text-[12px] font-semibold bg-white border border-[#e7e7e7] text-[#0a0a0a] hover:bg-[#fafafa] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b5ed7] cursor-pointer"
         >
           <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
           <span>Start new call</span>
@@ -447,7 +448,7 @@ function ErrorState({
         <button
           type="button"
           onClick={onRetry}
-          className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-[12px] font-semibold text-white bg-[#e11d48] hover:bg-[#be123c] transition-colors duration-150 cursor-pointer"
+          className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 py-2 rounded-xl text-[12px] font-semibold text-white bg-[#e11d48] hover:bg-[#be123c] transition-colors duration-150 cursor-pointer"
         >
           <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
           <span>Retry Connection</span>
@@ -456,7 +457,7 @@ function ErrorState({
         <button
           type="button"
           onClick={onCancel}
-          className="w-full sm:w-auto px-4 py-2 rounded-xl text-[12px] font-medium border border-[#e7e7e7] bg-white text-[#0a0a0a] hover:bg-[#f4f4f5] transition-colors duration-150 cursor-pointer text-center"
+          className="w-full sm:w-auto inline-flex items-center justify-center min-h-[44px] px-4 py-2 rounded-xl text-[12px] font-medium border border-[#e7e7e7] bg-white text-[#0a0a0a] hover:bg-[#f4f4f5] transition-colors duration-150 cursor-pointer text-center"
         >
           Cancel
         </button>

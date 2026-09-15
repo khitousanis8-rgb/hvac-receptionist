@@ -543,9 +543,9 @@ export function KokoroCallSession({
     };
   }, [sendMessageToAgent, getFullTelemetry]);
 
-  // Pagehide listener for tab close/navigation beacon finalization
+  // Dual lifecycle listener: pagehide + visibilitychange for reliable Android mobile finalization
   useEffect(() => {
-    const handlePageHide = () => {
+    const handleFinalize = () => {
       const callId = callIdRef.current;
       if (callId && !callEndRequestedRef.current) {
         callEndRequestedRef.current = true;
@@ -570,28 +570,38 @@ export function KokoroCallSession({
           client_telemetry: telemetryPayload,
         });
 
-        const sent =
-          typeof navigator !== "undefined" &&
-          typeof navigator.sendBeacon === "function" &&
-          navigator.sendBeacon(
-            apiUrl("/v1/calls/end"),
-            new Blob([payload], { type: "application/json" })
-          );
-
-        if (!sent) {
+        // 1. Primary: fetch with keepalive: true (supports JSON body and cross-origin CORS safely)
+        try {
           void fetch(apiUrl("/v1/calls/end"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: payload,
             keepalive: true,
           });
+        } catch {
+          // 2. Fallback: navigator.sendBeacon
+          if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+            navigator.sendBeacon(
+              apiUrl("/v1/calls/end"),
+              new Blob([payload], { type: "application/json" })
+            );
+          }
         }
       }
     };
 
-    window.addEventListener("pagehide", handlePageHide);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        handleFinalize();
+      }
+    };
+
+    window.addEventListener("pagehide", handleFinalize);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
     return () => {
-      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pagehide", handleFinalize);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [getFullTelemetry]);
 
@@ -792,7 +802,8 @@ export function KokoroCallSession({
               <button
                 type="button"
                 onClick={handleInterrupt}
-                className="text-[11px] font-semibold text-[#0b5ed7] hover:underline cursor-pointer pt-0.5"
+                aria-label="Interrupt Assistant Speech"
+                className="inline-flex items-center justify-center min-h-[44px] px-4 py-2 mt-1 rounded-full text-[12px] font-semibold text-[#0b5ed7] bg-[#eff6ff] border border-[#bfdbfe] hover:bg-[#dbeafe] active:scale-95 transition-transform cursor-pointer"
               >
                 Tap to Interrupt [Space]
               </button>

@@ -68,11 +68,6 @@ export const HoverRevealCards: React.FC<HoverRevealCardsProps> = ({
           }}
           className={cn(
             "hover-reveal-card relative h-72 sm:h-80 cursor-pointer overflow-hidden rounded-2xl bg-cover bg-center shadow-md transition-all duration-500 ease-in-out select-none border border-white/10",
-            // PC hover effects: De-emphasize siblings on container hover
-            "group-hover:scale-[0.97] group-hover:opacity-60 group-hover:blur-[2px]",
-            // Highlight hovered or keyboard-focused card
-            "hover:!scale-105 hover:!opacity-100 hover:!blur-none",
-            "focus-visible:!scale-105 focus-visible:!opacity-100 focus-visible:!blur-none",
             // Mobile active tap feedback
             "active:scale-[0.98] transition-transform",
             // Accessibility focus ring

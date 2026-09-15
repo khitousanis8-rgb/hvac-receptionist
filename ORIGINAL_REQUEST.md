@@ -53,3 +53,53 @@ Integrity mode: development
 - [ ] `python -m ruff check .` and `python -m mypy --strict app` pass with 0 errors.
 - [ ] `npm run build` in `frontend/` succeeds with 0 errors.
 
+## Follow-up — 2026-09-14T18:43:23Z
+
+Audit, optimize, and thoroughly verify that the HVAC Voice Receptionist web application operates smoothly, healthily, and robustly on Android mobile phones (Android Chrome, Samsung Internet, and mobile Chromium browsers).
+
+Working directory: c:/Users/TL/Documents/Codex/2026-08-27
+Integrity mode: development
+
+## Requirements
+
+### R1. Android Audio Pipeline & Web Audio Unlock
+- Verify and harden the touch-gesture Web Audio Context unlock on Android Chrome and mobile browsers to ensure speech synthesis audio plays immediately without autoplay policy blocks.
+- Verify that Android microphone permission handling works smoothly during the call-start user gesture with echo cancellation, noise suppression, and automatic gain control enabled.
+- Verify seamless operation of both native `webkitSpeechRecognition` (Google Speech on Android Chrome) and the high-fidelity `MediaRecorder` (`audio/webm;codecs=opus`) fallback.
+- Ensure the hardware track gating, 1,100ms acoustic cooldown, and prefix/suffix echo guard completely eliminate loudspeaker acoustic feedback on Android devices.
+
+### R2. Mobile Viewport, Responsive UX & Touch Targets
+- Audit and optimize the responsive UI across standard Android screen widths (360px, 390px, 412px, 480px), ensuring dynamic viewport sizing (`dvh`) prevents clipping when the mobile address bar expands or collapses.
+- Ensure all interactive buttons (Start Call, Mute, Interrupt, End Call, Tab Navigation) have touch targets of at least 44x44px with touch feedback and no double-tap zoom interference.
+- Verify that live call state, transcript drawer, and booking confirmations render cleanly without horizontal overflow or clipped text on mobile viewports.
+
+### R3. Android Lifecycle, App Switching & Graceful Finalization
+- Verify that switching apps, locking the screen, or closing the tab on Android triggers the `pagehide` beacon / keepalive request to finalize the active call record cleanly with `end_reason = "page_unload"`.
+- Ensure network latency spikes or transient audio dropouts on mobile connections recover gracefully without freezing the session or leaving orphaned audio streams.
+
+### R4. Automated Testing & Verification
+- Execute programmatic verification including TypeScript compiles, Vite builds, and test suites.
+- Verify that client platform detection on Android identifies `platform_class: "mobile"` and `browser_engine: "chromium"` (or `gecko`) correctly.
+- Ensure 100% backend test pass rate (all 244 tests isolated), 0 strict mypy errors, and 0 ruff errors.
+
+## Acceptance Criteria
+
+### Android Audio & Speech Pipeline
+- [ ] Direct touch gesture unlocks Web Audio and microphone permission without playback stutter or autoplay blocks on Android mobile.
+- [ ] Speech recognition on Android transcribes user speech cleanly with zero stuck states.
+- [ ] Loudspeaker playback does not re-trigger speech recognition as acoustic echo.
+- [ ] `MediaRecorder` fallback encodes valid WebM Opus chunks that successfully transcribe via the Whisper API.
+
+### Responsive Mobile UI
+- [ ] UI renders cleanly on mobile screen widths (360px to 480px) with zero horizontal scrollbar or element overflow.
+- [ ] All action buttons meet the 44px touch target standard for comfortable one-handed thumb interaction.
+- [ ] Admin dashboard call logs, badges, and diagnostics are fully legible and responsive on Android screens.
+
+### Automated Test & Production Integrity
+- [ ] `npm test` passes 100% of spoken-text normalization tests (20/20) in `frontend/`.
+- [ ] `npm run build` succeeds with 0 errors and 0 warnings in `frontend/`.
+- [ ] `python -m pytest` passes 100% of tests (244 passed) in `referenced-chatgpt-conversation-this-is-an/backend`.
+- [ ] Strict type-checking (`python -m mypy --strict app`) and linting (`python -m ruff check .`) pass with 0 errors.
+- [ ] Live Render production endpoints (`https://hvac-receptionist.onrender.com/health`) remain healthy.
+
+

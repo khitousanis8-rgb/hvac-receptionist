@@ -53,14 +53,25 @@ export class NeuralAudioPlayer {
   // In-memory LRU AudioBuffer cache for instant repeated sentences
   private static bufferCache: Map<string, AudioBuffer> = new Map();
 
+  private handleWake = (): void => {
+    if (typeof document !== "undefined" && document.visibilityState === "visible" && this.audioContext) {
+      this.unlockAudio();
+    }
+  };
+
   constructor() {
     // Lazily initialized; AudioContext will be created on unlockAudio or first use
+    if (typeof window !== "undefined" && typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.handleWake);
+      window.addEventListener("focus", this.handleWake);
+    }
   }
 
   private initAudioContext(): AudioContext | null {
     if (typeof window === "undefined") return null;
 
     if (!this.audioContext || this.audioContext.state === "closed") {
+      this.nextPlayTime = 0;
       const AudioCtx =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -120,6 +131,10 @@ export class NeuralAudioPlayer {
     return this.analyserNode;
   }
 
+  public getAudioContext(): AudioContext | null {
+    return this.initAudioContext();
+  }
+
   /**
    * Synchronously unlock AudioContext on user interaction (touch/click).
    * Mobile Safari requires a silent buffer to be played synchronously
@@ -129,8 +144,19 @@ export class NeuralAudioPlayer {
     const ctx = this.initAudioContext();
     if (!ctx) return;
 
+    if (ctx.state === "running") {
+      return;
+    }
+
     if (ctx.state === "suspended" || (ctx.state as string) === "interrupted") {
-      ctx.resume().catch((err) => console.warn("[NeuralAudioPlayer] AudioContext resume error:", err));
+      try {
+        const resumePromise = ctx.resume();
+        if (resumePromise && typeof resumePromise.catch === "function") {
+          resumePromise.catch((err) => console.warn("[NeuralAudioPlayer] AudioContext resume error:", err));
+        }
+      } catch (err) {
+        console.warn("[NeuralAudioPlayer] AudioContext resume synchronous error:", err);
+      }
     }
 
     // Play 1-sample silent buffer to unlock iOS Safari WebKit audio pipeline
@@ -139,6 +165,11 @@ export class NeuralAudioPlayer {
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
+      source.onended = () => {
+        try {
+          source.disconnect();
+        } catch {}
+      };
       source.start(0);
     } catch {
       // Ignore unlock buffer warmup error
@@ -228,6 +259,7 @@ export class NeuralAudioPlayer {
       }
     }
     this.queue = [];
+    this.isFetching = false;
 
     // 3. Smoothly ramp master gain to 0 over 8ms to eliminate DC-offset clicks/pops on barge-in
     if (this.masterGain && this.audioContext && this.audioContext.state === "running") {
@@ -344,7 +376,7 @@ export class NeuralAudioPlayer {
           }
 
           if (buffer && this.isTurnActive && this.currentTurnId === item.turnId) {
-            this.scheduleAudioBuffer(buffer, item.text);
+            await this.scheduleAudioBuffer(buffer, item.text);
           }
         }
 
@@ -410,13 +442,22 @@ export class NeuralAudioPlayer {
     return audioBuffer;
   }
 
-  private scheduleAudioBuffer(buffer: AudioBuffer, _sentence: string): void {
+  private async scheduleAudioBuffer(buffer: AudioBuffer, _sentence: string): Promise<void> {
     const ctx = this.initAudioContext();
     if (!ctx) return;
 
     if (ctx.state === "suspended" || (ctx.state as string) === "interrupted") {
-      ctx.resume().catch((err) => console.warn("[NeuralAudioPlayer] Resume error:", err));
+      try {
+        await Promise.race([
+          ctx.resume(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("AudioContext resume timeout")), 1500)),
+        ]);
+      } catch (err) {
+        console.warn("[NeuralAudioPlayer] Resume error:", err);
+      }
     }
+
+    if (!this.isTurnActive) return;
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
@@ -609,6 +650,10 @@ export class NeuralAudioPlayer {
 
   /** Cleanly tear down the player, close AudioContext, and release memory */
   public close(): void {
+    if (typeof window !== "undefined" && typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.handleWake);
+      window.removeEventListener("focus", this.handleWake);
+    }
     this.stop();
     if (this.audioContext && this.audioContext.state !== "closed") {
       this.audioContext.close().catch(() => {});

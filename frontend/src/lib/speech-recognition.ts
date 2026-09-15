@@ -38,6 +38,7 @@ export class BrowserSpeechRecognition {
   private debounceTimer: number | null = null;
   private cooldownTimer: number | null = null;
   private accumulatedFinalText: string = "";
+  private restartTimer: number | null = null;
 
   // Fallback MediaRecorder state
   private mediaStream: MediaStream | null = null;
@@ -45,15 +46,20 @@ export class BrowserSpeechRecognition {
   private audioChunks: Blob[] = [];
   private vadInterval: number | null = null;
   private audioCtx: AudioContext | null = null;
+  private isAudioCtxShared: boolean = false;
   private analyser: AnalyserNode | null = null;
   private lastSpeechTime: number = 0;
   private recentAssistantUtterances: string[] = [];
   private lastAgentSpeechEndTime: number = 0;
   private captureEpoch: number = 0;
 
-  constructor(initialStream?: MediaStream | null) {
+  constructor(initialStream?: MediaStream | null, sharedAudioCtx?: AudioContext | null) {
     if (initialStream) {
       this.mediaStream = initialStream;
+    }
+    if (sharedAudioCtx && sharedAudioCtx.state !== "closed") {
+      this.audioCtx = sharedAudioCtx;
+      this.isAudioCtxShared = true;
     }
     const SpeechRecognitionClass =
       typeof window !== "undefined"
@@ -68,6 +74,13 @@ export class BrowserSpeechRecognition {
 
   public setMediaStream(stream: MediaStream | null): void {
     this.mediaStream = stream;
+  }
+
+  public setAudioContext(ctx: AudioContext | null): void {
+    if (ctx && ctx.state !== "closed") {
+      this.audioCtx = ctx;
+      this.isAudioCtxShared = true;
+    }
   }
 
   private initNativeRecognition(SpeechRecognitionClass: any) {
@@ -175,24 +188,39 @@ export class BrowserSpeechRecognition {
 
       this.recognition.onend = () => {
         this.isListening = false;
-        // Seamlessly auto-restart continuous listening session ONLY when not paused for assistant
-        if (this.shouldBeListening && !this.isMuted && !this.isPausedForAgent) {
-          try {
-            this.recognition.start();
-            this.isListening = true;
-            this.onStateChange?.(true);
-          } catch (err) {
-            console.warn("[SpeechRecognition] onend restart failed, switching to MediaRecorder fallback:", err);
-            this.isSupported = false;
-            this.onInputPathChange?.("media_recorder_transcription");
-            if (this.recognition) {
-              try {
-                this.recognition.abort();
-              } catch {}
-              this.recognition = null;
+        if (this.restartTimer !== null) {
+          window.clearTimeout(this.restartTimer);
+          this.restartTimer = null;
+        }
+
+        // On Android Chrome, Google Speech unbinds its audio recording channel asynchronously.
+        // Restarting immediately synchronously causes DOMException: InvalidStateError.
+        // Use a 150ms backoff with state guards before attempting to restart.
+        if (this.shouldBeListening && !this.isMuted && !this.isPausedForAgent && this.recognition) {
+          this.restartTimer = window.setTimeout(() => {
+            this.restartTimer = null;
+            if (!this.shouldBeListening || this.isMuted || this.isPausedForAgent || !this.recognition) {
+              this.onStateChange?.(false);
+              return;
             }
-            this.startMediaRecorderFallback().catch(() => {});
-          }
+
+            try {
+              this.recognition.start();
+              this.isListening = true;
+              this.onStateChange?.(true);
+            } catch (err) {
+              console.warn("[SpeechRecognition] onend restart failed, switching to MediaRecorder fallback:", err);
+              this.isSupported = false;
+              this.onInputPathChange?.("media_recorder_transcription");
+              if (this.recognition) {
+                try {
+                  this.recognition.abort();
+                } catch {}
+                this.recognition = null;
+              }
+              this.startMediaRecorderFallback().catch(() => {});
+            }
+          }, 150);
         } else {
           this.onStateChange?.(false);
         }
@@ -245,8 +273,9 @@ export class BrowserSpeechRecognition {
     const clean = transcript.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
     if (!clean || clean.length < 2) return false;
 
-    // Explicit caller booking confirmations and common affirmative answers are NEVER echo
+    // Explicit caller booking confirmations, conversational greetings, and common affirmative answers are NEVER echo
     const GENUINE_CONFIRMATIONS = new Set([
+      "hello", "hi", "hey", "hi there", "hello there", "good morning", "good afternoon", "good evening",
       "yes", "yeah", "yep", "sure", "ok", "okay", "go ahead",
       "yes please", "yes go ahead", "yes please go ahead", "yeah go ahead",
       "sure go ahead", "yes book it", "yes book that", "go ahead please",
@@ -389,6 +418,11 @@ export class BrowserSpeechRecognition {
     this.isPausedForAgent = false;
     this.audioChunks = [];
 
+    if (this.restartTimer !== null) {
+      window.clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+
     if (this.cooldownTimer !== null) {
       window.clearTimeout(this.cooldownTimer);
       this.cooldownTimer = null;
@@ -423,6 +457,10 @@ export class BrowserSpeechRecognition {
     }
     if (muted) {
       this.captureEpoch++;
+      if (this.restartTimer !== null) {
+        window.clearTimeout(this.restartTimer);
+        this.restartTimer = null;
+      }
       if (this.cooldownTimer !== null) {
         window.clearTimeout(this.cooldownTimer);
         this.cooldownTimer = null;
@@ -452,6 +490,10 @@ export class BrowserSpeechRecognition {
    * then resume input.
    */
   public resumeImmediatelyForInterrupt(): void {
+    if (this.restartTimer !== null) {
+      window.clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
     if (this.cooldownTimer !== null) {
       window.clearTimeout(this.cooldownTimer);
       this.cooldownTimer = null;
@@ -532,6 +574,11 @@ export class BrowserSpeechRecognition {
     if (isSpeaking) {
       this.captureEpoch++;
       this.isPausedForAgent = true;
+
+      if (this.restartTimer !== null) {
+        window.clearTimeout(this.restartTimer);
+        this.restartTimer = null;
+      }
 
       // True hardware gating: mute physical mediaStream tracks so zero signal reaches AudioContext/VAD
       if (this.mediaStream) {
@@ -635,6 +682,7 @@ export class BrowserSpeechRecognition {
       if (!this.mediaStream || this.mediaStream.getTracks().every((t) => t.readyState === "ended")) {
         this.mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: {
+            channelCount: 1,
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
@@ -648,18 +696,43 @@ export class BrowserSpeechRecognition {
         });
       }
 
-      const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (!this.audioCtx || this.audioCtx.state === "closed") {
-        this.audioCtx = new AudioCtxClass();
-        const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
-        this.analyser = this.audioCtx.createAnalyser();
-        this.analyser.fftSize = 256;
-        source.connect(this.analyser);
-      }
-      if (this.audioCtx.state === "suspended") {
+      const AudioCtxClass =
+        typeof window !== "undefined"
+          ? window.AudioContext || (window as any).webkitAudioContext
+          : null;
+
+      if (AudioCtxClass && (!this.audioCtx || this.audioCtx.state === "closed")) {
         try {
-          await this.audioCtx.resume();
-        } catch {}
+          this.audioCtx = new AudioCtxClass();
+        } catch {
+          try {
+            this.audioCtx = new AudioCtxClass({ sampleRate: 24000 });
+          } catch (e) {
+            console.warn("[SpeechRecognition] Failed to instantiate fallback AudioContext:", e);
+          }
+        }
+      }
+
+      if (this.audioCtx) {
+        if (this.audioCtx.state === "suspended" || (this.audioCtx.state as string) === "interrupted") {
+          try {
+            await this.audioCtx.resume();
+          } catch (err) {
+            console.warn("[SpeechRecognition] AudioContext resume failed in fallback:", err);
+          }
+        }
+
+        if (this.mediaStream && !this.analyser) {
+          try {
+            const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
+            this.analyser = this.audioCtx.createAnalyser();
+            this.analyser.fftSize = 256;
+            this.analyser.smoothingTimeConstant = 0.3;
+            source.connect(this.analyser);
+          } catch (err) {
+            console.warn("[SpeechRecognition] MediaStreamSource connection error:", err);
+          }
+        }
       }
 
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
@@ -764,7 +837,7 @@ export class BrowserSpeechRecognition {
     this.vadInterval = window.setInterval(() => {
       if (!this.analyser || !this.mediaRecorder || this.isMuted || this.isPausedForAgent) return;
 
-      if (this.audioCtx && this.audioCtx.state === "suspended") {
+      if (this.audioCtx && (this.audioCtx.state === "suspended" || (this.audioCtx.state as string) === "interrupted")) {
         this.audioCtx.resume().catch(() => {});
       }
 
@@ -801,6 +874,10 @@ export class BrowserSpeechRecognition {
 
   private stopMediaRecorderFallback() {
     this.captureEpoch++;
+    if (this.restartTimer !== null) {
+      window.clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
     if (this.vadInterval) {
       clearInterval(this.vadInterval);
       this.vadInterval = null;
@@ -812,11 +889,19 @@ export class BrowserSpeechRecognition {
         // ignore
       }
     }
+    if (this.analyser) {
+      try {
+        this.analyser.disconnect();
+      } catch {
+        // ignore
+      }
+      this.analyser = null;
+    }
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach((track) => track.stop());
       this.mediaStream = null;
     }
-    if (this.audioCtx && this.audioCtx.state !== "closed") {
+    if (this.audioCtx && !this.isAudioCtxShared && this.audioCtx.state !== "closed") {
       this.audioCtx.close().catch(() => {});
       this.audioCtx = null;
     }

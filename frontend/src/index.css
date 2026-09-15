@@ -38,6 +38,11 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+html, body, #root {
+  min-height: 100dvh;
+  height: 100%;
+}
+
 body {
   margin: 0;
   padding: 0;
@@ -46,6 +51,18 @@ body {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
   overscroll-behavior-y: none;
+}
+
+button, a, input, select, textarea, [role="button"] {
+  touch-action: manipulation;
+}
+
+.touch-target-44 {
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* iOS Safe Area Utilities */
