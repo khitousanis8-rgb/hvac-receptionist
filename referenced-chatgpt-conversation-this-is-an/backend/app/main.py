@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -30,50 +29,15 @@ from app.dashboard import router as dashboard_router
 from app.db import Appointment, CallRecord, Customer, init_db, new_session
 from app.logging import configure_logging
 from app.scheduling import cancel_appointment
+from app.security import (
+    _IP_TOKEN_REQUEST_TIMESTAMPS,
+    check_token_rate_limit,
+    get_client_ip,
+)
 from app.tts_stream import router as tts_router
 
-_RATE_LIMIT_LOCK = threading.Lock()
-_IP_REQUEST_TIMESTAMPS: dict[str, list[float]] = {}
-_RATE_LIMIT_WINDOW_SECONDS = 60.0
-_MAX_CALL_TOKENS_PER_WINDOW = 15
+_IP_REQUEST_TIMESTAMPS = _IP_TOKEN_REQUEST_TIMESTAMPS
 
-
-def get_client_ip(request: Request) -> str:
-    """Extract client IP safely from request headers or socket address."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return "127.0.0.1"
-
-
-def check_token_rate_limit(client_ip: str) -> None:
-    """Enforce sliding-window rate limit on token generation to prevent abuse."""
-    now = time.time()
-    cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
-    with _RATE_LIMIT_LOCK:
-        timestamps = _IP_REQUEST_TIMESTAMPS.get(client_ip, [])
-        timestamps = [t for t in timestamps if t > cutoff]
-        if len(timestamps) >= _MAX_CALL_TOKENS_PER_WINDOW:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=(
-                    "Rate limit exceeded for call token generation. "
-                    "Please wait before trying again."
-                ),
-            )
-        timestamps.append(now)
-        _IP_REQUEST_TIMESTAMPS[client_ip] = timestamps
-        if len(_IP_REQUEST_TIMESTAMPS) > 1000:
-            for ip in list(_IP_REQUEST_TIMESTAMPS.keys()):
-                _IP_REQUEST_TIMESTAMPS[ip] = [t for t in _IP_REQUEST_TIMESTAMPS[ip] if t > cutoff]
-                if not _IP_REQUEST_TIMESTAMPS[ip]:
-                    del _IP_REQUEST_TIMESTAMPS[ip]
-            if len(_IP_REQUEST_TIMESTAMPS) > 1000:
-                excess = len(_IP_REQUEST_TIMESTAMPS) - 1000
-                for old_ip in list(_IP_REQUEST_TIMESTAMPS.keys())[:excess]:
-                    del _IP_REQUEST_TIMESTAMPS[old_ip]
 
 
 class CallTokenRequest(BaseModel):

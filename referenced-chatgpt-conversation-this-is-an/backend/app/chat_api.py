@@ -16,7 +16,7 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.agent.prompts import receptionist_instructions
 from app.call_tracking import (
@@ -32,7 +32,11 @@ from app.call_tracking import (
 )
 from app.config import Settings, get_settings
 from app.db import new_session
-from app.scheduling import book_appointment, list_upcoming, parse_local_datetime
+from app.scheduling import (
+    book_appointment,
+    parse_local_datetime,
+)
+from app.security import check_chat_rate_limit, get_client_ip
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/v1/calls", tags=["calls"])
@@ -57,16 +61,26 @@ def _get_client(settings: Settings) -> AsyncOpenAI:
 
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
-    content: str
+    content: str = Field(max_length=4000)
 
 
 class ChatRequest(BaseModel):
     session_id: str = Field(max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     message: str = Field(max_length=4000)
-    history: list[ChatMessage] = Field(default_factory=list)
+    history: list[ChatMessage] = Field(default_factory=list, max_length=100)
     call_id: int | None = Field(default=None, ge=1)
     call_secret: str = Field(min_length=32, max_length=128)
     client_telemetry: ClientTelemetry | None = None
+
+    @field_validator("history")
+    @classmethod
+    def validate_history_length(cls, history: list[ChatMessage]) -> list[ChatMessage]:
+        total_chars = sum(len(msg.content) for msg in history)
+        if total_chars > 30_000:
+            raise ValueError(
+                f"Total chat history characters ({total_chars}) exceeds limit of 30,000."
+            )
+        return history
 
 
 class EndCallRequest(BaseModel):
@@ -219,7 +233,11 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
     if phone_match:
         matched_str = phone_match.group(1)
         raw_digits = re.sub(r"[^\d]", "", matched_str)
-        if len(raw_digits) >= 7:
+        # Strict 10-digit NANP validation: must be 10 digits or 11 digits starting with 1
+        if len(raw_digits) == 10 and raw_digits[0] not in "01":
+            prefix = "+" if "+" in matched_str else ""
+            updates["phone"] = f"{prefix}{raw_digits}"
+        elif len(raw_digits) == 11 and raw_digits.startswith("1") and raw_digits[1] not in "01":
             prefix = "+" if "+" in matched_str else ""
             updates["phone"] = f"{prefix}{raw_digits}"
 
@@ -483,21 +501,11 @@ def _is_booking_flow_active(slots: dict[str, Any], text: str) -> bool:
 def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
     """Execute real business scheduling tools against SQLite."""
     if name == "check_my_appointments":
-        phone_number = str(args.get("phone_number", "")).strip()
-        if not phone_number:
-            return "Please provide a valid phone number to check appointments."
-        with new_session() as session:
-            appointments = list_upcoming(session, phone_number)
-            if not appointments:
-                return "No upcoming appointments found for that phone number."
-            lines = [
-                (
-                    f"{appt.scheduled_for.strftime('%B %d at %I:%M %p')}: "
-                    f"{appt.service} ({appt.status})"
-                )
-                for appt in appointments
-            ]
-            return "Upcoming appointments: " + "; ".join(lines)
+        return (
+            "For privacy and security, appointment details cannot be looked up or disclosed "
+            "over this channel with just a phone number. I can help arrange a new service visit, "
+            "or you can manage existing appointments through our verified customer portal."
+        )
 
     elif name == "book_appointment_tool":
         phone_number = str(args.get("phone_number", "")).strip()
@@ -545,27 +553,9 @@ def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
     return f"Unknown tool: {name}"
 
 
-READ_ONLY_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "check_my_appointments",
-            "description": "Look up a caller's upcoming appointments by their phone number.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "phone_number": {
-                        "type": "string",
-                        "description": "The caller's phone number",
-                    },
-                },
-                "required": ["phone_number"],
-            },
-        },
-    },
-]
+READ_ONLY_TOOLS: list[dict[str, Any]] = []
 
-BOOKING_TOOLS = [
+BOOKING_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
@@ -610,7 +600,6 @@ BOOKING_TOOLS = [
             },
         },
     },
-    READ_ONLY_TOOLS[0],
 ]
 
 TOOLS = READ_ONLY_TOOLS
@@ -799,6 +788,10 @@ async def _create_stream_completion(
 async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     """Stream assistant response tokens via Server-Sent Events (SSE) with tool execution."""
     settings: Settings = getattr(request.app.state, "settings", None) or get_settings()
+
+    # Enforce server-side sliding-window rate limit on chat endpoint before LLM invocation
+    client_ip = get_client_ip(request, settings)
+    check_chat_rate_limit(client_ip)
 
     # Initial instant greeting without LLM latency
     if req.message == "__GREETING__":

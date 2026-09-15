@@ -57,15 +57,35 @@ def has_conflict(session: Session, when: datetime) -> bool:
     return existing is not None
 
 
+def normalize_nanp_phone(raw: str) -> str | None:
+    """Normalize and strictly validate a 10-digit North American phone number.
+
+    Accepts 10 digits or 11 digits starting with '1'.
+    Validates that the area code starts with 2-9 (NANP standard).
+    Rejects 7-digit local numbers, numbers with fewer than 10 digits, or invalid area codes.
+    Returns the normalized E.164 string (+1XXXXXXXXXX) or None if invalid.
+    """
+    if not raw:
+        return None
+    digits = "".join(c for c in raw if c.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        return None
+    # NANP validation: Area code (first digit) cannot be 0 or 1
+    if digits[0] in "01":
+        return None
+    return f"+1{digits}"
+
+
 def normalize_phone_number(raw: str) -> str:
-    """Normalize phone number to digits or standard format (+1XXXXXXXXXX)."""
+    """Normalize phone number to standard NANP format (+1XXXXXXXXXX) if valid, or clean string."""
     if not raw:
         return ""
+    nanp = normalize_nanp_phone(raw)
+    if nanp is not None:
+        return nanp
     digits = "".join(c for c in raw if c.isdigit())
-    if len(digits) == 10:
-        return f"+1{digits}"
-    if len(digits) == 11 and digits.startswith("1"):
-        return f"+{digits}"
     if raw.startswith("+"):
         return f"+{digits}"
     return digits or raw.strip()
@@ -91,6 +111,7 @@ def get_or_create_customer(
         session.flush()
     elif safe_name and not customer.name:
         customer.name = safe_name
+        session.flush()
     return customer
 
 
@@ -103,10 +124,18 @@ def book_appointment(
     name: str | None = None,
     notes: str | None = None,
 ) -> tuple[Appointment | None, str]:
-    """Book an appointment, enforcing business hours and conflicts.
-
-    Returns (appointment, message). appointment is None when booking fails.
-    """
+    """Book a single slot atomically, enforcing business hours and uniqueness."""
+    if settings.business_services:
+        if isinstance(settings.business_services, str):
+            approved_services = [s.strip().lower() for s in settings.business_services.split(",")]
+        else:
+            approved_services = [s.strip().lower() for s in settings.business_services]
+        if service.strip().lower() not in approved_services:
+            services_str = ", ".join(approved_services)
+            return (
+                None,
+                f"'{service}' is not on our approved services list ({services_str}).",
+            )
     if when.tzinfo is None:
         when = when.replace(tzinfo=UTC)
     if when < datetime.now(UTC):
@@ -115,11 +144,13 @@ def book_appointment(
         return None, (
             "That time is outside business hours. Please choose a time during opening hours."
         )
-    normalized_phone = normalize_phone_number(phone_number)
-    digits_only = "".join(c for c in normalized_phone if c.isdigit())
-    if not normalized_phone or len(digits_only) < 7:
-        return None, "A valid phone number is required to book an appointment."
-    customer = get_or_create_customer(session, normalized_phone, name)
+    nanp_phone = normalize_nanp_phone(phone_number)
+    if nanp_phone is None:
+        return (
+            None,
+            "A valid phone number is required to book an appointment (e.g. 555-555-0100).",
+        )
+    customer = get_or_create_customer(session, nanp_phone, name)
 
     slot_end = when + timedelta(minutes=SLOT_MINUTES)
     earliest_overlap = when - timedelta(minutes=SLOT_MINUTES)

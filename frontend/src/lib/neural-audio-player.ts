@@ -410,11 +410,20 @@ export class NeuralAudioPlayer {
       throw new DOMException("Aborted", "AbortError");
     }
 
-    const url = apiUrl(
-      `/v1/voice/stream?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(this.voice)}`
-    );
+    const url = apiUrl("/v1/voice/stream");
 
-    const resp = await fetch(url, { signal });
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+      },
+      body: JSON.stringify({
+        text,
+        voice: this.voice,
+      }),
+      signal,
+    });
     if (!resp.ok) {
       throw new Error(`TTS server returned status ${resp.status}`);
     }

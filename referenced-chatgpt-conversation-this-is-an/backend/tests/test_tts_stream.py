@@ -136,7 +136,7 @@ def test_stream_voice_upstream_timeout_returns_504() -> None:
 
 
 def test_stream_voice_rate_limit() -> None:
-    settings = Settings(_env_file=None)
+    settings = Settings(TRUSTED_PROXIES="testclient", _env_file=None)
     app = create_app(settings)
     client = TestClient(app)
 

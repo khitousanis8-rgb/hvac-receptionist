@@ -63,7 +63,7 @@ def test_appointments_endpoint_includes_customer(tmp_path) -> None:
             book_appointment(
                 session,
                 settings,
-                phone_number="+15550001",
+                phone_number="+15550001234",
                 service="AC repair",
                 when=datetime(2030, 6, 3, 10, 0, tzinfo=UTC),
                 name="Alice",
@@ -75,7 +75,7 @@ def test_appointments_endpoint_includes_customer(tmp_path) -> None:
     assert len(appointments) == 1
     assert appointments[0]["service"] == "AC repair"
     assert appointments[0]["customer_name"] == "Alice"
-    assert appointments[0]["customer_phone"] == "+15550001"
+    assert appointments[0]["customer_phone"] == "+15550001234"
     reset_engine()
 
 

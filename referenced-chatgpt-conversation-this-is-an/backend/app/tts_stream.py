@@ -14,6 +14,10 @@ import edge_tts
 import structlog
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, Field
+
+from app.config import Settings, get_settings
+from app.security import get_client_ip
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
@@ -116,25 +120,13 @@ def check_tts_rate_limit(client_ip: str) -> None:
                     del _IP_TTS_TIMESTAMPS[old_ip]
 
 
-def get_client_ip(request: Request | None) -> str:
-    """Extract client IP safely from request headers."""
-    if request is None:
-        return "127.0.0.1"
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return "127.0.0.1"
+class VoiceStreamRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1500, description="Text to synthesize")
+    voice: str = Field(default=DEFAULT_VOICE, max_length=64, description="Neural voice identifier")
 
 
-@router.get("/stream")
-async def stream_voice(
-    text: str = Query(..., min_length=1, max_length=1500, description="Text to synthesize"),
-    voice: str = Query(default=DEFAULT_VOICE, description="Neural voice identifier"),
-    request: Request = None,  # type: ignore[assignment]
-) -> Response:
-    """Stream studio-quality neural audio bytes (audio/mpeg) for the given text."""
+async def _synthesize_voice(text: str, voice: str, request: Request | None) -> Response:
+    """Internal synthesis engine shared by GET and POST endpoints."""
     # 1. Input sanitization & validation
     clean_text = "".join(c for c in text.strip() if c.isprintable() or c in "\n\r\t").strip()
     if not clean_text:
@@ -167,14 +159,23 @@ async def stream_voice(
             content=cached_data,
             media_type="audio/mpeg",
             headers={
-                "Cache-Control": "public, max-age=86400",
+                "Cache-Control": "private, no-store, must-revalidate",
+                "Pragma": "no-cache",
                 "X-Audio-Source": "cache",
                 "X-Voice-Persona": voice_clean,
             },
         )
 
     # Rate limiting on non-cached synthesis requests
-    client_ip = get_client_ip(request)
+    raw_settings = (
+        getattr(request.app.state, "settings", None)
+        if (request and hasattr(request, "app"))
+        else None
+    )
+    resolved_settings: Settings = (
+        raw_settings if isinstance(raw_settings, Settings) else get_settings()
+    )
+    client_ip = get_client_ip(request, resolved_settings) if request is not None else "127.0.0.1"
     check_tts_rate_limit(client_ip)
 
     # Concurrency limiter to protect Render 512MB RAM
@@ -271,11 +272,31 @@ async def stream_voice(
         audio_stream_generator(),
         media_type="audio/mpeg",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "private, no-store, must-revalidate",
+            "Pragma": "no-cache",
             "X-Accel-Buffering": "no",
             "X-Voice-Persona": voice_clean,
         },
     )
+
+
+@router.post("/stream")
+async def stream_voice_post(
+    body: VoiceStreamRequest,
+    request: Request,
+) -> Response:
+    """Stream studio-quality neural audio bytes (audio/mpeg) via POST for privacy."""
+    return await _synthesize_voice(text=body.text, voice=body.voice, request=request)
+
+
+@router.get("/stream")
+async def stream_voice(
+    text: str = Query(..., min_length=1, max_length=1500, description="Text to synthesize"),
+    voice: str = Query(default=DEFAULT_VOICE, description="Neural voice identifier"),
+    request: Request = None,  # type: ignore[assignment]
+) -> Response:
+    """Stream studio-quality neural audio bytes (audio/mpeg) for the given text."""
+    return await _synthesize_voice(text=text, voice=voice, request=request)
 
 
 @router.get("/voices")

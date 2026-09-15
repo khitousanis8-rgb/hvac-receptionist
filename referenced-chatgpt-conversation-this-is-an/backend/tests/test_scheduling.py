@@ -32,7 +32,7 @@ def test_book_appointment_within_hours(db, settings) -> None:
     with new_session() as session:
         when = datetime(2030, 6, 3, 10, 0, tzinfo=UTC)  # a Monday
         appointment, message = book_appointment(
-            session, settings, phone_number="+15550001", service="AC repair", when=when
+            session, settings, phone_number="+15550001001", service="AC repair", when=when
         )
 
     assert appointment is not None
@@ -43,7 +43,7 @@ def test_book_appointment_rejects_closed_day(db, settings) -> None:
     with new_session() as session:
         when = datetime(2030, 6, 9, 10, 0, tzinfo=UTC)  # a Sunday
         appointment, message = book_appointment(
-            session, settings, phone_number="+15550001", service="AC repair", when=when
+            session, settings, phone_number="+15550001001", service="AC repair", when=when
         )
 
     assert appointment is None
@@ -53,10 +53,10 @@ def test_book_appointment_rejects_closed_day(db, settings) -> None:
 def test_book_appointment_rejects_double_booking(db, settings) -> None:
     when = datetime(2030, 6, 10, 10, 0, tzinfo=UTC)  # a Monday
     with new_session() as session:
-        book_appointment(session, settings, "+15550001", "AC repair", when)
+        book_appointment(session, settings, "+15550001001", "AC repair", when)
     with new_session() as session:
         appointment, message = book_appointment(
-            session, settings, phone_number="+15550002", service="Furnace repair", when=when
+            session, settings, phone_number="+15550002002", service="Furnace repair", when=when
         )
 
     assert appointment is None
@@ -67,14 +67,14 @@ def test_book_appointment_same_customer_idempotent(db, settings) -> None:
     when = datetime(2030, 6, 10, 10, 0, tzinfo=UTC)  # a Monday
     with new_session() as session:
         first_app, first_msg = book_appointment(
-            session, settings, phone_number="+15550001", service="AC repair", when=when
+            session, settings, phone_number="+15550001001", service="AC repair", when=when
         )
         assert first_app is not None
         first_id = first_app.id
 
     with new_session() as session:
         second_app, second_msg = book_appointment(
-            session, settings, phone_number="+15550001", service="AC repair", when=when
+            session, settings, phone_number="+15550001001", service="AC repair", when=when
         )
         assert second_app is not None
         assert second_app.id == first_id

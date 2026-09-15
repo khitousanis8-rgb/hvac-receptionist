@@ -134,7 +134,7 @@ def test_appointment_cancellation_and_slot_reuse(tmp_path: Path, monkeypatch: py
             session=session,
             settings=settings,
             phone_number="+15555550222",
-            service="Heating Tune-Up",
+            service="Furnace Repair",
             when=slot_time,
             name="Bob",
         )
@@ -157,7 +157,7 @@ def test_appointment_cancellation_and_slot_reuse(tmp_path: Path, monkeypatch: py
             session=session,
             settings=settings,
             phone_number="+15555550222",
-            service="Heating Tune-Up",
+            service="Furnace Repair",
             when=slot_time,
             name="Bob",
         )

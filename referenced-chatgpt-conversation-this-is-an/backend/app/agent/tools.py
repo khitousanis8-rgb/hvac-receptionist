@@ -9,7 +9,7 @@ from livekit.agents import RunContext, function_tool
 
 from app.config import Settings, get_settings
 from app.db import init_db, new_session
-from app.scheduling import book_appointment, list_upcoming, parse_local_datetime
+from app.scheduling import book_appointment, parse_local_datetime
 
 logger = structlog.get_logger(__name__)
 
@@ -21,21 +21,12 @@ async def check_my_appointments(
     context: RunContext[None],
     phone_number: str,
 ) -> str:
-    """Look up a caller's upcoming appointments by their phone number.
-
-    Args:
-        phone_number: The caller's phone number, e.g. +15555550100.
-        context: Injected run context.
-    """
-    with new_session() as session:
-        appointments = list_upcoming(session, phone_number)
-        if not appointments:
-            return "No upcoming appointments found for that phone number."
-        lines = [
-            f"{appt.scheduled_for.isoformat()}: {appt.service} ({appt.status})"
-            for appt in appointments
-        ]
-        return "Upcoming appointments: " + "; ".join(lines)
+    """Neutral privacy fallback: appointment details cannot be disclosed anonymously."""
+    return (
+        "For privacy and security, appointment details cannot be looked up or disclosed "
+        "over this channel with just a phone number. I can help arrange a new service visit, "
+        "or you can manage existing appointments through our verified customer portal."
+    )
 
 
 @function_tool
@@ -100,4 +91,4 @@ async def book_appointment_tool(
 def build_receptionist_tools(settings: Settings) -> list[Any]:
     """Return the function tools registered on the receptionist agent."""
     init_db()
-    return [check_my_appointments, book_appointment_tool]
+    return [book_appointment_tool]

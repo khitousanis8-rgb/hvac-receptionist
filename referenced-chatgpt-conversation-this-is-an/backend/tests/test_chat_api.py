@@ -77,7 +77,9 @@ def test_tool_execution_check_appointments() -> None:
         session.commit()
 
     res = _execute_tool(settings, "check_my_appointments", {"phone_number": phone})
-    assert "No upcoming appointments found" in res
+    assert "privacy and security" in res.lower()
+    assert "portal" in res.lower()
+
 
 
 def test_tool_execution_unapproved_service() -> None:
@@ -797,16 +799,16 @@ def test_read_only_tools_vs_booking_tools() -> None:
 
     read_only_names = [t["function"]["name"] for t in READ_ONLY_TOOLS]
     assert "book_appointment_tool" not in read_only_names
-    assert "check_my_appointments" in read_only_names
+    assert "check_my_appointments" not in read_only_names
 
     booking_names = [t["function"]["name"] for t in BOOKING_TOOLS]
     assert "book_appointment_tool" in booking_names
-    assert "check_my_appointments" in booking_names
+    assert "check_my_appointments" not in booking_names
 
-    # Phase 4: General conversational tools must expose only READ_ONLY_TOOLS
+    # General conversational tools must expose only READ_ONLY_TOOLS
     general_names = [t["function"]["name"] for t in TOOLS]
     assert "book_appointment_tool" not in general_names
-    assert "check_my_appointments" in general_names
+    assert "check_my_appointments" not in general_names
 
 
 def test_safety_emergency_instruction_takes_priority() -> None:
@@ -864,14 +866,14 @@ def test_phone_extraction_international_and_short_digits() -> None:
     from app.chat_api import _extract_slots_from_text
 
     slots: dict[str, object] = {}
-    # 8-digit international
-    assert _extract_slots_from_text("It's +12345678", slots).get("phone") == "+12345678"
-    # 9-digit
-    assert _extract_slots_from_text("123456789", slots).get("phone") == "123456789"
-    # 9-digit with prefix
-    assert _extract_slots_from_text("If you're my number it's +123456789", slots).get("phone") == "+123456789"
-    # 7-digit local
-    assert _extract_slots_from_text("My number is 555-1234", slots).get("phone") == "5551234"
+    # 8-digit international rejected
+    assert _extract_slots_from_text("It's +12345678", slots).get("phone") is None
+    # 9-digit rejected
+    assert _extract_slots_from_text("123456789", slots).get("phone") is None
+    # 7-digit local rejected
+    assert _extract_slots_from_text("My number is 555-1234", slots).get("phone") is None
+    # Valid 10-digit NANP accepted
+    assert _extract_slots_from_text("My number is 555-432-8765", slots).get("phone") == "5554328765"
 
 
 def test_anti_repetition_and_objection_reaches_llm() -> None:
@@ -1125,7 +1127,7 @@ def test_booking_tools_available() -> None:
 
     tool_names = [t["function"]["name"] for t in BOOKING_TOOLS]
     assert "book_appointment_tool" in tool_names
-    assert "check_my_appointments" in tool_names
+    assert "check_my_appointments" not in tool_names
 
 
 def test_end_call_accepts_and_persists_client_telemetry() -> None:
@@ -1477,7 +1479,7 @@ def test_update_call_phone_allows_caller_corrections() -> None:
     with new_session() as session:
         rec = session.get(CallRecord, call_id)
         assert rec is not None
-        assert rec.caller_phone == "555-111-2222"
+        assert rec.caller_phone == "+15551112222"
 
     # Caller corrected phone number
     update_call_phone(call_id, "+15559998888")

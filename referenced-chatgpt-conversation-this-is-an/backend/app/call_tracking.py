@@ -12,6 +12,7 @@ import structlog
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.db import CallRecord, new_session
+from app.scheduling import normalize_nanp_phone
 
 PlatformClass = Literal["desktop", "mobile"]
 BrowserEngine = Literal["chromium", "webkit", "gecko", "unknown"]
@@ -262,10 +263,12 @@ def update_call_phone(call_id: int, phone: str) -> None:
     clean_phone = str(phone).strip()[:32]
     if not clean_phone:
         return
+    nanp = normalize_nanp_phone(clean_phone)
+    target_phone = nanp if nanp is not None else clean_phone
     with new_session() as session:
         record = session.get(CallRecord, call_id)
         if record and record.ended_at is None:
-            record.caller_phone = clean_phone
+            record.caller_phone = target_phone
 
 
 def update_call_outcome(call_id: int, outcome: str) -> None:

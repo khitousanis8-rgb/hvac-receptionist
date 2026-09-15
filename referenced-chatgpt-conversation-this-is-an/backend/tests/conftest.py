@@ -142,12 +142,15 @@ def isolate_test_db(
 
     reset_engine()
     init_db()
+    from app.security import reset_rate_limits
+    reset_rate_limits()
 
     try:
         yield db_url
     finally:
         reset_engine()
         get_settings.cache_clear()
+        reset_rate_limits()
 
 
 @pytest.fixture()

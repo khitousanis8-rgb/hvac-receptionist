@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # Required to read customer records or use the private operations dashboard.
     # Keep this server-side only; never compile it into the public frontend.
     admin_api_key: SecretStr | None = None
+    trusted_proxies: str = ""
 
     business_company_name: Annotated[str, Field(min_length=1)] = "Example HVAC"
     business_phone: Annotated[str, Field(min_length=1)] = "+15555550100"
@@ -137,6 +138,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def trusted_proxy_list(self) -> list[str]:
+        return [proxy.strip() for proxy in self.trusted_proxies.split(",") if proxy.strip()]
 
 
 @lru_cache
