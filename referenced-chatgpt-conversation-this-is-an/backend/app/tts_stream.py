@@ -17,8 +17,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.config import Settings, get_settings
-from app.security import get_client_ip
+from app.config import Settings, get_settings  # type: ignore[reportAssignmentType]
+from app.security import get_client_ip  # type: ignore[reportAssignmentType]
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
@@ -206,7 +206,7 @@ async def _synthesize_voice(text: str, voice: str, request: Request | None) -> R
         async with asyncio.timeout(10.0):
             async for chunk in stream_iter:
                 if chunk.get("type") == "audio" and "data" in chunk:
-                    first_audio = bytes(chunk["data"])
+                    first_audio = bytes(chunk["data"])  # type: ignore[reportTypedDictNotRequiredAccess]
                     break
 
         if first_audio is None:
@@ -248,9 +248,9 @@ async def _synthesize_voice(text: str, voice: str, request: Request | None) -> R
         try:
             yield first_audio
             if stream_iter is not None:
-                async for chunk in stream_iter:
+                async for chunk in stream_iter:  # type: ignore[reportOptionalIterable]
                     if chunk.get("type") == "audio" and "data" in chunk:
-                        data = bytes(chunk["data"])
+                        data = bytes(chunk["data"])  # type: ignore[reportTypedDictNotRequiredAccess]
                         if should_cache:
                             collected_bytes.append(data)
                         yield data
@@ -267,7 +267,7 @@ async def _synthesize_voice(text: str, voice: str, request: Request | None) -> R
         finally:
             try:
                 if stream_iter is not None:
-                    await stream_iter.aclose()
+                    await stream_iter.aclose()  # type: ignore[reportOptionalMemberAccess]
             finally:
                 _TTS_SEMAPHORE.release()
 

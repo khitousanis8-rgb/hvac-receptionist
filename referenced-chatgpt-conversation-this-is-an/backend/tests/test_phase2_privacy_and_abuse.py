@@ -24,7 +24,7 @@ from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from app.agent.tools import build_receptionist_tools
-from app.chat_api import BOOKING_TOOLS, READ_ONLY_TOOLS, _execute_tool
+from app.chat_api import BOOKING_TOOLS, READ_ONLY_TOOLS, _execute_tool  # type: ignore[reportAttributeAccessIssue]
 from app.config import Settings
 from app.db import Appointment, Customer, new_session
 from app.main import create_app
