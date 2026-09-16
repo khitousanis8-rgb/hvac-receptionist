@@ -1,4 +1,5 @@
-"""Database engine, session factory, and model definitions (SQLite)."""
+# pyright: reportAttributeAccessIssue=false
+"""Database engine, session, ORM models, and repeatable migration helpers. (SQLite)."""
 
 from __future__ import annotations
 

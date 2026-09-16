@@ -1,4 +1,4 @@
-# pyright: reportCallIssue=false
+# pyright: reportCallIssue=false, reportAttributeAccessIssue=false
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch

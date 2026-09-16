@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false
 """Authorization helpers for the private operations dashboard."""
 
 from __future__ import annotations

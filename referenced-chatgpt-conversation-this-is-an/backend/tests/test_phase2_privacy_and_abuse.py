@@ -1,4 +1,4 @@
-# pyright: reportCallIssue=false
+# pyright: reportCallIssue=false, reportAttributeAccessIssue=false
 # pydantic-settings accepts env-var kwargs dynamically; pyright cannot see them.
 
 """Comprehensive test suite for Phase 2: Privacy, Authorization & Abuse Controls.

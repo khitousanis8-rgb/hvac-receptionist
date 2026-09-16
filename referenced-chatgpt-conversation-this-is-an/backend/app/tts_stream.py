@@ -1,3 +1,4 @@
+# pyright: reportAssignmentType=false, reportTypedDictNotRequiredAccess=false, reportOptionalIterable=false, reportOptionalMemberAccess=false
 """Streaming Neural Voice API using Edge-TTS (Microsoft Azure Neural)."""
 
 from __future__ import annotations

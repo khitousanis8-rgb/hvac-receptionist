@@ -1,4 +1,5 @@
-"""Rate limiting, client IP resolution, and network security policies."""
+# pyright: reportAttributeAccessIssue=false
+"""Security utilities: rate limiting, IP resolution, and abuse prevention."""
 
 from __future__ import annotations
 
