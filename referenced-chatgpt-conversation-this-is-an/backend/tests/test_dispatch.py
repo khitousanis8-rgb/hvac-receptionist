@@ -1,4 +1,4 @@
-# pyright: reportCallIssue=false, reportAttributeAccessIssue=false
+# pyright: reportCallIssue=false
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
@@ -132,7 +132,7 @@ def test_token_endpoint_rejects_invalid_room_or_identity(livekit_settings: Setti
 
 
 def test_token_endpoint_rate_limit(livekit_settings: Settings) -> None:
-    from app.main import _IP_REQUEST_TIMESTAMPS  # type: ignore[reportAttributeAccessIssue]
+    from app.main import _IP_REQUEST_TIMESTAMPS
 
     _IP_REQUEST_TIMESTAMPS.clear()
 
