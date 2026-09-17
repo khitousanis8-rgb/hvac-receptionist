@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.call_tracking import start_or_get_browser_call
@@ -293,7 +294,7 @@ def test_chat_stream_executes_tool_and_updates_slots() -> None:
     assert "Would you like me to book it?" in res2.text
     assert 'event: done\ndata: {"outcome": "info_only"}' in res2.text
 
-    # Turn 3: Caller gives explicit confirmation -> Server directly executes book_appointment_tool
+    # Turn 3: Caller gives spoken confirmation -> Server prompts caller to tap review card
     res3 = client.post(
         "/v1/calls/chat",
         json=_browser_payload(
@@ -303,9 +304,11 @@ def test_chat_stream_executes_tool_and_updates_slots() -> None:
         ),
     )
     assert res3.status_code == 200
-    assert 'event: tool_call\ndata: {"name": "book_appointment_tool"' in res3.text
-    assert "You're all set! I've booked that appointment" in res3.text
-    assert 'event: done\ndata: {"outcome": "booked"}' in res3.text
+    assert "tap Confirm Booking on your screen" in res3.text
+    assert 'event: done\ndata: {"outcome": "info_only"}' in res3.text
+    with new_session() as session:
+        assert session.query(Appointment).count() == 0
+
 
 
 def test_extract_slots_from_text() -> None:
@@ -718,31 +721,34 @@ def test_sse_repeating_confirmation_does_not_create_second_appointment() -> None
     )
     assert "Just to confirm" in res_recap.text
 
-    # Turn 2: Confirm once
+    # Turn 2: Spoken confirmation prompts tap on review card
     res_book = client.post(
         "/v1/calls/chat",
         json=_browser_payload(room, call_id, "Yes please"),
     )
-    assert 'event: done\ndata: {"outcome": "booked"}' in res_book.text
+    assert res_book.status_code == 200
+    assert "tap Confirm Booking on your screen" in res_book.text
+    assert 'event: done\ndata: {"outcome": "info_only"}' in res_book.text
 
-    # Verify 1 appointment in DB
+    # Verify 0 appointments in DB from spoken yes
     with new_session() as session:
         count = session.query(Appointment).count()
-        assert count == 1
+        assert count == 0
 
-    # Turn 3: Repeat confirmation
+    # Turn 3: Repeat spoken confirmation continues to prompt tap without booking
     res_repeat = client.post(
         "/v1/calls/chat",
         json=_browser_payload(room, call_id, "Yes please"),
     )
     assert res_repeat.status_code == 200
-    assert "already all set" in res_repeat.text
-    assert 'event: done\ndata: {"outcome": "booked"}' in res_repeat.text
+    assert "tap Confirm Booking on your screen" in res_repeat.text
+    assert 'event: done\ndata: {"outcome": "info_only"}' in res_repeat.text
 
-    # Verify STILL only 1 appointment in DB
+    # Verify STILL 0 appointments in DB
     with new_session() as session:
         count_after = session.query(Appointment).count()
-        assert count_after == 1
+        assert count_after == 0
+
 
 
 def test_sse_revised_time_requires_new_recap() -> None:
@@ -781,18 +787,20 @@ def test_sse_revised_time_requires_new_recap() -> None:
     assert "02:00 PM" in res_recap2.text or "2:00 PM" in res_recap2.text
     assert "Would you like me to book it?" in res_recap2.text
 
-    # Now confirm
+    # Now attempt confirmation via speech -> prompts tap, does not book
     res_confirm = client.post(
         "/v1/calls/chat",
         json=_browser_payload(room, call_id, "Yes please"),
     )
-    assert 'event: done\ndata: {"outcome": "booked"}' in res_confirm.text
+    assert res_confirm.status_code == 200
+    assert "tap Confirm Booking on your screen" in res_confirm.text
+    assert 'event: done\ndata: {"outcome": "info_only"}' in res_confirm.text
 
-    # Check appointment time in DB is 14:00
+    # Verify spoken yes does not create an appointment
     with new_session() as session:
         appt = session.query(Appointment).first()
-        assert appt is not None
-        assert appt.scheduled_for.hour in (14, 18)
+        assert appt is None
+
 
 
 def test_read_only_tools_vs_booking_tools() -> None:
@@ -1488,6 +1496,132 @@ def test_update_call_phone_allows_caller_corrections() -> None:
         rec = session.get(CallRecord, call_id)
         assert rec is not None
         assert rec.caller_phone == "+15559998888"
+
+
+def test_spoken_yes_during_recap_prompts_tap_and_freezes_authority() -> None:
+    """R1: Verify spoken 'yes', 'yeah', or 'confirm' during recap prompts tap and does not book."""
+    from uuid import uuid4
+
+    settings = Settings(
+        LLM_API_KEY="test-key",
+        BUSINESS_OPENING_HOURS=(
+            '{"monday":"08:00-18:00","tuesday":"08:00-18:00","wednesday":"08:00-18:00",'
+            '"thursday":"08:00-18:00","friday":"08:00-18:00","saturday":"08:00-18:00",'
+            '"sunday":"08:00-18:00"}'
+        ),
+        _env_file=None,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"recap-freeze-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+    future_date = (datetime.now() + timedelta(days=15)).strftime("%Y-%m-%d")
+    phone = "5551234567"
+
+    # Provide all slots to trigger recap
+    client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, f"I need AC repair on {future_date} at 10am"),
+    )
+    res_recap = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, f"My phone is {phone}"),
+    )
+    assert res_recap.status_code == 200
+    assert "Just to confirm" in res_recap.text
+
+    # Caller gives spoken confirmation
+    for affirmative in ("yes", "yeah", "confirm", "yes please", "sure"):
+        res = client.post(
+            "/v1/calls/chat",
+            json=_browser_payload(room, call_id, affirmative),
+        )
+        assert res.status_code == 200
+        assert "tap Confirm Booking on your screen" in res.text
+        assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
+
+    # Zero appointments booked in database
+    with new_session() as session:
+        count = session.query(Appointment).count()
+        assert count == 0
+
+
+def test_anonymous_lookup_query_refusal_via_chat() -> None:
+    """R1: Verify anonymous appointment lookup queries receive neutral policy refusal via chat."""
+    from uuid import uuid4
+
+    settings = Settings(_env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"lookup-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+
+    lookup_queries = [
+        "Can you check the appointment for 555-432-8765?",
+        "Look up my appointment please",
+        "What is the status of my appointment?",
+        "Do I have an appointment scheduled?",
+    ]
+    for q in lookup_queries:
+        res = client.post(
+            "/v1/calls/chat",
+            json=_browser_payload(room, call_id, q),
+        )
+        assert res.status_code == 200
+        text = res.text
+        assert "privacy and security" in text.lower()
+        assert "portal" in text.lower()
+        assert 'event: done\ndata: {"outcome": "info_only"}' in text
+
+
+def test_booking_rate_limit() -> None:
+    """R7: Verify check_booking_rate_limit allows up to 5 requests and blocks on 6th."""
+    from fastapi import HTTPException
+
+    from app.security import check_booking_rate_limit, reset_rate_limits
+
+    reset_rate_limits()
+    ip = "192.0.2.42"
+
+    for _ in range(5):
+        check_booking_rate_limit(ip)
+
+    # 6th request must exceed limit and raise HTTP 429
+    with pytest.raises(HTTPException) as exc_info:
+        check_booking_rate_limit(ip)
+    assert exc_info.value.status_code == 429
+    assert "too many booking" in exc_info.value.detail.lower()
+
+    # Reset allows requests again
+    reset_rate_limits()
+    check_booking_rate_limit(ip)
+
+
+def test_already_confirmed_call_affirmation() -> None:
+    """Verify that an already-confirmed call reassures the caller with booked outcome."""
+    from uuid import uuid4
+
+    from app.call_tracking import update_call_slots
+
+
+    settings = Settings(_env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"already-confirmed-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+    update_call_slots(call_id, {"confirmed": True})
+
+    res = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "Yes please"),
+    )
+    assert res.status_code == 200
+    assert "already all set" in res.text
+    assert 'event: done\ndata: {"outcome": "booked"}' in res.text
+
 
 
 

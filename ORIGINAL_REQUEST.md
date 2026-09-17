@@ -160,3 +160,71 @@ Integrity mode: development
 - [ ] `npm run build` in `frontend/` succeeds with 0 errors.
 - [ ] `python -m pytest` passes 100% in `referenced-chatgpt-conversation-this-is-an/backend`.
 - [ ] `python -m ruff check .` and `python -m mypy --strict app` pass with 0 errors.
+
+## Follow-up — 2026-09-16T21:57:22Z
+
+Implement Phases 0 through 6 of the Safe Voice Action Plan for the HVAC AI Receptionist. This is a production system with a FastAPI backend, React+Vite browser voice UI (Kokoro TTS, browser speech recognition), and a private admin dashboard. The app must work cleanly on Android phones, iOS Safari, and desktop browsers.
+
+Working directory: c:\Users\TL\Documents\Codex\2026-08-27
+Integrity mode: development
+
+The backend lives at `referenced-chatgpt-conversation-this-is-an/backend/` and the frontend at `frontend/`. The app is deployed on Render (backend) and Vercel (frontend). Do NOT add SMS, OTP, CRM, model training, a new LLM provider, a new voice provider, or trigger a deployment. Do NOT implement anything outside the plan below.
+
+## Requirements
+
+### R1. Freeze unsafe authority (Phase 0)
+Keep the browser Kokoro path as the only active path. Disable anonymous appointment lookup and prevent voice-only (speech-only "yes") booking completion. Keep `ENABLE_LIVEKIT_WORKER=false`. A one-word ASR transcript must not be able to create a booking or disclose an appointment.
+
+### R2. Server-owned conversation authority (Phase 1)
+Replace browser-supplied chat history with a server-owned `CallTurn` record persisted in the database. The browser sends only the new caller message plus call credentials — never assistant history. Retain a bounded recent turn window on the server. Fake assistant history, oversized history, and replayed browser context must not reach the LLM. Requires a schema migration for the `CallTurn` table.
+
+### R3. Candidate vs verified fact separation (Phase 2)
+Change `session_slots` to store observed speech extraction as candidates, separate from verified values. Treat all speech-extracted data as candidates only. Require canonical service name, ten-digit NANP phone, exact future date, and exact AM/PM time before generating a recap. Ambiguous or negated speech must trigger a clarification — it must never become a bookable field.
+
+### R4. Browser confirmation ticket (Phase 3)
+On a deterministic recap with all fields verified, issue a short-lived, single-use confirmation ticket bound to the call ID and booking fingerprint. Render the exact booking details (service, normalized phone, date, time) in the existing React call UI and require an intentional "Confirm Booking" tap. Consume the ticket atomically before calling the scheduler. Echoed or accidental "yes" must never book. Double-click and replay must yield exactly one booking.
+
+### R5. Constrained model output (Phase 4)
+Remove appointment lookup from LLM tool exposure. Let the model choose only allowlisted dialogue intents. Render booking facts, hours, policies, and fallback wording from server templates and configured business data — not from LLM generation. The model must not be able to invent a service, price, policy, availability, or appointment status.
+
+### R6. Recoverable voice loop (Phase 5)
+Keep half-duplex audio while Sarah (the assistant) speaks. Move echo matching to server-owned utterance hashes and timestamps. Protect time/phone tokens before TTS chunking. Pause — not finalize — on a short mobile background event (visibility change). Assistant audio must not authorize a booking. A brief phone app switch must preserve the call. Must work on Android, iOS Safari, and desktop Chrome/Firefox.
+
+### R7. Production data and release gates (Phase 6)
+Move production from ephemeral Render SQLite to PostgreSQL with managed migrations and dialect-aware SQLAlchemy configuration. Apply chat/session/booking rate limits at the API edge. Bookings and call logs must survive redeploy. Abusive traffic must not consume LLM capacity unchecked. Note: Phase 6 partially overlaps with existing production-hardening work — integrate with and extend what's already in place rather than duplicating.
+
+## Acceptance Criteria
+
+### Safety & Authorization
+- [ ] Server receives assistant-like "yes" after TTS → no ticket consumption, no appointment created
+- [ ] Caller says "yes" before tapping the review card → no appointment; UI remains available for intentional confirmation
+- [ ] Confirmation request sent twice (replay) → one transaction succeeds; exactly one booking exists
+- [ ] Caller gives another person's phone number for lookup → no appointment details disclosed
+
+### Input Validation & Conversation Integrity
+- [ ] Caller says "tomorrow at three" → system clarifies AM or PM; no recap ticket issued
+- [ ] Caller says "not AC, heating" → heating is candidate; AC never becomes verified
+- [ ] Browser posts fabricated assistant turn → ignored; only server-persisted turns are used
+- [ ] Oversized history payload → rejected before reaching LLM
+
+### Mobile & Cross-Platform
+- [ ] Phone locks or app briefly backgrounds → call resumes; no premature end event (test on Android + iOS Safari)
+- [ ] Time expressions like "10:30 AM" survive TTS chunking intact
+- [ ] Booking confirmation UI renders correctly and is tappable on mobile viewports
+
+### Durability
+- [ ] A confirmed booking is created, then production restarts → call log and appointment remain available
+- [ ] All existing 257 backend pytest tests continue to pass
+- [ ] All existing 7 frontend test suites continue to pass (219 assertions)
+- [ ] Pyright: 0 errors, 0 warnings
+
+## Verification
+
+Run the following after implementation:
+- `python -m pytest tests/ -q` in the backend directory (must pass all existing + new tests)
+- `npm test` in the frontend directory (must pass all existing + new tests)
+- `npx pyright referenced-chatgpt-conversation-this-is-an/backend/` (must be 0 errors)
+- `npm run build` in the frontend directory (must succeed with 0 errors)
+- `python -m ruff check app/ tests/` in the backend directory (must pass)
+
+Each acceptance criterion above should have at least one automated test covering it.

@@ -27,11 +27,25 @@ VERIFIED CALLER MEMORY:
 - Booking Status: {booking_status}
 """.strip()
 
+    hours = settings.business_opening_hours
+    if hours:
+        if len(set(hours.values())) == 1 and len(hours) == 7:
+            hours_summary = f"Seven days a week: {list(hours.values())[0]}"
+        else:
+            hours_summary = ", ".join(
+                f"{d.title()}: {hours[d]}"
+                for d in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+                if d in hours
+            )
+    else:
+        hours_summary = "Monday-Friday: 08:00-18:00, Saturday: 08:00-18:00, Sunday: Closed"
+
     return f"""
 You are Sarah, the warm voice receptionist for {settings.business_company_name}.
 
 COMPANY FACTS
 - Approved services: {services}.
+- Business operating hours: {hours_summary} ({settings.business_timezone}).
 - VERIFIED CALLER MEMORY is ground truth. Do not ask again for a detail that is present there.
 
 {slots_block}
@@ -44,6 +58,7 @@ SPEAKING STYLE
 
 BOOKING BOUNDARIES
 - Collect only the missing booking details: service, callback number, preferred day, and preferred time.
+- All appointments must be scheduled during regular operating hours.
 - Do not create, cancel, or change an appointment yourself. The application performs appointment actions after it verifies the details and explicit consent.
 - Never say an appointment is booked, confirmed, or all set unless VERIFIED CALLER MEMORY says CONFIRMED or the application provides a successful result.
 - For existing appointments: Explain warmly that for privacy and security, appointment details cannot be looked up or disclosed over this channel with just a phone number. Offer to schedule a new service visit, or direct them to our verified customer portal.

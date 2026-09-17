@@ -33,6 +33,16 @@ interface ChatMessage {
   content: string;
 }
 
+export interface ConfirmationTicketData {
+  ticket_id: string;
+  service: string;
+  phone: string;
+  date: string;
+  time: string;
+  fingerprint: string;
+  expires_in_seconds?: number;
+}
+
 interface KokoroCallSessionProps {
   companyName?: string;
   initialMediaStream?: MediaStream | null;
@@ -82,8 +92,14 @@ export function KokoroCallSession({
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [currentCallerText, setCurrentCallerText] = useState<string>("");
   const [currentAssistantText, setCurrentAssistantText] = useState<string>("");
+  const [confirmationTicket, setConfirmationTicket] = useState<ConfirmationTicketData | null>(null);
+  const [isConfirming, setIsConfirming] = useState<boolean>(false);
+  const [confirmedBookingId, setConfirmedBookingId] = useState<string | null>(null);
+  const [confirmationError, setConfirmationError] = useState<string | null>(null);
 
   const durationRef = useRef<number>(0);
+  const isMutedRef = useRef<boolean>(false);
+  const isAgentSpeakingRef = useRef<boolean>(false);
   const sessionIdRef = useRef<string>(`session-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`);
   const callSecretRef = useRef<string>(createCallSecret());
   const callIdRef = useRef<number | null>(null);
@@ -150,6 +166,7 @@ export function KokoroCallSession({
   useEffect(() => {
     neuralVoice.setPlaybackStateCallback((playing) => {
       setIsAgentSpeaking(playing);
+      isAgentSpeakingRef.current = playing;
       if (playing && firstAssistantAudioMsRef.current === null) {
         firstAssistantAudioMsRef.current = Date.now() - callStartTimeRef.current;
       }
@@ -169,7 +186,7 @@ export function KokoroCallSession({
 
   // 3. Send message to backend chat streaming endpoint
   const sendMessageToAgent = useCallback(
-    async (userMessage: string, currentHistory: ChatMessage[]) => {
+    async (userMessage: string) => {
       if (!userMessage.trim()) return;
 
       setIsAgentThinking(true);
@@ -193,10 +210,6 @@ export function KokoroCallSession({
         controller.abort();
       }, CHAT_REQUEST_TIMEOUT_MS);
 
-      // Maintain conversational context (up to last 30 messages) to prevent
-      // caller identity amnesia while staying comfortably within Groq TPM limits.
-      const recentHistory = currentHistory.length > 30 ? currentHistory.slice(-30) : currentHistory;
-
       try {
         const startTelemetry: ClientTelemetry = {
           platform_class: detectPlatformClass(),
@@ -205,13 +218,14 @@ export function KokoroCallSession({
           mic_permission: micPermissionRef.current,
         };
 
+        // Server-owned conversation authority: Send only userMessage + credentials + telemetry.
+        // Client history is stripped to ensure server CallTurn records remain the sole authority.
         const response = await fetch(apiUrl("/v1/calls/chat"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             session_id: sessionIdRef.current,
             message: userMessage,
-            history: recentHistory.map((m) => ({ role: m.role, content: m.content })),
             call_id: callIdRef.current,
             call_secret: callSecretRef.current,
             client_telemetry: startTelemetry,
@@ -261,6 +275,9 @@ export function KokoroCallSession({
 
                 if (currentEvent === "call_started" && data.call_id) {
                   callIdRef.current = data.call_id;
+                } else if (currentEvent === "confirmation_ticket") {
+                  setConfirmationTicket(data);
+                  setConfirmationError(null);
                 } else if (currentEvent === "tool_call") {
                   setActiveTool(data.name || "Checking dispatch");
                 } else if (currentEvent === "delta" && data.text) {
@@ -403,12 +420,11 @@ export function KokoroCallSession({
             }
             if (isFinal) {
               setCurrentCallerText("");
-              const historyBefore = transcriptHistoryRef.current;
               transcriptHistoryRef.current = [
-                ...historyBefore,
+                ...transcriptHistoryRef.current,
                 { role: "user", content: text },
               ];
-              void sendMessageToAgent(text, historyBefore);
+              void sendMessageToAgent(text);
             } else {
               setCurrentCallerText(text);
             }
@@ -421,6 +437,7 @@ export function KokoroCallSession({
             }
             neuralVoice.stop();
             setIsAgentSpeaking(false);
+            isAgentSpeakingRef.current = false;
             setIsAgentThinking(false);
             speechRecRef.current?.resumeImmediatelyForInterrupt();
           },
@@ -443,7 +460,7 @@ export function KokoroCallSession({
         speech.start();
 
         // Trigger initial greeting in parallel
-        void sendMessageToAgent("__GREETING__", []);
+        void sendMessageToAgent("__GREETING__");
       } catch (err: any) {
         if (!isCancelled) {
           console.error("[VoiceCall] init failed:", err);
@@ -566,6 +583,10 @@ export function KokoroCallSession({
           clearTimeout(visibilityGraceTimerRef.current);
           visibilityGraceTimerRef.current = null;
         }
+        // Ensure recognition is listening if call is active, unmuted, and assistant not speaking
+        if (!isMutedRef.current && !isAgentSpeakingRef.current && speechRecRef.current) {
+          void speechRecRef.current.start();
+        }
       }
     };
 
@@ -586,10 +607,162 @@ export function KokoroCallSession({
     };
   }, [getFullTelemetry]);
 
+  // Handle intentional confirmation of single-use ticket
+  const handleConfirmBooking = async () => {
+    if (!confirmationTicket || isConfirming || confirmedBookingId) return;
+    setIsConfirming(true);
+    setConfirmationError(null);
+
+    try {
+      const res = await apiPost<{
+        status: string;
+        booking_id?: number | string;
+        already_confirmed?: boolean;
+        message?: string;
+      }>("/v1/calls/confirm-booking", {
+        session_id: sessionIdRef.current,
+        call_id: callIdRef.current,
+        call_secret: callSecretRef.current,
+        ticket_id: confirmationTicket.ticket_id,
+        fingerprint: confirmationTicket.fingerprint,
+      });
+
+      const bookingId = res?.booking_id ? String(res.booking_id) : "confirmed";
+      setConfirmedBookingId(bookingId);
+      callOutcomeRef.current = "booked";
+
+      // Reassuring spoken confirmation
+      const confirmSpeech = "Your appointment is confirmed! Our technician will see you then.";
+      setCurrentAssistantText(confirmSpeech);
+      neuralVoice.speakSentence(confirmSpeech);
+      neuralVoice.endTurnQueue();
+    } catch (err: any) {
+      console.error("[KokoroCall] Failed to confirm booking:", err);
+      setConfirmationError(err?.message || "Failed to confirm booking. Please try again.");
+    } finally {
+      setIsConfirming(false);
+    }
+  };
+
+  const renderReviewCard = (compact: boolean = false) => {
+    if (!confirmationTicket) return null;
+
+    return (
+      <AnimatePresence>
+        <motion.div
+          key="booking-review-card"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          data-testid="booking-review-card"
+          className={cn(
+            "w-full rounded-xl border transition-all text-left shadow-xs",
+            confirmedBookingId
+              ? "border-[#a7f3d0] bg-[#f0fdf4]"
+              : "border-[#bfdbfe] bg-[#f8faff]",
+            compact ? "p-3.5 my-2" : "p-4 my-3"
+          )}
+        >
+          <div className="flex items-center justify-between gap-2 mb-2.5">
+            <div className="flex items-center gap-1.5">
+              <CalendarCheck2
+                className={cn(
+                  "w-4 h-4 shrink-0",
+                  confirmedBookingId ? "text-[#059669]" : "text-[#0b5ed7]"
+                )}
+                aria-hidden="true"
+              />
+              <span
+                className={cn(
+                  "text-[12px] font-semibold uppercase tracking-wider",
+                  confirmedBookingId ? "text-[#059669]" : "text-[#0b5ed7]"
+                )}
+              >
+                {confirmedBookingId ? "Booking Confirmed" : "Review Appointment Details"}
+              </span>
+            </div>
+            {confirmationTicket.expires_in_seconds && !confirmedBookingId && (
+              <span className="text-[10px] font-mono text-[#71717a]">
+                Ticket #{confirmationTicket.ticket_id.slice(-6)}
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 text-[12px] mb-3 bg-white/90 rounded-lg p-2.5 border border-[#e7e7e7]/70">
+            <div>
+              <span className="text-[10px] font-mono uppercase text-[#71717a] block">Service</span>
+              <span className="font-medium text-[#0a0a0a]">{confirmationTicket.service}</span>
+            </div>
+            <div>
+              <span className="text-[10px] font-mono uppercase text-[#71717a] block">Phone</span>
+              <span className="font-medium text-[#0a0a0a]">{confirmationTicket.phone}</span>
+            </div>
+            <div className="col-span-2 pt-1 border-t border-[#f4f4f5]">
+              <span className="text-[10px] font-mono uppercase text-[#71717a] block">Date & Time</span>
+              <span className="font-medium text-[#0a0a0a]">
+                {confirmationTicket.date} at {confirmationTicket.time}
+              </span>
+            </div>
+          </div>
+
+          {confirmationError && (
+            <div className="mb-2.5 p-2 rounded-lg bg-[#fff1f2] border border-[#fecdd3] text-[#e11d48] text-[11px] flex items-center gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>{confirmationError}</span>
+            </div>
+          )}
+
+          {confirmedBookingId ? (
+            <div className="p-2.5 rounded-lg bg-[#ecfdf5] border border-[#a7f3d0] text-center">
+              <span className="text-[12px] font-semibold text-[#059669] flex items-center justify-center gap-1.5">
+                <CalendarCheck2 className="w-4 h-4" aria-hidden="true" />
+                Confirmed (Ref #{confirmedBookingId})
+              </span>
+              <p className="text-[11px] text-[#047857] mt-0.5">
+                Our technician has been scheduled.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <button
+                type="button"
+                data-testid="confirm-booking-button"
+                disabled={isConfirming}
+                onClick={handleConfirmBooking}
+                className={cn(
+                  "w-full min-h-[48px] px-4 py-2.5 rounded-lg font-semibold text-[13px] text-white transition-all shadow-xs flex items-center justify-center gap-2 cursor-pointer",
+                  isConfirming
+                    ? "bg-[#93c5fd] cursor-not-allowed"
+                    : "bg-[#0b5ed7] hover:bg-[#0a58ca] active:scale-[0.98]"
+                )}
+              >
+                {isConfirming ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                    <span>Confirming Booking…</span>
+                  </>
+                ) : (
+                  <>
+                    <CalendarCheck2 className="w-4 h-4" aria-hidden="true" />
+                    <span>Confirm Booking</span>
+                  </>
+                )}
+              </button>
+              <p className="text-[10px] text-[#71717a] text-center">
+                Tap to confirm. Voice response alone does not finalize the booking.
+              </p>
+            </div>
+          )}
+        </motion.div>
+      </AnimatePresence>
+    );
+  };
+
   // 5. User Controls
   const toggleMute = () => {
     const nextMuted = !isMuted;
     setIsMuted(nextMuted);
+    isMutedRef.current = nextMuted;
     speechRecRef.current?.setMuted(nextMuted);
   };
 
@@ -600,6 +773,7 @@ export function KokoroCallSession({
     }
     neuralVoice.stop();
     setIsAgentSpeaking(false);
+    isAgentSpeakingRef.current = false;
     setIsAgentThinking(false);
     speechRecRef.current?.resumeImmediatelyForInterrupt();
   };
@@ -814,6 +988,9 @@ export function KokoroCallSession({
           )}
         </div>
 
+        {/* Booking Review Card */}
+        {renderReviewCard(true)}
+
         {/* Thumb Call Controls */}
         <div className="w-full pt-4 border-t border-[#f4f4f5]">
           <div className="flex items-center justify-center gap-8">
@@ -999,6 +1176,13 @@ export function KokoroCallSession({
             )}
           </div>
         </div>
+
+        {/* Booking Review Card */}
+        {confirmationTicket && (
+          <div className="px-5 py-3 bg-[#fafafa]/60 border-t border-[#e7e7e7]">
+            {renderReviewCard(false)}
+          </div>
+        )}
 
         {/* Action Controls Footer */}
         <div className="px-5 py-3.5 flex items-center justify-between gap-3 bg-[#fafafa]">

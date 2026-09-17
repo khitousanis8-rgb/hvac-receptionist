@@ -219,16 +219,41 @@ def start_or_get_browser_call(
         return int(record.id)
 
 
-def is_authorized_active_call(call_id: int, room_name: str, access_token: str) -> bool:
-    """Return whether the browser owns this still-active call record."""
-    token_hash = _token_hash(access_token)
+def is_authorized_active_call(
+    call_id: int | str,
+    room_name: str | None = None,
+    access_token: str | None = None,
+) -> bool:
+    """Return whether the browser owns this still-active call record.
+
+    Can be called as:
+      is_authorized_active_call(call_id, room_name, access_token)
+      or
+      is_authorized_active_call(call_id, access_token)
+    """
+    if access_token is None and room_name is not None:
+        actual_token = room_name
+        actual_room = None
+    else:
+        actual_token = access_token or ""
+        actual_room = room_name
+
+    token_hash = _token_hash(actual_token)
+    cid = (
+        call_id
+        if isinstance(call_id, int)
+        else (int(call_id) if isinstance(call_id, str) and call_id.isdigit() else None)
+    )
+    if cid is None:
+        return False
     with new_session() as session:
-        record = session.get(CallRecord, call_id)
+        record = session.get(CallRecord, cid)
+        if not record or record.ended_at is not None:
+            return False
+        if actual_room is not None and record.room_name != actual_room:
+            return False
         return bool(
-            record
-            and record.ended_at is None
-            and record.room_name == room_name
-            and record.access_token_hash
+            record.access_token_hash
             and hmac.compare_digest(record.access_token_hash, token_hash)
         )
 

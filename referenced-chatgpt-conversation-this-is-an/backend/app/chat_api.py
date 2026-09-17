@@ -9,8 +9,9 @@ import re
 import threading
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request, status
@@ -31,12 +32,22 @@ from app.call_tracking import (
     update_call_slots,
 )
 from app.config import Settings, get_settings
-from app.db import new_session
+from app.db import (
+    CallRecord,
+    ConfirmationTicket,
+    create_confirmation_ticket,
+    get_recent_call_turns,
+    new_session,
+    record_call_turn,
+)
 from app.scheduling import (
     book_appointment,
+    has_conflict,
+    is_within_business_hours,
+    normalize_nanp_phone,
     parse_local_datetime,
 )
-from app.security import check_chat_rate_limit, get_client_ip
+from app.security import check_booking_rate_limit, check_chat_rate_limit, get_client_ip
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/v1/calls", tags=["calls"])
@@ -145,34 +156,67 @@ def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
 
 
 
-def _is_echo_of_assistant(message: str, history: list[ChatMessage]) -> bool:
+def _is_echo_of_assistant(
+    message: str,
+    history: list[ChatMessage] | None = None,
+    call_id: int | str | None = None,
+) -> bool:
     """Detect speaker-feedback echo: the mic re-captured the assistant's TTS.
 
     If the user utterance is an exact prefix, suffix, substring (>=2 words),
-    or >=75% word overlap with a recent assistant utterance from the caller's
-    own session history, it is flagged as echo.
+    or >=75% word overlap with a recent assistant utterance from server turns
+    or session history, it is flagged as echo.
     """
     clean_msg = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", message.lower())).strip()
     if not clean_msg:
-        return False
-
-    # Never treat genuine affirmative caller responses as echo
-    if is_explicit_booking_confirmation(message):
         return False
 
     msg_words = [w for w in clean_msg.split() if len(w) >= 2]
     if not msg_words:
         return False
 
-    for msg in history[-6:]:
-        if msg.role != "assistant":
-            continue
-        clean_asst = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", msg.content.lower())).strip()
+    # Never treat genuine affirmative responses or time clarifications as echo
+    if is_explicit_booking_confirmation(message):
+        return False
+    clarification_tokens = {"morning", "afternoon", "evening", "am", "pm"}
+    if (
+        len(msg_words) <= 4
+        and any(p in clean_msg.split() for p in clarification_tokens)
+        and not (
+            clean_msg.startswith("just to confirm")
+            or clean_msg.startswith("would you like me to book")
+        )
+    ):
+        return False
+
+    assistant_texts: list[str] = []
+    if call_id is not None:
+        try:
+            turns = get_recent_call_turns(call_id, limit=6)
+            for turn in turns:
+                if turn.role == "assistant" and turn.content:
+                    assistant_texts.append(turn.content)
+        except Exception:
+            pass
+
+    if not assistant_texts and history:
+        for msg in history[-6:]:
+            if msg.role == "assistant" and msg.content:
+                assistant_texts.append(msg.content)
+
+    stop_words = {
+        "a", "an", "the", "in", "on", "at", "to", "for", "with", "of",
+        "and", "or", "is", "are", "i", "you", "we", "it", "do", "can",
+        "my", "your", "what", "when", "how", "this", "that", "there",
+    }
+    content_words = [w for w in msg_words if w not in stop_words]
+
+    for asst_text in assistant_texts:
+        clean_asst = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", asst_text.lower())).strip()
         if not clean_asst:
             continue
 
         # 1. Exact prefix or suffix match for short echoed phrases (>= 2 words)
-        # e.g. "hi there", "got it", "would you like me to book it", "no problem at all"
         if len(msg_words) >= 2:
             if clean_asst.startswith(clean_msg) or clean_asst.endswith(clean_msg):
                 return True
@@ -180,24 +224,50 @@ def _is_echo_of_assistant(message: str, history: list[ChatMessage]) -> bool:
             if len(msg_words) >= 3 and len(clean_msg) >= 8 and clean_msg in clean_asst:
                 return True
 
-        # 2. High word overlap for longer utterances (>= 4 words)
-        if len(msg_words) >= 4:
+        # 2. High word overlap for longer utterances using content words (>= 3 content words)
+        if len(content_words) >= 3:
             asst_words = set(clean_asst.split())
             if asst_words:
-                overlap = sum(1 for w in msg_words if w in asst_words) / len(msg_words)
-                if overlap >= 0.75:
+                overlap = sum(1 for w in content_words if w in asst_words) / len(content_words)
+                if overlap >= 0.8:
                     return True
     return False
 
 
 def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[str, Any]:
-    """Lightweight rule-based extractor to update known slots from user utterances."""
+    """Extract and separate candidate extractions from verified facts.
+
+    Maintains candidates and verified slot models, strictly detects negated services,
+    and flags ambiguous time expressions for AM/PM clarification without guessing.
+    """
     updates: dict[str, Any] = {}
     lower = text.lower().strip()
 
     # Reject acoustic mic echoes of assistant greeting and system phrases
     if _is_assistant_echo(text):
         return updates
+
+    # Initialize candidate, verified, and negation state
+    existing_candidates = current_slots.get("candidates")
+    candidates: dict[str, Any] = (
+        dict(existing_candidates) if isinstance(existing_candidates, dict) else {}
+    )
+    existing_verified = current_slots.get("verified")
+    verified: dict[str, Any] = (
+        dict(existing_verified) if isinstance(existing_verified, dict) else {}
+    )
+    existing_negated = current_slots.get("negated_services")
+    negated_services: list[str] = (
+        list(existing_negated) if isinstance(existing_negated, list) else []
+    )
+    clarification_needed: str | None = current_slots.get("clarification_needed")
+
+    # Seed from top-level slots if candidates/verified were empty
+    for field in ("name", "phone", "service", "date", "time"):
+        if field not in candidates and current_slots.get(field):
+            candidates[field] = current_slots.get(field)
+        if field not in verified and current_slots.get(field):
+            verified[field] = current_slots.get(field)
 
     # 1. Name extraction
     name_patterns = [
@@ -214,6 +284,8 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
                 "interested", "repair", "service", "ac", "heating", "cooling",
                 "this", "here", "just", "how",
             } and candidate.lower() not in {"sarah how", "sarah here"}:
+                candidates["name"] = candidate
+                verified["name"] = candidate
                 updates["name"] = candidate
                 break
 
@@ -226,31 +298,81 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
     normalized_for_phone = lower
     for word, digit in digit_map.items():
         normalized_for_phone = re.sub(rf"\b{word}\b", digit, normalized_for_phone)
-    # Exclude ISO date patterns so calendar dates are not misclassified as phone numbers
     normalized_for_phone = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", normalized_for_phone)
 
     phone_match = re.search(r"(\+?\s*[\d\s\-\.\(\)]{6,}\d)", normalized_for_phone)
     if phone_match:
         matched_str = phone_match.group(1)
         raw_digits = re.sub(r"[^\d]", "", matched_str)
-        # Strict 10-digit NANP validation: must be 10 digits or 11 digits starting with 1
-        if len(raw_digits) == 10 and raw_digits[0] not in "01":
+        candidates["phone"] = matched_str.strip()
+        # Strict 10-digit NANP validation via normalize_nanp_phone
+        nanp = normalize_nanp_phone(raw_digits)
+        if nanp is not None:
             prefix = "+" if "+" in matched_str else ""
-            updates["phone"] = f"{prefix}{raw_digits}"
-        elif len(raw_digits) == 11 and raw_digits.startswith("1") and raw_digits[1] not in "01":
-            prefix = "+" if "+" in matched_str else ""
-            updates["phone"] = f"{prefix}{raw_digits}"
+            phone_val = f"{prefix}{raw_digits}"
+            verified["phone"] = phone_val
+            updates["phone"] = phone_val
+        else:
+            # 7-digit, 8-digit, 9-digit, or invalid area code remains candidate only; not verified
+            verified["phone"] = None
 
-    # 3. Service extraction (use word boundaries to prevent matching 'actually', 'package', etc.)
+    # 3. Service extraction with Negation Detection
+    ac_neg_pat = (
+        r"\b(?:not|no|never|dont\s+need|don't\s+need|dont\s+want|don't\s+want|"
+        r"instead\s+of|rather\s+than|other\s+than)\s+(?:an?\s+)?(?:a/?c|air\s*condition(?:ing)?)\b|"
+        r"\b(?:a/?c|air\s*condition(?:ing)?)\s+(?:cancelled|is\s+not\s+what\s+i\s+need)\b"
+    )
+    heating_neg_pat = (
+        r"\b(?:not|no|never|dont\s+need|don't\s+need|dont\s+want|don't\s+want|"
+        r"instead\s+of|rather\s+than|other\s+than)\s+(?:an?\s+)?(?:furnace|heating|heater|boiler|heat\s*pump)\b|"
+        r"\b(?:furnace|heating|heater|boiler|heat\s*pump)\s+(?:cancelled|is\s+not\s+what\s+i\s+need)\b"
+    )
+    tuneup_neg_pat = (
+        r"\b(?:not|no|never|dont\s+need|don't\s+need|dont\s+want|don't\s+want|"
+        r"instead\s+of|rather\s+than|other\s+than)\s+(?:an?\s+)?(?:tune-?up|tune\s*up|maintenance|inspection)\b|"
+        r"\b(?:tune-?up|tune\s*up|maintenance|inspection)\s+(?:cancelled|is\s+not\s+what\s+i\s+need)\b"
+    )
+
+    this_turn_negated: list[str] = []
+    if re.search(ac_neg_pat, lower):
+        this_turn_negated.append("AC repair")
+    if re.search(heating_neg_pat, lower):
+        this_turn_negated.append("Heating repair")
+    if re.search(tuneup_neg_pat, lower):
+        this_turn_negated.append("HVAC tune-up")
+
+    for neg_svc in this_turn_negated:
+        if neg_svc not in negated_services:
+            negated_services.append(neg_svc)
+        if candidates.get("service") == neg_svc:
+            candidates["service"] = None
+        if verified.get("service") == neg_svc:
+            verified["service"] = None
+
+    aff_matches: list[str] = []
     if re.search(r"\b(a/?c|air\s*condition(?:ing)?|cooling|not\s+cooling)\b", lower):
-        updates["service"] = "AC repair"
-    elif re.search(r"\b(furnace|heating|heater|boiler|heat\s*pump)\b", lower):
-        updates["service"] = "Heating repair"
-    elif re.search(r"\b(tune-?up|tune\s*up|maintenance|inspection)\b", lower):
-        updates["service"] = "HVAC tune-up"
+        if "AC repair" not in this_turn_negated:
+            aff_matches.append("AC repair")
+    if re.search(r"\b(furnace|heating|heater|boiler|heat\s*pump)\b", lower):
+        if "Heating repair" not in this_turn_negated:
+            aff_matches.append("Heating repair")
+    if re.search(r"\b(tune-?up|tune\s*up|maintenance|inspection)\b", lower):
+        if "HVAC tune-up" not in this_turn_negated:
+            aff_matches.append("HVAC tune-up")
 
-    # 4. Date/time extraction. Keep each field canonical so the safety repair
-    # can pass the same schema used by the booking tool.
+    if aff_matches:
+        chosen_service = aff_matches[0]
+        candidates["service"] = chosen_service
+        verified["service"] = chosen_service
+        updates["service"] = chosen_service
+        if chosen_service in negated_services:
+            negated_services.remove(chosen_service)
+    elif this_turn_negated:
+        candidates["service"] = None
+        verified["service"] = None
+        updates["service"] = None
+
+    # 4. Date extraction
     date_match = re.search(
         r"\b(\d{4}-\d{2}-\d{2}|today|tomorrow|next\s+"
         r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
@@ -258,43 +380,154 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
         lower,
     )
     if date_match:
-        updates["date"] = date_match.group(1)
+        extracted_date = date_match.group(1)
+        candidates["date"] = extracted_date
+        verified["date"] = extracted_date
+        updates["date"] = extracted_date
+
+    # 5. Time extraction with Ambiguity Resolution (no auto-guessing)
+    word_to_hour = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+        "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    }
+
+    # If previously clarifying AM/PM, resolve if user now specified period
+    if clarification_needed == "time_am_pm" and "time" not in updates:
+        has_pm = bool(re.search(r"\b(?:p\.?m\.?|afternoon|evening|night)\b", lower))
+        has_am = bool(re.search(r"\b(?:a\.?m\.?|morning)\b", lower))
+        cand_time_str = str(candidates.get("time") or "03:00").split()[0]
+        parts = cand_time_str.split(":")
+        h = int(parts[0]) if parts[0].isdigit() else 3
+        m = parts[1] if len(parts) > 1 and parts[1].isdigit() else "00"
+        if has_pm and not has_am:
+            time_val = f"{h:02d}:{m} PM"
+            candidates["time"] = time_val
+            verified["time"] = time_val
+            clarification_needed = None
+            updates["time"] = time_val
+        elif has_am and not has_pm:
+            time_val = f"{h:02d}:{m} AM"
+            candidates["time"] = time_val
+            verified["time"] = time_val
+            clarification_needed = None
+            updates["time"] = time_val
+
+    # Explicit time with AM/PM: e.g. "9:00 a.m.", "3 PM", "3:30 AM", "3:00pm", "3am"
     time_match = re.search(
         r"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))\b",
         lower,
     )
     if time_match:
-        updates["time"] = time_match.group(1)
+        matched_time = time_match.group(1)
+        candidates["time"] = matched_time
+        verified["time"] = matched_time
+        clarification_needed = None
+        updates["time"] = matched_time
+    elif re.search(r"\bnoon\b|\bmidday\b", lower):
+        time_val = "12:00 PM"
+        candidates["time"] = time_val
+        verified["time"] = time_val
+        clarification_needed = None
+        updates["time"] = time_val
     else:
-        oclock_m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*o'?clock\b", lower)
-        at_m = re.search(r"\b(?:at|around)\s+(\d{1,2})(?::(\d{2}))?\b", lower)
         hour_candidate: int | None = None
         min_candidate = "00"
-        if oclock_m:
-            hour_candidate = int(oclock_m.group(1))
-            if oclock_m.group(2):
-                min_candidate = oclock_m.group(2)
-        elif at_m:
-            hour_candidate = int(at_m.group(1))
-            if at_m.group(2):
-                min_candidate = at_m.group(2)
+
+        oclock_digits = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*o'?clock\b", lower)
+        at_digits = re.search(r"\b(?:at|around)\s+(\d{1,2})(?::(\d{2}))?\b", lower)
+        num_words_pat = "|".join(word_to_hour.keys())
+        oclock_words = re.search(rf"\b({num_words_pat})\s*o'?clock\b", lower)
+        at_words = re.search(rf"\b(?:at|around)\s+({num_words_pat})\b", lower)
+
+        if oclock_digits:
+            hour_candidate = int(oclock_digits.group(1))
+            if oclock_digits.group(2):
+                min_candidate = oclock_digits.group(2)
+        elif at_digits:
+            hour_candidate = int(at_digits.group(1))
+            if at_digits.group(2):
+                min_candidate = at_digits.group(2)
+        elif oclock_words:
+            hour_candidate = word_to_hour[oclock_words.group(1)]
+        elif at_words:
+            hour_candidate = word_to_hour[at_words.group(1)]
 
         if hour_candidate is not None and 1 <= hour_candidate <= 23:
-            if "afternoon" in lower or "evening" in lower or "night" in lower or "pm" in lower:
-                period = "PM"
-            elif "morning" in lower or "am" in lower:
-                period = "AM"
+            if any(w in lower for w in ("afternoon", "evening", "night", "pm")):
+                time_val = f"{hour_candidate:02d}:{min_candidate} PM"
+                candidates["time"] = time_val
+                verified["time"] = time_val
+                clarification_needed = None
+                updates["time"] = time_val
+            elif any(w in lower for w in ("morning", "am")):
+                time_val = f"{hour_candidate:02d}:{min_candidate} AM"
+                candidates["time"] = time_val
+                verified["time"] = time_val
+                clarification_needed = None
+                updates["time"] = time_val
+            elif 1 <= hour_candidate <= 6:
+                # AMBIGUOUS: 1..6 (e.g. "tomorrow at three" or "at 3") without AM/PM!
+                # Do NOT auto-guess PM! Flag clarification_needed = "time_am_pm"
+                # Keep candidate observation, but do NOT set verified.time or updates["time"]
+                candidates["time"] = f"{hour_candidate:02d}:{min_candidate}"
+                verified["time"] = None
+                clarification_needed = "time_am_pm"
             else:
-                period = "PM" if 1 <= hour_candidate <= 6 else "AM"
-            updates["time"] = f"{hour_candidate:02d}:{min_candidate} {period}"
-        elif re.search(r"\bnoon\b|\bmidday\b", lower):
-            updates["time"] = "12:00 PM"
-        elif re.search(r"\bmorning\b", lower):
-            updates["time"] = "09:00 AM"
-        elif re.search(r"\bafternoon\b", lower):
-            updates["time"] = "02:00 PM"
-        elif re.search(r"\bevening\b", lower):
-            updates["time"] = "05:00 PM"
+                # 7..12: standard business hours AM (or 12 PM)
+                period = "AM" if hour_candidate < 12 else "PM"
+                time_val = f"{hour_candidate:02d}:{min_candidate} {period}"
+                candidates["time"] = time_val
+                verified["time"] = time_val
+                clarification_needed = None
+                updates["time"] = time_val
+
+        elif re.search(r"\bmorning\b", lower) and "time" not in updates:
+            if candidates.get("time") and clarification_needed == "time_am_pm":
+                cand_h = int(str(candidates["time"]).split(":")[0])
+                time_val = f"{cand_h:02d}:00 AM"
+            else:
+                time_val = "09:00 AM"
+            candidates["time"] = time_val
+            verified["time"] = time_val
+            clarification_needed = None
+            updates["time"] = time_val
+        elif re.search(r"\bafternoon\b", lower) and "time" not in updates:
+            if candidates.get("time") and clarification_needed == "time_am_pm":
+                cand_h = int(str(candidates["time"]).split(":")[0])
+                time_val = f"{cand_h:02d}:00 PM"
+            else:
+                time_val = "02:00 PM"
+            candidates["time"] = time_val
+            verified["time"] = time_val
+            clarification_needed = None
+            updates["time"] = time_val
+        elif re.search(r"\bevening\b", lower) and "time" not in updates:
+            if candidates.get("time") and clarification_needed == "time_am_pm":
+                cand_h = int(str(candidates["time"]).split(":")[0])
+                time_val = f"{cand_h:02d}:00 PM"
+            else:
+                time_val = "05:00 PM"
+            candidates["time"] = time_val
+            verified["time"] = time_val
+            clarification_needed = None
+            updates["time"] = time_val
+
+    # Only return updates if something changed or was extracted!
+    has_changes = (
+        bool(updates)
+        or candidates != existing_candidates
+        or verified != existing_verified
+        or negated_services != existing_negated
+        or clarification_needed != current_slots.get("clarification_needed")
+    )
+
+    if not has_changes:
+        return {}
+
+    updates["candidates"] = candidates
+    updates["verified"] = verified
+    updates["negated_services"] = negated_services
+    updates["clarification_needed"] = clarification_needed
 
     return updates
 
@@ -303,11 +536,16 @@ _parse_local_datetime = parse_local_datetime
 
 
 def booking_missing_fields(slots: dict[str, Any]) -> list[str]:
-    """Required for an actual booking: service, phone, date, and time."""
+    """Required for an actual booking: service, phone, date, and time.
+
+    Checks verified slots first, falling back to top-level slots.
+    """
     required = ["service", "phone", "date", "time"]
     missing: list[str] = []
+    raw_verified = slots.get("verified")
+    verified: dict[str, Any] = raw_verified if isinstance(raw_verified, dict) else {}
     for field in required:
-        val = slots.get(field)
+        val = verified.get(field) if verified else slots.get(field)
         if not val or not str(val).strip():
             missing.append(field)
     return missing
@@ -377,7 +615,9 @@ def is_explicit_booking_confirmation(text: str) -> bool:
         "sure go ahead",
         "yes book it",
         "yes book that",
+        "yes please book it",
         "yes please book that",
+        "yes please book",
         "that works",
         "that works for me",
         "sounds good",
@@ -405,19 +645,23 @@ def is_explicit_booking_confirmation(text: str) -> bool:
 
 def booking_confirmation_fingerprint(slots: dict[str, Any]) -> str:
     """Compute a stable hash of the 4 core booking details."""
-    phone = str(slots.get("phone", "")).strip().lower()
-    service = str(slots.get("service", "")).strip().lower()
-    date_val = str(slots.get("date", "")).strip().lower()
-    time_val = str(slots.get("time", "")).strip().lower()
+    raw_verified = slots.get("verified")
+    verified: dict[str, Any] = raw_verified if isinstance(raw_verified, dict) else {}
+    phone = str(verified.get("phone") or slots.get("phone", "")).strip().lower()
+    service = str(verified.get("service") or slots.get("service", "")).strip().lower()
+    date_val = str(verified.get("date") or slots.get("date", "")).strip().lower()
+    time_val = str(verified.get("time") or slots.get("time", "")).strip().lower()
     raw = f"{phone}|{service}|{date_val}|{time_val}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def booking_confirmation_text(settings: Settings, slots: dict[str, Any]) -> str:
     """Build the spoken confirmation recap from verified durable slots."""
-    service = slots.get("service") or "service"
-    date_val = slots.get("date") or "your requested date"
-    time_val = slots.get("time") or "your requested time"
+    raw_verified = slots.get("verified")
+    verified: dict[str, Any] = raw_verified if isinstance(raw_verified, dict) else {}
+    service = verified.get("service") or slots.get("service") or "service"
+    date_val = verified.get("date") or slots.get("date") or "your requested date"
+    time_val = verified.get("time") or slots.get("time") or "your requested time"
 
     parsed_dt = _parse_local_datetime(settings, str(date_val), str(time_val))
     if parsed_dt is not None:
@@ -469,6 +713,127 @@ def _is_safety_emergency(text: str) -> bool:
     if re.search(r"\bfire\b", lower):
         return True
     return False
+
+
+def _is_lookup_query(text: str) -> bool:
+    """Detect anonymous appointment lookup queries to enforce neutral privacy refusal."""
+    lowered = text.lower()
+    if any(
+        phrase in lowered
+        for phrase in (
+            "existing appointment",
+            "my appointment",
+            "prior appointment",
+            "past appointment",
+            "check my appointment",
+            "look up my appointment",
+            "find my appointment",
+            "status of my appointment",
+            "when is my appointment",
+            "what time is my appointment",
+            "do i have an appointment",
+            "existing booking",
+            "my booking",
+            "prior booking",
+            "past booking",
+            "check my booking",
+            "look up my booking",
+            "find my booking",
+            "status of my booking",
+            "when is my booking",
+            "what time is my booking",
+            "do i have a booking",
+        )
+    ):
+        return True
+
+    if re.search(
+        r"\b(when is|what time is|status of|check|look\s*up|lookup|find|verify)\b"
+        r".*\b(the|an|my)?\s*(existing\s+)?(appointment|booking)\b",
+        lowered,
+    ):
+        return True
+    if re.search(
+        r"\b(appointment|booking)\b.*\b(check|look\s*up|lookup|status|(?:for|under|with)\s+\+?1?\d{3})\b",
+        lowered,
+    ):
+        return True
+    if re.search(
+        r"\b(?:is there|do i have|can you (?:see|check)|any)\b"
+        r".*\b(?:an?|my)?\s*(?:existing\s+)?(?:appointment|booking)\b",
+        lowered,
+    ):
+        return True
+    return False
+
+
+def _is_hours_query(text: str) -> bool:
+    """Detect if caller is asking about business or operating hours."""
+    lowered = text.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "what are your hours",
+            "what hours",
+            "business hours",
+            "opening hours",
+            "when are you open",
+            "are you open",
+            "what time do you open",
+            "what time do you close",
+            "operating hours",
+            "your hours",
+        )
+    )
+
+
+def format_opening_hours_speech(settings: Settings) -> str:
+    """Format opening hours into natural spoken English for voice synthesis."""
+    hours = settings.business_opening_hours
+    if not hours:
+        return (
+            f"At {settings.business_company_name}, we are open Monday through Friday from 8:00 AM "
+            "to 6:00 PM, and Saturday from 8:00 AM to 6:00 PM. We are closed on Sunday."
+        )
+
+    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    if len(hours) == 7 and len(set(hours.values())) == 1:
+        val = list(hours.values())[0]
+        if val.lower() != "closed":
+            return f"At {settings.business_company_name}, we are open seven days a week from {val}."
+
+    mon_fri = ["monday", "tuesday", "wednesday", "thursday", "friday"]
+    if all(d in hours for d in mon_fri) and len(set(hours[d] for d in mon_fri)) == 1:
+        mf_val = hours["monday"]
+        sat_val = hours.get("saturday", "closed")
+        sun_val = hours.get("sunday", "closed")
+        summary = f"Monday through Friday from {mf_val}"
+        if sat_val == sun_val:
+            if sat_val.lower() == "closed":
+                summary += ", and closed on weekends"
+            else:
+                summary += f", and weekends from {sat_val}"
+        else:
+            if sat_val.lower() != "closed":
+                summary += f", Saturday from {sat_val}"
+            else:
+                summary += ", closed Saturday"
+            if sun_val.lower() != "closed":
+                summary += f", and Sunday from {sun_val}"
+            else:
+                summary += ", and closed Sunday"
+        return f"At {settings.business_company_name}, we are open {summary}."
+
+    parts: list[str] = []
+    for d in day_names:
+        if d in hours:
+            v = hours[d]
+            if v.lower() == "closed":
+                parts.append(f"closed on {d.title()}")
+            else:
+                parts.append(f"{d.title()} from {v}")
+    return f"At {settings.business_company_name}, our hours are {', '.join(parts)}."
+
 
 
 def _is_general_question(text: str) -> bool:
@@ -802,6 +1167,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         call_id = start_or_get_browser_call(
             req.session_id, req.call_secret, client_telemetry=req.client_telemetry
         )
+        await asyncio.to_thread(record_call_turn, call_id, "assistant", greeting_text)
 
         async def greeting_generator() -> AsyncIterator[str]:
             yield f"event: call_started\ndata: {json.dumps({'call_id': call_id})}\n\n"
@@ -833,7 +1199,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     # Returns a silent no-op (event: done only) to completely eliminate spoken feedback loops.
     if (
         _is_assistant_echo(req.message, settings.business_company_name)
-        or _is_echo_of_assistant(req.message, req.history)
+        or _is_echo_of_assistant(req.message, req.history, active_call_id)
     ):
         async def echo_noop_generator() -> AsyncIterator[str]:
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
@@ -844,18 +1210,43 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    # Persist authoritative caller turn in server database
+    await asyncio.to_thread(record_call_turn, active_call_id, "caller", req.message)
+
     # Detect life-safety emergencies immediately
     if _is_safety_emergency(req.message):
+        emergency_text = (
+            "If you smell gas or smoke, or see fire or sparks, please leave the building "
+            "immediately and call 911! Your safety is the top priority."
+        )
+        await asyncio.to_thread(record_call_turn, active_call_id, "assistant", emergency_text)
+
         async def emergency_generator() -> AsyncIterator[str]:
-            emergency_text = (
-                "If you smell gas or smoke, or see fire or sparks, please leave the building "
-                "immediately and call 911! Your safety is the top priority."
-            )
             yield f"event: delta\ndata: {json.dumps({'text': emergency_text})}\n\n"
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
         return StreamingResponse(
             emergency_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # Detect anonymous appointment lookup queries immediately and enforce privacy refusal
+    if _is_lookup_query(req.message):
+        policy_text = (
+            "For privacy and security, appointment details cannot be looked up or disclosed "
+            "over this channel with just a phone number. "
+            "I can help arrange a new service visit, "
+            "or you can manage existing appointments through our verified customer portal."
+        )
+        await asyncio.to_thread(record_call_turn, active_call_id, "assistant", policy_text)
+
+        async def lookup_refusal_generator() -> AsyncIterator[str]:
+            yield f"event: delta\ndata: {json.dumps({'text': policy_text})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+        return StreamingResponse(
+            lookup_refusal_generator(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -878,11 +1269,13 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             _is_closing_or_polite_remark(req.message)
             or is_explicit_booking_confirmation(req.message)
         ):
+            msg = (
+                "You're already all set for your appointment! "
+                "Our technician will see you then. Thanks for calling and have a great day!"
+            )
+            await asyncio.to_thread(record_call_turn, active_call_id, "assistant", msg)
+
             async def already_confirmed_generator() -> AsyncIterator[str]:
-                msg = (
-                    "You're already all set for your appointment! "
-                    "Our technician will see you then. Thanks for calling and have a great day!"
-                )
                 yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
                 yield f"event: done\ndata: {json.dumps({'outcome': 'booked'})}\n\n"
 
@@ -893,62 +1286,50 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             )
 
     # 3. Deterministic Booking State Machine Routing
-    # Case A: A server recap was previously requested and is awaiting confirmation
     has_active_recap = bool(
         slots.get("confirmation_requested") and slots.get("confirmation_fingerprint")
     )
+
+    # Detect inquiries about opening hours and respond deterministically from configuration
+    if (
+        _is_hours_query(req.message)
+        and not has_active_recap
+        and not _is_booking_flow_active(slots, req.message)
+    ):
+        hours_speech = (
+            f"{format_opening_hours_speech(settings)} "
+            "How can I help you with your heating or cooling today?"
+        )
+        await asyncio.to_thread(record_call_turn, active_call_id, "assistant", hours_speech)
+
+        async def hours_generator() -> AsyncIterator[str]:
+            yield f"event: delta\ndata: {json.dumps({'text': hours_speech})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+        return StreamingResponse(
+            hours_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # Case A: A server recap was previously requested and is awaiting confirmation
     if has_active_recap:
         expected_fp = str(slots.get("confirmation_fingerprint"))
         current_fp = booking_confirmation_fingerprint(slots)
         if expected_fp == current_fp:
             if is_explicit_booking_confirmation(req.message):
-                phone_arg = str(slots.get("phone", "")).strip()
-                service_arg = str(slots.get("service", "")).strip()
-                date_arg = str(slots.get("date", "")).strip()
-                time_arg = str(slots.get("time", "")).strip()
-                caller_name = slots.get("name")
-                tool_args: dict[str, Any] = {
-                    "phone_number": phone_arg,
-                    "service": service_arg,
-                    "date": date_arg,
-                    "time": time_arg,
-                }
-                if caller_name:
-                    tool_args["name"] = str(caller_name).strip()
-
-                tool_result = await asyncio.to_thread(
-                    _execute_tool, settings, "book_appointment_tool", tool_args
+                guidance = (
+                    "I have those details ready! "
+                    "Please tap Confirm Booking on your screen to complete your appointment."
                 )
-                spoken_reply, success = booking_result_text(tool_result)
-                if success:
-                    await asyncio.to_thread(
-                        update_call_slots,
-                        active_call_id,
-                        {
-                            "confirmed": True,
-                            "confirmation_requested": False,
-                            "confirmation_fingerprint": None,
-                        },
-                    )
-                    await asyncio.to_thread(update_call_outcome, active_call_id, "booked")
-                else:
-                    await asyncio.to_thread(
-                        update_call_slots,
-                        active_call_id,
-                        {"confirmation_requested": False, "confirmation_fingerprint": None},
-                    )
+                await asyncio.to_thread(record_call_turn, active_call_id, "assistant", guidance)
 
-                async def execution_generator() -> AsyncIterator[str]:
-                    outcome = "booked" if success else "info_only"
-                    call_data = json.dumps(
-                        {"name": "book_appointment_tool", "result": tool_result}
-                    )
-                    yield f"event: tool_call\ndata: {call_data}\n\n"
-                    yield f"event: delta\ndata: {json.dumps({'text': spoken_reply})}\n\n"
-                    yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
+                async def tap_prompt_generator() -> AsyncIterator[str]:
+                    yield f"event: delta\ndata: {json.dumps({'text': guidance})}\n\n"
+                    yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
                 return StreamingResponse(
-                    execution_generator(),
+                    tap_prompt_generator(),
                     media_type="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
                 )
@@ -969,11 +1350,13 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                         "date": None,
                     },
                 )
+                decline_msg = (
+                    "No problem at all! Would you like to check a different day or time, "
+                    "or is there something else I can help with?"
+                )
+                await asyncio.to_thread(record_call_turn, active_call_id, "assistant", decline_msg)
+
                 async def decline_generator() -> AsyncIterator[str]:
-                    decline_msg = (
-                        "No problem at all! Would you like to check a different day or time, "
-                        "or is there something else I can help with?"
-                    )
                     yield f"event: delta\ndata: {json.dumps({'text': decline_msg})}\n\n"
                     yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
@@ -984,11 +1367,13 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 )
 
             if not _is_general_question(req.message):
+                clarif_msg = (
+                    "I just need a quick yes or no. Would you like me to go ahead "
+                    "and book that appointment for you?"
+                )
+                await asyncio.to_thread(record_call_turn, active_call_id, "assistant", clarif_msg)
+
                 async def clarif_generator() -> AsyncIterator[str]:
-                    clarif_msg = (
-                        "I just need a quick yes or no. Would you like me to go ahead "
-                        "and book that appointment for you?"
-                    )
                     yield f"event: delta\ndata: {json.dumps({'text': clarif_msg})}\n\n"
                     yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
@@ -998,18 +1383,50 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
                 )
 
+    # Ambiguity check: If time needs AM/PM clarification, clarify without auto-guessing
+    if slots.get("clarification_needed") == "time_am_pm" and not _is_general_question(req.message):
+        candidate_time = (slots.get("candidates") or {}).get("time") or "3"
+        time_display = str(candidate_time)
+        if ":" in time_display:
+            parts = time_display.split(":")
+            try:
+                h = int(parts[0])
+                m = parts[1][:2]
+                time_display = f"{h}:{m}" if m != "00" else f"{h}"
+            except ValueError:
+                pass
+        q_text = f"Would you prefer {time_display} in the morning or in the afternoon?"
+        await asyncio.to_thread(record_call_turn, active_call_id, "assistant", q_text)
+
+        async def time_clarif_gen() -> AsyncIterator[str]:
+            yield f"event: delta\ndata: {json.dumps({'text': q_text})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+        return StreamingResponse(
+            time_clarif_gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     # Case B: No active recap. Check missing booking fields.
     missing = booking_missing_fields(slots)
-    if not missing and not _is_general_question(req.message) and not has_active_recap:
+    if (
+        not missing
+        and not _is_general_question(req.message)
+        and not has_active_recap
+        and not slots.get("clarification_needed")
+    ):
         parsed_dt = _parse_local_datetime(
             settings, str(slots.get("date")), str(slots.get("time"))
         )
         if parsed_dt is None:
+            msg = (
+                "I couldn't quite understand that date or time. "
+                "Could you give me a specific day and time, like tomorrow at 10 AM?"
+            )
+            await asyncio.to_thread(record_call_turn, active_call_id, "assistant", msg)
+
             async def invalid_dt_gen() -> AsyncIterator[str]:
-                msg = (
-                    "I couldn't quite understand that date or time. "
-                    "Could you give me a specific day and time, like tomorrow at 10 AM?"
-                )
                 yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
                 yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
@@ -1021,8 +1438,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
         now_local = datetime.now(parsed_dt.tzinfo or UTC)
         if parsed_dt < now_local:
+            msg = "That time has already passed. What future day and time works best for you?"
+            await asyncio.to_thread(record_call_turn, active_call_id, "assistant", msg)
+
             async def past_dt_gen() -> AsyncIterator[str]:
-                msg = "That time has already passed. What future day and time works best for you?"
                 yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
                 yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
@@ -1032,16 +1451,122 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
+        # Check opening hours constraint (Phase 4: Constrained public facts & availability)
+        if settings.business_opening_hours and not is_within_business_hours(parsed_dt, settings):
+            day_name = parsed_dt.strftime("%A").lower()
+            day_window = settings.business_opening_hours.get(day_name, "closed")
+            if day_window == "closed" or not day_window:
+                msg = (
+                    f"We are closed on {day_name.title()}. "
+                    f"What other day would work best for your appointment?"
+                )
+                await asyncio.to_thread(
+                    update_call_slots,
+                    active_call_id,
+                    {"date": None, "time": None},
+                )
+            else:
+                msg = (
+                    f"That time is outside our business hours. We are open from {day_window} "
+                    f"on {day_name.title()}. What time during our open hours works best for you?"
+                )
+                await asyncio.to_thread(
+                    update_call_slots,
+                    active_call_id,
+                    {"time": None},
+                )
+            await asyncio.to_thread(record_call_turn, active_call_id, "assistant", msg)
+
+            async def outside_hours_gen() -> AsyncIterator[str]:
+                yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
+                yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+            return StreamingResponse(
+                outside_hours_gen(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        # Check existing appointment slot conflict (Phase 4: Never recap an already-booked slot)
+        def _is_slot_conflicted() -> bool:
+            with new_session() as s:
+                return has_conflict(s, parsed_dt)
+
+        if await asyncio.to_thread(_is_slot_conflicted):
+            msg = (
+                "That appointment time is already booked. "
+                "Could you please choose another time that works for you?"
+            )
+            await asyncio.to_thread(
+                update_call_slots,
+                active_call_id,
+                {"time": None},
+            )
+            await asyncio.to_thread(record_call_turn, active_call_id, "assistant", msg)
+
+            async def conflict_gen() -> AsyncIterator[str]:
+                yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
+                yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+            return StreamingResponse(
+                conflict_gen(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
         fp = booking_confirmation_fingerprint(slots)
+        verified_service = str(
+            slots.get("service")
+            or (slots.get("verified") or {}).get("service")
+            or "HVAC Service"
+        )
+        verified_phone = str(
+            slots.get("phone")
+            or (slots.get("verified") or {}).get("phone")
+            or ""
+        )
+
+        def _mint_ticket() -> ConfirmationTicket:
+            with new_session() as s:
+                return create_confirmation_ticket(
+                    s,
+                    call_id=active_call_id,
+                    service=verified_service,
+                    phone=verified_phone,
+                    scheduled_for=parsed_dt,
+                    fingerprint=fp,
+                    ttl_seconds=300,
+                )
+
+        ticket = await asyncio.to_thread(_mint_ticket)
+
         await asyncio.to_thread(
             update_call_slots,
             active_call_id,
-            {"confirmation_requested": True, "confirmation_fingerprint": fp},
+            {
+                "confirmation_requested": True,
+                "confirmation_fingerprint": fp,
+                "active_ticket_id": ticket.ticket_id,
+            },
         )
         recap_text = booking_confirmation_text(settings, slots)
+        await asyncio.to_thread(record_call_turn, active_call_id, "assistant", recap_text)
+
+        tz = ZoneInfo(settings.business_timezone)
+        local_dt = parsed_dt.astimezone(tz)
+        ticket_payload = {
+            "ticket_id": ticket.ticket_id,
+            "service": ticket.service,
+            "phone": ticket.phone,
+            "date": local_dt.strftime("%Y-%m-%d"),
+            "time": local_dt.strftime("%I:%M %p"),
+            "fingerprint": ticket.fingerprint,
+            "expires_in_seconds": 300,
+        }
 
         async def recap_gen() -> AsyncIterator[str]:
             yield f"event: delta\ndata: {json.dumps({'text': recap_text})}\n\n"
+            yield f"event: confirmation_ticket\ndata: {json.dumps(ticket_payload)}\n\n"
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
         return StreamingResponse(
@@ -1078,6 +1603,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             active_call_id,
             {"last_prompted_slot": next_field},
         )
+        await asyncio.to_thread(record_call_turn, active_call_id, "assistant", q_text)
 
         async def missing_slot_gen() -> AsyncIterator[str]:
             yield f"event: delta\ndata: {json.dumps({'text': q_text})}\n\n"
@@ -1101,16 +1627,22 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     system_content = receptionist_instructions(settings, slots=slots)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
 
-    # Cap history to the newest 12 messages (~6 turns)
-    recent_history = req.history[-12:] if len(req.history) > 12 else req.history
-    for msg in recent_history:
-        if msg.role == "user" and (
-            _is_assistant_echo(msg.content)
-            or _is_echo_of_assistant(msg.content, req.history)
-        ):
-            continue
-        messages.append({"role": msg.role, "content": msg.content})
-    messages.append({"role": "user", "content": req.message})
+    # Server-owned conversation authority: assemble context exclusively from server
+    # CallTurn records. Client-supplied history (including fabricated assistant turns) is ignored!
+    recent_turns = await asyncio.to_thread(get_recent_call_turns, active_call_id, limit=12)
+    has_current_turn = False
+    for turn in recent_turns:
+        role = (
+            "user"
+            if turn.role in ("caller", "user")
+            else ("assistant" if turn.role == "assistant" else "system")
+        )
+        messages.append({"role": role, "content": turn.content})
+        if turn.content == req.message and turn.role in ("caller", "user"):
+            has_current_turn = True
+
+    if not has_current_turn:
+        messages.append({"role": "user", "content": req.message})
 
     is_polite_closing = _is_closing_or_polite_remark(req.message)
     tools_to_use = None if is_polite_closing else READ_ONLY_TOOLS
@@ -1251,10 +1783,22 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     stream=True,
                 )
 
+                second_content = ""
                 async for chunk in second_response:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta and delta.content:
+                        second_content += delta.content
                         yield f"event: delta\ndata: {json.dumps({'text': delta.content})}\n\n"
+
+                if second_content.strip():
+                    await asyncio.to_thread(
+                        record_call_turn, active_call_id, "assistant", second_content.strip()
+                    )
+
+            elif streamed_content.strip():
+                await asyncio.to_thread(
+                    record_call_turn, active_call_id, "assistant", streamed_content.strip()
+                )
 
             yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
 
@@ -1269,12 +1813,18 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     "I apologize for the moment, let me help you with that. "
                     "Could you please repeat what you need?"
                 )
+                await asyncio.to_thread(
+                    record_call_turn, active_call_id, "assistant", recovery_text
+                )
                 yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
                 yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
             elif _is_rate_limit_error(err_msg):
                 recovery_text = (
                     "I apologize for the brief pause, our line had a small hiccup. "
                     "Could you please repeat that last part?"
+                )
+                await asyncio.to_thread(
+                    record_call_turn, active_call_id, "assistant", recovery_text
                 )
                 yield f"event: delta\ndata: {json.dumps({'text': recovery_text})}\n\n"
                 yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
@@ -1380,6 +1930,169 @@ async def transcribe_audio(req: TranscribeRequest, request: Request) -> dict[str
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Transcription failed: {e}",
         ) from e
+
+
+class ConfirmBookingRequest(BaseModel):
+    call_id: str | int
+    call_secret: str
+    ticket_id: str
+    fingerprint: str
+
+
+class ConfirmBookingResponse(BaseModel):
+    status: Literal["confirmed", "already_confirmed"]
+    booking_id: int | str
+    service: str
+    phone: str
+    date: str
+    time: str
+    confirmation_message: str
+
+
+def _confirm_booking_sync(
+    settings: Settings, req: ConfirmBookingRequest
+) -> ConfirmBookingResponse:
+    with new_session() as session:
+        query = session.query(ConfirmationTicket).filter(
+            ConfirmationTicket.ticket_id == req.ticket_id
+        )
+        if session.bind is not None and session.bind.dialect.name != "sqlite":
+            query = query.with_for_update()
+        ticket = query.one_or_none()
+
+        if (
+            ticket is None
+            or ticket.call_id != str(req.call_id)
+            or ticket.fingerprint != req.fingerprint
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Confirmation ticket expired or invalid. "
+                    "Please confirm your details to generate a new ticket."
+                ),
+            )
+
+        tz = ZoneInfo(settings.business_timezone)
+        local_dt = ticket.scheduled_for.astimezone(tz)
+        date_str = local_dt.strftime("%Y-%m-%d")
+        time_str = local_dt.strftime("%I:%M %p").lstrip("0")
+        now_local = datetime.now(tz)
+        if local_dt.date() == (now_local.date() + timedelta(days=1)):
+            date_display = "tomorrow"
+        elif local_dt.date() == now_local.date():
+            date_display = "today"
+        else:
+            date_display = local_dt.strftime("%A, %B %d")
+        confirmation_msg = f"Your {ticket.service} is confirmed for {date_display} at {time_str}."
+
+        if ticket.status == "consumed":
+            booking_id = f"apt_{ticket.appointment_id}" if ticket.appointment_id else "apt_1"
+            return ConfirmBookingResponse(
+                status="already_confirmed",
+                booking_id=booking_id,
+                service=ticket.service,
+                phone=ticket.phone,
+                date=date_str,
+                time=local_dt.strftime("%I:%M %p"),
+                confirmation_message=confirmation_msg,
+            )
+
+        now = datetime.now(UTC)
+        if ticket.status != "pending" or ticket.expires_at < now:
+            if ticket.status == "pending":
+                ticket.status = "expired"
+                session.flush()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Confirmation ticket expired or invalid. "
+                    "Please confirm your details to generate a new ticket."
+                ),
+            )
+
+        appt, err = book_appointment(
+            session=session,
+            settings=settings,
+            phone_number=ticket.phone,
+            service=ticket.service,
+            when=ticket.scheduled_for,
+            notes=f"Confirmed via browser review card for call {ticket.call_id}",
+        )
+
+        if appt is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    err
+                    or "Selected appointment slot is no longer available. "
+                    "Please choose another time."
+                ),
+            )
+
+        ticket.status = "consumed"
+        ticket.consumed_at = now
+        ticket.appointment_id = appt.id
+
+        cid = (
+            req.call_id
+            if isinstance(req.call_id, int)
+            else (int(req.call_id) if str(req.call_id).isdigit() else 0)
+        )
+        call_record = session.get(CallRecord, cid)
+        if call_record is not None and call_record.ended_at is None:
+            call_record.outcome = "booked"
+            try:
+                raw_slots = (
+                    json.loads(call_record.session_slots)
+                    if call_record.session_slots
+                    else {}
+                )
+            except Exception:
+                raw_slots = {}
+            raw_slots["confirmed"] = True
+            raw_slots["booking_id"] = appt.id
+            raw_slots["active_ticket_id"] = None
+            raw_slots["confirmation_requested"] = False
+            call_record.session_slots = json.dumps(
+                raw_slots, separators=(",", ":"), ensure_ascii=False
+            )
+
+        record_call_turn(
+            session,
+            req.call_id,
+            "assistant",
+            confirmation_msg,
+        )
+
+        return ConfirmBookingResponse(
+            status="confirmed",
+            booking_id=f"apt_{appt.id}",
+            service=ticket.service,
+            phone=ticket.phone,
+            date=date_str,
+            time=local_dt.strftime("%I:%M %p"),
+            confirmation_message=confirmation_msg,
+        )
+
+
+@router.post("/confirm-booking", response_model=ConfirmBookingResponse)
+@router.post("/confirm", response_model=ConfirmBookingResponse)
+async def confirm_booking_endpoint(
+    req: ConfirmBookingRequest, request: Request
+) -> ConfirmBookingResponse:
+    """Consume a confirmation ticket atomically and schedule the appointment."""
+    client_ip = get_client_ip(request)
+    check_booking_rate_limit(client_ip)
+
+    if not is_authorized_active_call(req.call_id, req.call_secret):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid call credentials or call has already ended.",
+        )
+
+    settings: Settings = getattr(request.app.state, "settings", None) or get_settings()
+    return await asyncio.to_thread(_confirm_booking_sync, settings, req)
 
 
 @router.post("/end")

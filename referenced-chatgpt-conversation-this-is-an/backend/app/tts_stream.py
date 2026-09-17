@@ -120,23 +120,21 @@ def check_tts_rate_limit(client_ip: str) -> None:
                     del _IP_TTS_TIMESTAMPS[old_ip]
 
 
-def get_client_ip(request: Request | None) -> str:
-    """Extract client IP safely from request headers."""
-    if request is None:
-        return "127.0.0.1"
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return "127.0.0.1"
+class StreamRequest(BaseModel):
+    """Payload for neural speech synthesis via POST."""
+
+    text: str = Field(min_length=1, max_length=1500, description="Text to synthesize")
+    voice: str = Field(default=DEFAULT_VOICE, max_length=64, description="Neural voice identifier")
 
 
-@router.get("/stream")
-async def stream_voice(
-    text: str = Query(..., min_length=1, max_length=1500, description="Text to synthesize"),
-    voice: str = Query(default=DEFAULT_VOICE, description="Neural voice identifier"),
-    request: Request = None,  # type: ignore[assignment]
+StreamVoiceRequest = StreamRequest
+
+
+async def _handle_stream_voice(
+    text: str,
+    voice: str,
+    request: Request | None,
+    private_cache: bool = False,
 ) -> Response:
     """Stream studio-quality neural audio bytes (audio/mpeg) for the given text."""
     # 1. Input sanitization & validation
@@ -154,6 +152,8 @@ async def stream_voice(
 
     # Validate voice parameter against strict regex pattern to prevent SSML/SSRF injection
     voice_clean = voice.strip()
+    if voice_clean in ("af_sarah", "kokoro", "af"):
+        voice_clean = DEFAULT_VOICE
     if len(voice_clean) > 64 or not _VOICE_REGEX.match(voice_clean):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -167,14 +167,23 @@ async def stream_voice(
     # Check cache first for instant 0ms TTFB on greetings and confirmations
     cached_data = await audio_cache.get(cache_key)
     if cached_data is not None:
-        return Response(
-            content=cached_data,
-            media_type="audio/mpeg",
-            headers={
+        if private_cache:
+            cache_headers = {
+                "Cache-Control": "private, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "X-Audio-Source": "cache",
+                "X-Voice-Persona": voice_clean,
+            }
+        else:
+            cache_headers = {
                 "Cache-Control": "public, max-age=86400",
                 "X-Audio-Source": "cache",
                 "X-Voice-Persona": voice_clean,
-            },
+            }
+        return Response(
+            content=cached_data,
+            media_type="audio/mpeg",
+            headers=cache_headers,
         )
 
     # Rate limiting on non-cached synthesis requests
@@ -271,15 +280,50 @@ async def stream_voice(
             finally:
                 _TTS_SEMAPHORE.release()
 
-    return StreamingResponse(
-        audio_stream_generator(),
-        media_type="audio/mpeg",
-        headers={
+    if private_cache:
+        stream_headers = {
+            "Cache-Control": "private, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Voice-Persona": voice_clean,
+        }
+    else:
+        stream_headers = {
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
             "X-Voice-Persona": voice_clean,
-        },
+        }
+
+    return StreamingResponse(
+        audio_stream_generator(),
+        media_type="audio/mpeg",
+        headers=stream_headers,
     )
+
+
+@router.get("/stream")
+async def stream_voice(
+    text: str = Query(..., min_length=1, max_length=1500, description="Text to synthesize"),
+    voice: str = Query(default=DEFAULT_VOICE, description="Neural voice identifier"),
+    request: Request = None,  # type: ignore[assignment]
+) -> Response:
+    """Stream studio-quality neural audio bytes (audio/mpeg) for the given text."""
+    return await _handle_stream_voice(text=text, voice=voice, request=request, private_cache=False)
+
+
+@router.post("/stream")
+async def stream_voice_post(
+    req: StreamRequest,
+    request: Request = None,  # type: ignore[assignment]
+) -> Response:
+    """Stream studio-quality neural audio bytes via POST with private cache control."""
+    return await _handle_stream_voice(
+        text=req.text,
+        voice=req.voice,
+        request=request,
+        private_cache=True,
+    )
+
 
 
 @router.get("/voices")

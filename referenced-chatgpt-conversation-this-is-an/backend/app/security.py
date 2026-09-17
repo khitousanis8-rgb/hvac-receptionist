@@ -20,15 +20,30 @@ _MAX_CALL_TOKENS_PER_WINDOW = 15
 _CHAT_RATE_LIMIT_WINDOW_SECONDS = 60.0
 _MAX_CHAT_REQUESTS_PER_WINDOW = 30
 
+_BOOKING_RATE_LIMIT_WINDOW_SECONDS = 60.0
+_MAX_BOOKING_REQUESTS_PER_WINDOW = 5
+_IP_BOOKING_REQUEST_TIMESTAMPS: dict[str, list[float]] = {}
 
-def get_client_ip(request: Request, settings: Settings | None = None) -> str:
+
+def get_client_ip(request: Request | None, settings: Settings | None = None) -> str:
     """Extract client IP safely from request headers or socket address.
 
     Only trusts X-Forwarded-For if the connecting socket client is in the configured
     trusted_proxy_list. Prevents spoofing of forwarded headers to bypass rate limits.
     """
+    if request is None:
+        return "127.0.0.1"
     socket_ip = request.client.host if request.client and request.client.host else "127.0.0.1"
-    resolved_settings = settings or get_settings()
+    resolved_settings = settings
+    if resolved_settings is None:
+        if (
+            hasattr(request, "app")
+            and hasattr(request.app, "state")
+            and hasattr(request.app.state, "settings")
+        ):
+            resolved_settings = request.app.state.settings
+        else:
+            resolved_settings = get_settings()
     trusted = resolved_settings.trusted_proxy_list
     if trusted and socket_ip in trusted:
         forwarded = request.headers.get("x-forwarded-for")
@@ -37,6 +52,7 @@ def get_client_ip(request: Request, settings: Settings | None = None) -> str:
             if client_candidate:
                 return client_candidate
     return socket_ip
+
 
 
 def check_token_rate_limit(client_ip: str) -> None:
@@ -77,8 +93,29 @@ def check_chat_rate_limit(client_ip: str) -> None:
         _IP_CHAT_REQUEST_TIMESTAMPS[client_ip] = timestamps
 
 
+def check_booking_rate_limit(client_ip: str) -> None:
+    """Enforce sliding-window rate limit on booking confirmations to prevent abuse."""
+    now = time.time()
+    cutoff = now - _BOOKING_RATE_LIMIT_WINDOW_SECONDS
+    with _RATE_LIMIT_LOCK:
+        timestamps = _IP_BOOKING_REQUEST_TIMESTAMPS.get(client_ip, [])
+        timestamps = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= _MAX_BOOKING_REQUESTS_PER_WINDOW:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    "Rate limit exceeded: too many booking confirmation requests. "
+                    "Please wait a minute before trying again."
+                ),
+            )
+        timestamps.append(now)
+        _IP_BOOKING_REQUEST_TIMESTAMPS[client_ip] = timestamps
+
+
 def reset_rate_limits() -> None:
     """Reset in-memory rate limiters (primarily for testing)."""
     with _RATE_LIMIT_LOCK:
         _IP_TOKEN_REQUEST_TIMESTAMPS.clear()
         _IP_CHAT_REQUEST_TIMESTAMPS.clear()
+        _IP_BOOKING_REQUEST_TIMESTAMPS.clear()
+

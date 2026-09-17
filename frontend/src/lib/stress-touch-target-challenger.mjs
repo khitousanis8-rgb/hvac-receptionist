@@ -120,6 +120,12 @@ test("kokoro-call-session.tsx: Thumb call controls (Mute & End Call) have w-16 h
   assert(endMatch[1].includes("w-16 h-16"), `End Call button missing w-16 h-16, found: ${endMatch[1]}`);
 });
 
+test("kokoro-call-session.tsx: Confirm Booking review card button has min-h-[48px] (>=44px WCAG 2.5.5)", () => {
+  const confirmMatch = kokoroTsx.match(/data-testid="confirm-booking-button"[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/);
+  assert(confirmMatch, "Confirm Booking button not found in kokoro-call-session.tsx");
+  assert(confirmMatch[1].includes("min-h-[48px]"), `Confirm Booking button missing min-h-[48px], found: ${confirmMatch[1]}`);
+});
+
 test("App.tsx: Admin Unlock button has min-h-[44px]", () => {
   const unlockMatch = appTsx.match(/onClick=\{updateAdminKey\}[\s\S]*?className="([^"]*)"/);
   assert(unlockMatch, "Admin unlock button not found in App.tsx");
