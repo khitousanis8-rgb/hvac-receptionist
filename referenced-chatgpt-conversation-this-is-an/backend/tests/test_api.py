@@ -11,6 +11,67 @@ from app.db import CallRecord, new_session
 from app.main import create_app
 
 
+def test_cross_origin_appointment_cancellation(tmp_path: Path) -> None:
+    """An allowed dashboard origin can preflight and cancel its appointment."""
+    from datetime import UTC, datetime
+
+    from app.db import Appointment, Customer, init_db, reset_engine
+
+    db_url = f"sqlite:///{(tmp_path / 'cors_cancellation.db').as_posix()}"
+    origin = "http://localhost:5173"
+    reset_engine()
+    init_db(db_url)
+    try:
+        settings = Settings(
+            ADMIN_API_KEY="synthetic-cors-admin",
+            DATABASE_URL=db_url,
+            CORS_ORIGINS=origin,
+            _env_file=None,
+        )
+        with new_session() as session:
+            customer = Customer(phone_number="+15555550101", name="Synthetic Customer")
+            session.add(customer)
+            session.flush()
+            appointment = Appointment(
+                customer_id=customer.id,
+                service="AC repair",
+                scheduled_for=datetime(2030, 6, 3, 14, 0, tzinfo=UTC),
+            )
+            session.add(appointment)
+            session.flush()
+            appointment_id = appointment.id
+
+        with TestClient(create_app(settings)) as client:
+            path = f"/v1/appointments/{appointment_id}"
+            preflight = client.options(
+                path,
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "DELETE",
+                    "Access-Control-Request-Headers": "X-Admin-Key",
+                },
+            )
+            assert preflight.status_code == 200, preflight.text
+            assert preflight.headers["access-control-allow-origin"] == origin
+            assert "DELETE" in preflight.headers["access-control-allow-methods"]
+
+            response = client.delete(
+                path, headers={"Origin": origin, "X-Admin-Key": "synthetic-cors-admin"}
+            )
+            assert response.status_code == 200
+            assert response.headers["access-control-allow-origin"] == origin
+            assert response.json() == {
+                "status": "cancelled", "appointment_id": appointment_id,
+            }
+
+        with new_session() as session:
+            persisted = session.get(Appointment, appointment_id)
+            assert persisted is not None
+            assert persisted.status == "cancelled"
+    finally:
+        reset_engine()
+
+
 def test_health_check_returns_ok() -> None:
     with TestClient(create_app()) as client:
         response = client.get("/health")

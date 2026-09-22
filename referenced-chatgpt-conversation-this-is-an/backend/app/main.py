@@ -133,7 +133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_origins=runtime_settings.cors_origin_list,
         allow_origin_regex=r"^https://hvac-receptionist(-[a-z0-9]+)?\.vercel\.app$",
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["*"],
         expose_headers=["X-Request-ID", "X-Audio-Source", "X-Voice-Persona"],
     )

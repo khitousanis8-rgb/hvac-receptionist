@@ -37,6 +37,10 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "postgres: opt-in integration tests against a disposable local PostgreSQL database (deselected by default; requires TEST_POSTGRES_URL)",
+]
+addopts = "-m 'not postgres'"
 
 [tool.ruff]
 target-version = "py312"

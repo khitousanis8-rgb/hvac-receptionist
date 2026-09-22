@@ -1,0 +1,1 @@
+"""Chat package: transport schemas and pure booking-policy helpers."""

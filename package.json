@@ -1,1 +1,1 @@
-{"name":"hvac-receptionist-root","private":true,"scripts":{"build":"npm --prefix frontend run build","dev":"npm --prefix frontend run dev"}}
+{"name":"hvac-receptionist-root","private":true,"scripts":{"build":"npm --prefix frontend run build","dev":"npm --prefix frontend run dev","verify":"python tools/verification/runner.py --profile full","verify:fast":"python tools/verification/runner.py --profile fast","verify:harness":"python -m unittest discover -s tools/verification/tests -t ."}}

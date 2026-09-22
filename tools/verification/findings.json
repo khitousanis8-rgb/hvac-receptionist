@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "campaign": "multi-agent-verification",
+  "findings": [
+    {
+      "id": "F-0001",
+      "title": "CORS allow_methods omitted DELETE, blocking authenticated cancellation",
+      "severity": "high",
+      "status": "verified",
+      "category": "correctness",
+      "regression_tests": ["tests/test_api.py::test_cross_origin_appointment_cancellation"],
+      "disposition": "Fixed: DELETE added to CORS allow_methods; preflight and cancellation regression pass."
+    },
+    {
+      "id": "F-0002",
+      "title": "Runner redaction missed quoted Authorization/X-Admin-Key values",
+      "severity": "medium",
+      "status": "verified",
+      "category": "privacy",
+      "regression_tests": [
+        "tools/verification/tests/test_runner.py::RunnerTests::test_redacts_quoted_authorization_and_admin_headers",
+        "tools/verification/tests/test_runner.py::RunnerTests::test_child_header_credentials_are_redacted_in_saved_log"
+      ],
+      "disposition": "Fixed: redaction consumes quoted JSON/dict header values before persisting logs."
+    },
+    {
+      "id": "F-0003",
+      "title": "Windows cleanup treated a failed taskkill as success",
+      "severity": "medium",
+      "status": "verified",
+      "category": "testing",
+      "regression_tests": [
+        "tools/verification/tests/test_runner.py::RunnerTests::test_failed_taskkill_is_reported_even_when_parent_exited",
+        "tools/verification/tests/test_runner.py::RunnerTests::test_gate_records_failed_taskkill_after_timeout"
+      ],
+      "disposition": "Fixed: nonzero taskkill exit and unconfirmed parent wait now block the gate."
+    },
+    {
+      "id": "F-0004",
+      "title": "Audio turn-ownership races: stale resume and worker clobber",
+      "severity": "high",
+      "status": "verified",
+      "category": "correctness",
+      "regression_tests": ["frontend/src/lib/audio-turn-ownership.test.mjs"],
+      "disposition": "Fixed: worker turn id captured; resume re-checks turn and context before scheduling."
+    },
+    {
+      "id": "F-0005",
+      "title": "Hardcoded LLM failover model list and token ceiling",
+      "severity": "low",
+      "status": "fixed",
+      "category": "configuration",
+      "regression_tests": ["referenced-chatgpt-conversation-this-is-an/backend/tests/test_llm_settings.py"],
+      "disposition": "Fixed via llm_fallback_models and llm_max_tokens settings; defaults preserve prior behavior."
+    },
+    {
+      "id": "F-0006",
+      "title": "Two booking authorities with no shared provenance record",
+      "severity": "medium",
+      "status": "fixed",
+      "category": "architecture",
+      "regression_tests": [
+        "referenced-chatgpt-conversation-this-is-an/backend/tests/test_booking_authority.py::test_tool_path_records_provenance_ledger_when_call_id_present"
+      ],
+      "disposition": "Fixed: tool path records a consumed ConfirmationTicket ledger entry linked to the appointment."
+    },
+    {
+      "id": "F-0007",
+      "title": "chat_api.py remains a large orchestration module",
+      "severity": "informational",
+      "status": "deferred",
+      "category": "architecture",
+      "regression_tests": [],
+      "disposition": "Deferred: staged extractions (intent, slot extraction, llm, handlers) behind characterization tests; dedicated session required."
+    },
+    {
+      "id": "F-0008",
+      "title": "In-memory rate limiters do not survive restart or multi-instance deployment",
+      "severity": "medium",
+      "status": "fixed",
+      "category": "architecture",
+      "regression_tests": [
+        "referenced-chatgpt-conversation-this-is-an/backend/tests/test_rate_limit_backends.py"
+      ],
+      "disposition": "Fixed: pluggable limiter backend via RATE_LIMIT_BACKEND; 'database' uses the rate_limit_events table. Default 'memory' preserves prior behavior."
+    },
+    {
+      "id": "F-0010",
+      "title": "Verification findings had no durable cross-session record",
+      "severity": "low",
+      "status": "fixed",
+      "category": "testing",
+      "regression_tests": [],
+      "disposition": "Fixed: tools/verification/findings.json is checked in and every runner report renders live finding status."
+    },
+    {
+      "id": "F-0009",
+      "title": "No real PostgreSQL or browser E2E execution in the local campaign",
+      "severity": "informational",
+      "status": "deferred",
+      "category": "testing",
+      "regression_tests": [],
+      "disposition": "Deferred: PostgreSQL opt-in suite runs in CI against a disposable container; browser E2E requires explicit Playwright approval."
+    }
+  ]
+}

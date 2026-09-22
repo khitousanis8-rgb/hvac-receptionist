@@ -68,6 +68,16 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_base_url: AnyHttpUrl = AnyHttpUrl("https://api.groq.com/openai/v1")
     llm_model: Annotated[str, Field(min_length=1)] = "qwen/qwen3.8-27b"
+    # Comma-separated failover candidates tried in order on rate-limit errors.
+    # Default preserves the previously hardcoded failover order.
+    llm_fallback_models: str = (
+        "qwen/qwen3.8-27b,openai/gpt-oss-20b,qwen/qwen3.6-27b,openai/gpt-oss-120b"
+    )
+    llm_max_tokens: Annotated[int, Field(ge=16, le=2048)] = 128
+
+    # Rate limiter backend: "memory" (per-process, original behavior) or
+    # "database" (durable sliding windows backed by the rate_limit_events table).
+    rate_limit_backend: Annotated[str, Field(pattern="^(memory|database)$")] = "memory"
 
     @field_validator("database_url", mode="after")
     @classmethod
@@ -101,6 +111,13 @@ class Settings(BaseSettings):
             if isinstance(parsed, dict):
                 return {str(key): str(item) for key, item in parsed.items()}
             return {}
+        return value
+
+    @field_validator("llm_fallback_models", mode="before")
+    @classmethod
+    def parse_llm_fallback_models(cls, value: object) -> object:
+        if isinstance(value, list):
+            return ",".join(str(item).strip() for item in value if str(item).strip())
         return value
 
     @field_validator("business_services", mode="before")
@@ -142,6 +159,10 @@ class Settings(BaseSettings):
     @property
     def trusted_proxy_list(self) -> list[str]:
         return [proxy.strip() for proxy in self.trusted_proxies.split(",") if proxy.strip()]
+
+    @property
+    def llm_fallback_model_list(self) -> list[str]:
+        return [model.strip() for model in self.llm_fallback_models.split(",") if model.strip()]
 
 
 @lru_cache

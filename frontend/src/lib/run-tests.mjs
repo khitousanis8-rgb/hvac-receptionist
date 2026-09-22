@@ -23,6 +23,7 @@ const suites = [
   { name: "Client Platform & Telemetry", path: "telemetry.test.ts", stripTypes: true },
   { name: "Touch Targets & Viewports", path: "stress-touch-target-challenger.mjs", stripTypes: false },
   { name: "Audio Player Audit", path: "test-audio-audit.mjs", stripTypes: false },
+  { name: "Audio Turn Ownership", path: "audio-turn-ownership.test.mjs", stripTypes: true },
   { name: "Audio Context Unlock & Stress", path: "stress-audio-challenger.mjs", stripTypes: false },
   { name: "Speech Recognition Challenge", path: "speech-recognition.challenge.test.ts", stripTypes: true },
 ];

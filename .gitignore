@@ -25,6 +25,12 @@ outputs/
 agent_err.log
 agent_out.log
 
+# Generated verification evidence (may contain diagnostic data)
+artifacts/verification/
+tools/verification/unit-test.log
+frontend/playwright-report/
+frontend/test-results/
+
 # Node / frontend
 node_modules/
 dist/

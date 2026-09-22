@@ -3,25 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import re
 import threading
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field, field_validator
 
 from app.agent.prompts import receptionist_instructions
 from app.call_tracking import (
-    ClientTelemetry,
+    ClientTelemetry,  # noqa: F401  (re-exported for existing imports)
     apply_client_telemetry,
     end_browser_call,
     get_call_slots,
@@ -31,6 +30,33 @@ from app.call_tracking import (
     update_call_phone,
     update_call_slots,
 )
+from app.chat.booking_policy import (
+    booking_confirmation_fingerprint,
+    booking_confirmation_text,
+    booking_details_changed,
+    booking_missing_fields,
+    booking_result_text,  # noqa: F401  (re-exported for existing imports)
+    is_explicit_booking_confirmation,
+)
+from app.chat.intent import (
+    _is_assistant_echo,
+    _is_booking_flow_active,
+    _is_closing_or_polite_remark,
+    _is_general_question,
+    _is_hours_query,
+    _is_lookup_query,
+    _is_safety_emergency,
+    format_opening_hours_speech,
+)
+from app.chat.schemas import (
+    ChatMessage,
+    ChatRequest,
+    ConfirmBookingRequest,
+    ConfirmBookingResponse,
+    EndCallRequest,
+    TranscribeRequest,
+)
+from app.chat.slot_extraction import _extract_slots_from_text
 from app.config import Settings, get_settings
 from app.db import (
     CallRecord,
@@ -44,7 +70,6 @@ from app.scheduling import (
     book_appointment,
     has_conflict,
     is_within_business_hours,
-    normalize_nanp_phone,
     parse_local_datetime,
 )
 from app.security import check_booking_rate_limit, check_chat_rate_limit, get_client_ip
@@ -68,92 +93,6 @@ def _get_client(settings: Settings) -> AsyncOpenAI:
             base_url=str(settings.llm_base_url),
         )
     return _client
-
-
-class ChatMessage(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str = Field(max_length=4000)
-
-
-class ChatRequest(BaseModel):
-    session_id: str = Field(max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
-    message: str = Field(max_length=4000)
-    history: list[ChatMessage] = Field(default_factory=list, max_length=100)
-    call_id: int | None = Field(default=None, ge=1)
-    call_secret: str = Field(min_length=32, max_length=128)
-    client_telemetry: ClientTelemetry | None = None
-
-    @field_validator("history")
-    @classmethod
-    def validate_history_length(cls, history: list[ChatMessage]) -> list[ChatMessage]:
-        total_chars = sum(len(msg.content) for msg in history)
-        if total_chars > 30_000:
-            raise ValueError(
-                f"Total chat history characters ({total_chars}) exceeds limit of 30,000."
-            )
-        return history
-
-
-class EndCallRequest(BaseModel):
-    session_id: str = Field(max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
-    call_id: int = Field(ge=1)
-    call_secret: str = Field(min_length=32, max_length=128)
-    outcome: str = Field(default="info_only", pattern="^(booked|info_only)$")
-    summary: str | None = Field(default=None, max_length=50_000)
-    client_telemetry: ClientTelemetry | None = None
-
-
-def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
-    """Detect if caller input is an echo of assistant speech picked up by mic.
-
-    Only flags true if the message closely mirrors the opening greeting pattern
-    and does NOT contain genuine caller booking/problem intent.
-    """
-    clean = text.lower().strip()
-    has_intro = (
-        "thank you for calling" in clean
-        or "thanks for calling" in clean
-        or "my name is sarah" in clean
-        or "this is sarah" in clean
-    )
-    has_prompt = (
-        "how can i assist" in clean
-        or "how can i help" in clean
-        or "heating or cooling today" in clean
-    )
-    if not (has_intro and has_prompt):
-        return False
-
-    stripped = clean
-    phrases = [
-        "thank you for calling",
-        "thanks for calling",
-        "example hvac",
-        "apex hvac",
-        "my name is sarah",
-        "this is sarah",
-        "how can i help with your heating or cooling today",
-        "how can i assist you with your heating or cooling today",
-        "with your heating or cooling today",
-        "with your heating or cooling",
-        "heating or cooling today",
-        "how can i help with",
-        "how can i assist you with",
-        "how can i help you",
-        "how can i assist you",
-        "how can i help",
-        "how can i assist",
-    ]
-    if company_name and company_name.strip():
-        phrases.append(company_name.strip().lower())
-    for phrase in sorted(phrases, key=len, reverse=True):
-        stripped = stripped.replace(phrase, " ")
-
-    stripped = re.sub(r"[^a-z0-9]", " ", stripped).strip()
-    remaining_words = [w for w in stripped.split() if len(w) > 2]
-    return len(remaining_words) <= 2
-
-
 
 
 def _is_echo_of_assistant(
@@ -234,637 +173,24 @@ def _is_echo_of_assistant(
     return False
 
 
-def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[str, Any]:
-    """Extract and separate candidate extractions from verified facts.
-
-    Maintains candidates and verified slot models, strictly detects negated services,
-    and flags ambiguous time expressions for AM/PM clarification without guessing.
-    """
-    updates: dict[str, Any] = {}
-    lower = text.lower().strip()
-
-    # Reject acoustic mic echoes of assistant greeting and system phrases
-    if _is_assistant_echo(text):
-        return updates
-
-    # Initialize candidate, verified, and negation state
-    existing_candidates = current_slots.get("candidates")
-    candidates: dict[str, Any] = (
-        dict(existing_candidates) if isinstance(existing_candidates, dict) else {}
-    )
-    existing_verified = current_slots.get("verified")
-    verified: dict[str, Any] = (
-        dict(existing_verified) if isinstance(existing_verified, dict) else {}
-    )
-    existing_negated = current_slots.get("negated_services")
-    negated_services: list[str] = (
-        list(existing_negated) if isinstance(existing_negated, list) else []
-    )
-    clarification_needed: str | None = current_slots.get("clarification_needed")
-
-    # Seed from top-level slots if candidates/verified were empty
-    for field in ("name", "phone", "service", "date", "time"):
-        if field not in candidates and current_slots.get(field):
-            candidates[field] = current_slots.get(field)
-        if field not in verified and current_slots.get(field):
-            verified[field] = current_slots.get(field)
-
-    # 1. Name extraction
-    name_patterns = [
-        r"(?:my name is|i am|i'm|this is|call me|name's|name is)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
-        r"^([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+here",
-    ]
-    for pattern in name_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            candidate = match.group(1).strip()
-            first_word = candidate.lower().split()[0]
-            if first_word not in {
-                "sarah", "calling", "good", "okay", "yes", "no", "looking",
-                "interested", "repair", "service", "ac", "heating", "cooling",
-                "this", "here", "just", "how",
-            } and candidate.lower() not in {"sarah how", "sarah here"}:
-                candidates["name"] = candidate
-                verified["name"] = candidate
-                updates["name"] = candidate
-                break
-
-    # 2. Phone extraction (handles spoken digit words: 'plus 1 2 3 0 ...' or '555-123-4567')
-    digit_map = {
-        "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
-        "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
-        "plus": "+",
-    }
-    normalized_for_phone = lower
-    for word, digit in digit_map.items():
-        normalized_for_phone = re.sub(rf"\b{word}\b", digit, normalized_for_phone)
-    normalized_for_phone = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", normalized_for_phone)
-
-    phone_match = re.search(r"(\+?\s*[\d\s\-\.\(\)]{6,}\d)", normalized_for_phone)
-    if phone_match:
-        matched_str = phone_match.group(1)
-        raw_digits = re.sub(r"[^\d]", "", matched_str)
-        candidates["phone"] = matched_str.strip()
-        # Strict 10-digit NANP validation via normalize_nanp_phone
-        nanp = normalize_nanp_phone(raw_digits)
-        if nanp is not None:
-            prefix = "+" if "+" in matched_str else ""
-            phone_val = f"{prefix}{raw_digits}"
-            verified["phone"] = phone_val
-            updates["phone"] = phone_val
-        else:
-            # 7-digit, 8-digit, 9-digit, or invalid area code remains candidate only; not verified
-            verified["phone"] = None
-
-    # 3. Service extraction with Negation Detection
-    ac_neg_pat = (
-        r"\b(?:not|no|never|dont\s+need|don't\s+need|dont\s+want|don't\s+want|"
-        r"instead\s+of|rather\s+than|other\s+than)\s+(?:an?\s+)?(?:a/?c|air\s*condition(?:ing)?)\b|"
-        r"\b(?:a/?c|air\s*condition(?:ing)?)\s+(?:cancelled|is\s+not\s+what\s+i\s+need)\b"
-    )
-    heating_neg_pat = (
-        r"\b(?:not|no|never|dont\s+need|don't\s+need|dont\s+want|don't\s+want|"
-        r"instead\s+of|rather\s+than|other\s+than)\s+(?:an?\s+)?(?:furnace|heating|heater|boiler|heat\s*pump)\b|"
-        r"\b(?:furnace|heating|heater|boiler|heat\s*pump)\s+(?:cancelled|is\s+not\s+what\s+i\s+need)\b"
-    )
-    tuneup_neg_pat = (
-        r"\b(?:not|no|never|dont\s+need|don't\s+need|dont\s+want|don't\s+want|"
-        r"instead\s+of|rather\s+than|other\s+than)\s+(?:an?\s+)?(?:tune-?up|tune\s*up|maintenance|inspection)\b|"
-        r"\b(?:tune-?up|tune\s*up|maintenance|inspection)\s+(?:cancelled|is\s+not\s+what\s+i\s+need)\b"
-    )
-
-    this_turn_negated: list[str] = []
-    if re.search(ac_neg_pat, lower):
-        this_turn_negated.append("AC repair")
-    if re.search(heating_neg_pat, lower):
-        this_turn_negated.append("Heating repair")
-    if re.search(tuneup_neg_pat, lower):
-        this_turn_negated.append("HVAC tune-up")
-
-    for neg_svc in this_turn_negated:
-        if neg_svc not in negated_services:
-            negated_services.append(neg_svc)
-        if candidates.get("service") == neg_svc:
-            candidates["service"] = None
-        if verified.get("service") == neg_svc:
-            verified["service"] = None
-
-    aff_matches: list[str] = []
-    if re.search(r"\b(a/?c|air\s*condition(?:ing)?|cooling|not\s+cooling)\b", lower):
-        if "AC repair" not in this_turn_negated:
-            aff_matches.append("AC repair")
-    if re.search(r"\b(furnace|heating|heater|boiler|heat\s*pump)\b", lower):
-        if "Heating repair" not in this_turn_negated:
-            aff_matches.append("Heating repair")
-    if re.search(r"\b(tune-?up|tune\s*up|maintenance|inspection)\b", lower):
-        if "HVAC tune-up" not in this_turn_negated:
-            aff_matches.append("HVAC tune-up")
-
-    if aff_matches:
-        chosen_service = aff_matches[0]
-        candidates["service"] = chosen_service
-        verified["service"] = chosen_service
-        updates["service"] = chosen_service
-        if chosen_service in negated_services:
-            negated_services.remove(chosen_service)
-    elif this_turn_negated:
-        candidates["service"] = None
-        verified["service"] = None
-        updates["service"] = None
-
-    # 4. Date extraction
-    date_match = re.search(
-        r"\b(\d{4}-\d{2}-\d{2}|today|tomorrow|next\s+"
-        r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
-        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
-        lower,
-    )
-    if date_match:
-        extracted_date = date_match.group(1)
-        candidates["date"] = extracted_date
-        verified["date"] = extracted_date
-        updates["date"] = extracted_date
-
-    # 5. Time extraction with Ambiguity Resolution (no auto-guessing)
-    word_to_hour = {
-        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-        "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
-    }
-
-    # If previously clarifying AM/PM, resolve if user now specified period
-    if clarification_needed == "time_am_pm" and "time" not in updates:
-        has_pm = bool(re.search(r"\b(?:p\.?m\.?|afternoon|evening|night)\b", lower))
-        has_am = bool(re.search(r"\b(?:a\.?m\.?|morning)\b", lower))
-        cand_time_str = str(candidates.get("time") or "03:00").split()[0]
-        parts = cand_time_str.split(":")
-        h = int(parts[0]) if parts[0].isdigit() else 3
-        m = parts[1] if len(parts) > 1 and parts[1].isdigit() else "00"
-        if has_pm and not has_am:
-            time_val = f"{h:02d}:{m} PM"
-            candidates["time"] = time_val
-            verified["time"] = time_val
-            clarification_needed = None
-            updates["time"] = time_val
-        elif has_am and not has_pm:
-            time_val = f"{h:02d}:{m} AM"
-            candidates["time"] = time_val
-            verified["time"] = time_val
-            clarification_needed = None
-            updates["time"] = time_val
-
-    # Explicit time with AM/PM: e.g. "9:00 a.m.", "3 PM", "3:30 AM", "3:00pm", "3am"
-    time_match = re.search(
-        r"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?))\b",
-        lower,
-    )
-    if time_match:
-        matched_time = time_match.group(1)
-        candidates["time"] = matched_time
-        verified["time"] = matched_time
-        clarification_needed = None
-        updates["time"] = matched_time
-    elif re.search(r"\bnoon\b|\bmidday\b", lower):
-        time_val = "12:00 PM"
-        candidates["time"] = time_val
-        verified["time"] = time_val
-        clarification_needed = None
-        updates["time"] = time_val
-    else:
-        hour_candidate: int | None = None
-        min_candidate = "00"
-
-        oclock_digits = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*o'?clock\b", lower)
-        at_digits = re.search(r"\b(?:at|around)\s+(\d{1,2})(?::(\d{2}))?\b", lower)
-        num_words_pat = "|".join(word_to_hour.keys())
-        oclock_words = re.search(rf"\b({num_words_pat})\s*o'?clock\b", lower)
-        at_words = re.search(rf"\b(?:at|around)\s+({num_words_pat})\b", lower)
-
-        if oclock_digits:
-            hour_candidate = int(oclock_digits.group(1))
-            if oclock_digits.group(2):
-                min_candidate = oclock_digits.group(2)
-        elif at_digits:
-            hour_candidate = int(at_digits.group(1))
-            if at_digits.group(2):
-                min_candidate = at_digits.group(2)
-        elif oclock_words:
-            hour_candidate = word_to_hour[oclock_words.group(1)]
-        elif at_words:
-            hour_candidate = word_to_hour[at_words.group(1)]
-
-        if hour_candidate is not None and 1 <= hour_candidate <= 23:
-            if any(w in lower for w in ("afternoon", "evening", "night", "pm")):
-                time_val = f"{hour_candidate:02d}:{min_candidate} PM"
-                candidates["time"] = time_val
-                verified["time"] = time_val
-                clarification_needed = None
-                updates["time"] = time_val
-            elif any(w in lower for w in ("morning", "am")):
-                time_val = f"{hour_candidate:02d}:{min_candidate} AM"
-                candidates["time"] = time_val
-                verified["time"] = time_val
-                clarification_needed = None
-                updates["time"] = time_val
-            elif 1 <= hour_candidate <= 6:
-                # AMBIGUOUS: 1..6 (e.g. "tomorrow at three" or "at 3") without AM/PM!
-                # Do NOT auto-guess PM! Flag clarification_needed = "time_am_pm"
-                # Keep candidate observation, but do NOT set verified.time or updates["time"]
-                candidates["time"] = f"{hour_candidate:02d}:{min_candidate}"
-                verified["time"] = None
-                clarification_needed = "time_am_pm"
-            else:
-                # 7..12: standard business hours AM (or 12 PM)
-                period = "AM" if hour_candidate < 12 else "PM"
-                time_val = f"{hour_candidate:02d}:{min_candidate} {period}"
-                candidates["time"] = time_val
-                verified["time"] = time_val
-                clarification_needed = None
-                updates["time"] = time_val
-
-        elif re.search(r"\bmorning\b", lower) and "time" not in updates:
-            if candidates.get("time") and clarification_needed == "time_am_pm":
-                cand_h = int(str(candidates["time"]).split(":")[0])
-                time_val = f"{cand_h:02d}:00 AM"
-            else:
-                time_val = "09:00 AM"
-            candidates["time"] = time_val
-            verified["time"] = time_val
-            clarification_needed = None
-            updates["time"] = time_val
-        elif re.search(r"\bafternoon\b", lower) and "time" not in updates:
-            if candidates.get("time") and clarification_needed == "time_am_pm":
-                cand_h = int(str(candidates["time"]).split(":")[0])
-                time_val = f"{cand_h:02d}:00 PM"
-            else:
-                time_val = "02:00 PM"
-            candidates["time"] = time_val
-            verified["time"] = time_val
-            clarification_needed = None
-            updates["time"] = time_val
-        elif re.search(r"\bevening\b", lower) and "time" not in updates:
-            if candidates.get("time") and clarification_needed == "time_am_pm":
-                cand_h = int(str(candidates["time"]).split(":")[0])
-                time_val = f"{cand_h:02d}:00 PM"
-            else:
-                time_val = "05:00 PM"
-            candidates["time"] = time_val
-            verified["time"] = time_val
-            clarification_needed = None
-            updates["time"] = time_val
-
-    # Only return updates if something changed or was extracted!
-    has_changes = (
-        bool(updates)
-        or candidates != existing_candidates
-        or verified != existing_verified
-        or negated_services != existing_negated
-        or clarification_needed != current_slots.get("clarification_needed")
-    )
-
-    if not has_changes:
-        return {}
-
-    updates["candidates"] = candidates
-    updates["verified"] = verified
-    updates["negated_services"] = negated_services
-    updates["clarification_needed"] = clarification_needed
-
-    return updates
 
 
 _parse_local_datetime = parse_local_datetime
 
 
-def booking_missing_fields(slots: dict[str, Any]) -> list[str]:
-    """Required for an actual booking: service, phone, date, and time.
+def _execute_tool(
+    settings: Settings,
+    name: str,
+    args: dict[str, Any],
+    call_id: int | str | None = None,
+) -> str:
+    """Execute real business scheduling tools against SQLite.
 
-    Checks verified slots first, falling back to top-level slots.
+    When call_id is provided, a successful tool booking also records an
+    already-consumed ConfirmationTicket as a provenance ledger entry. This is
+    additive persistence only: it does not change booking behavior or any
+    endpoint response.
     """
-    required = ["service", "phone", "date", "time"]
-    missing: list[str] = []
-    raw_verified = slots.get("verified")
-    verified: dict[str, Any] = raw_verified if isinstance(raw_verified, dict) else {}
-    for field in required:
-        val = verified.get(field) if verified else slots.get(field)
-        if not val or not str(val).strip():
-            missing.append(field)
-    return missing
-
-
-def booking_details_changed(updates: dict[str, Any]) -> bool:
-    """Returns true when an update contains phone, service, date, or time."""
-    return any(
-        k in updates and updates[k] is not None
-        for k in ("phone", "service", "date", "time")
-    )
-
-
-def is_explicit_booking_confirmation(text: str) -> bool:
-    """Check if text is an explicit whole-message booking confirmation.
-
-    Normalizes lower-case text, punctuation, and whitespace.
-    Returns True only for whole-message allowlist phrases.
-    Rejects messages containing a negation, a new time/date, or additional booking details.
-    Does not use substring matching.
-    """
-    cleaned = re.sub(r"[^\w\s]", " ", text.lower())
-    normalized = " ".join(cleaned.split())
-    if not normalized:
-        return False
-
-    negations = {
-        "no", "not", "dont", "don't", "cancel", "stop", "wait", "change",
-        "instead", "different", "nevermind", "decline", "neither",
-    }
-    words = set(normalized.split())
-    if words & negations:
-        return False
-
-    date_time_indicators = {
-        "tomorrow", "today", "yesterday", "monday", "tuesday", "wednesday",
-        "thursday", "friday", "saturday", "sunday", "am", "pm", "morning",
-        "afternoon", "evening", "next", "o'clock", "oclock", "week", "noon",
-    }
-    if words & date_time_indicators:
-        return False
-
-    if re.search(r"\d", normalized):
-        return False
-
-    accepted_phrases = {
-        "yes",
-        "yes please",
-        "yes please do",
-        "please",
-        "yeah",
-        "yeah please",
-        "yep",
-        "yep please",
-        "please book it",
-        "please book that",
-        "please book",
-        "book it",
-        "book that",
-        "go ahead",
-        "go ahead please",
-        "go ahead and book it",
-        "go ahead and book",
-        "yes go ahead",
-        "yes please go ahead",
-        "yeah go ahead",
-        "sure go ahead",
-        "yes book it",
-        "yes book that",
-        "yes please book it",
-        "yes please book that",
-        "yes please book",
-        "that works",
-        "that works for me",
-        "sounds good",
-        "sounds great",
-        "correct",
-        "that is correct",
-        "thats correct",
-        "confirm it",
-        "please confirm it",
-        "confirm",
-        "sure",
-        "sure thing",
-        "sure please",
-        "perfect",
-        "absolutely",
-        "definitely",
-        "yes definitely",
-        "yes that works",
-        "yeah that works",
-        "yes sounds good",
-        "yeah sounds good",
-    }
-    return normalized in accepted_phrases
-
-
-def booking_confirmation_fingerprint(slots: dict[str, Any]) -> str:
-    """Compute a stable hash of the 4 core booking details."""
-    raw_verified = slots.get("verified")
-    verified: dict[str, Any] = raw_verified if isinstance(raw_verified, dict) else {}
-    phone = str(verified.get("phone") or slots.get("phone", "")).strip().lower()
-    service = str(verified.get("service") or slots.get("service", "")).strip().lower()
-    date_val = str(verified.get("date") or slots.get("date", "")).strip().lower()
-    time_val = str(verified.get("time") or slots.get("time", "")).strip().lower()
-    raw = f"{phone}|{service}|{date_val}|{time_val}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def booking_confirmation_text(settings: Settings, slots: dict[str, Any]) -> str:
-    """Build the spoken confirmation recap from verified durable slots."""
-    raw_verified = slots.get("verified")
-    verified: dict[str, Any] = raw_verified if isinstance(raw_verified, dict) else {}
-    service = verified.get("service") or slots.get("service") or "service"
-    date_val = verified.get("date") or slots.get("date") or "your requested date"
-    time_val = verified.get("time") or slots.get("time") or "your requested time"
-
-    parsed_dt = _parse_local_datetime(settings, str(date_val), str(time_val))
-    if parsed_dt is not None:
-        when_str = parsed_dt.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
-        return (
-            f"Just to confirm, that's {service} for {when_str}. "
-            f"Would you like me to book it?"
-        )
-
-    return (
-        f"Just to confirm, that's {service} for {date_val} at {time_val}. "
-        f"Would you like me to book it?"
-    )
-
-
-def booking_result_text(result: str) -> tuple[str, bool]:
-    """Convert the booking function result into a short spoken reply and a success flag.
-
-    Preserves a failure or unavailable-slot response strictly as a failure;
-    never classifies as success unless the booking genuinely succeeded in SQLite.
-    """
-    clean = result.strip()
-    if (
-        clean.startswith("Booked ")
-        or clean.startswith("Appointment booked")
-        or clean.startswith("Appointment is already confirmed")
-    ):
-        return (
-            "You're all set! I've booked that appointment for you. "
-            "Our technician will see you then. Is there anything else I can help with?",
-            True,
-        )
-    return (
-        f"I wasn't able to book that slot. {clean} "
-        f"Would you like to try a different time?",
-        False,
-    )
-
-
-def _is_safety_emergency(text: str) -> bool:
-    """Detect safety emergency keywords to give immediate life-safety guidance."""
-    lower = text.lower().replace("fireplace", " ")
-    emergency_kws = [
-        "gas smell", "smell gas", "smelling gas", "smoke", "sparking",
-        "sparks", "carbon monoxide", "dizzy", "burning smell", "gas leak",
-    ]
-    if any(kw in lower for kw in emergency_kws):
-        return True
-    if re.search(r"\bfire\b", lower):
-        return True
-    return False
-
-
-def _is_lookup_query(text: str) -> bool:
-    """Detect anonymous appointment lookup queries to enforce neutral privacy refusal."""
-    lowered = text.lower()
-    if any(
-        phrase in lowered
-        for phrase in (
-            "existing appointment",
-            "my appointment",
-            "prior appointment",
-            "past appointment",
-            "check my appointment",
-            "look up my appointment",
-            "find my appointment",
-            "status of my appointment",
-            "when is my appointment",
-            "what time is my appointment",
-            "do i have an appointment",
-            "existing booking",
-            "my booking",
-            "prior booking",
-            "past booking",
-            "check my booking",
-            "look up my booking",
-            "find my booking",
-            "status of my booking",
-            "when is my booking",
-            "what time is my booking",
-            "do i have a booking",
-        )
-    ):
-        return True
-
-    if re.search(
-        r"\b(when is|what time is|status of|check|look\s*up|lookup|find|verify)\b"
-        r".*\b(the|an|my)?\s*(existing\s+)?(appointment|booking)\b",
-        lowered,
-    ):
-        return True
-    if re.search(
-        r"\b(appointment|booking)\b.*\b(check|look\s*up|lookup|status|(?:for|under|with)\s+\+?1?\d{3})\b",
-        lowered,
-    ):
-        return True
-    if re.search(
-        r"\b(?:is there|do i have|can you (?:see|check)|any)\b"
-        r".*\b(?:an?|my)?\s*(?:existing\s+)?(?:appointment|booking)\b",
-        lowered,
-    ):
-        return True
-    return False
-
-
-def _is_hours_query(text: str) -> bool:
-    """Detect if caller is asking about business or operating hours."""
-    lowered = text.lower()
-    return any(
-        phrase in lowered
-        for phrase in (
-            "what are your hours",
-            "what hours",
-            "business hours",
-            "opening hours",
-            "when are you open",
-            "are you open",
-            "what time do you open",
-            "what time do you close",
-            "operating hours",
-            "your hours",
-        )
-    )
-
-
-def format_opening_hours_speech(settings: Settings) -> str:
-    """Format opening hours into natural spoken English for voice synthesis."""
-    hours = settings.business_opening_hours
-    if not hours:
-        return (
-            f"At {settings.business_company_name}, we are open Monday through Friday from 8:00 AM "
-            "to 6:00 PM, and Saturday from 8:00 AM to 6:00 PM. We are closed on Sunday."
-        )
-
-    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    if len(hours) == 7 and len(set(hours.values())) == 1:
-        val = list(hours.values())[0]
-        if val.lower() != "closed":
-            return f"At {settings.business_company_name}, we are open seven days a week from {val}."
-
-    mon_fri = ["monday", "tuesday", "wednesday", "thursday", "friday"]
-    if all(d in hours for d in mon_fri) and len(set(hours[d] for d in mon_fri)) == 1:
-        mf_val = hours["monday"]
-        sat_val = hours.get("saturday", "closed")
-        sun_val = hours.get("sunday", "closed")
-        summary = f"Monday through Friday from {mf_val}"
-        if sat_val == sun_val:
-            if sat_val.lower() == "closed":
-                summary += ", and closed on weekends"
-            else:
-                summary += f", and weekends from {sat_val}"
-        else:
-            if sat_val.lower() != "closed":
-                summary += f", Saturday from {sat_val}"
-            else:
-                summary += ", closed Saturday"
-            if sun_val.lower() != "closed":
-                summary += f", and Sunday from {sun_val}"
-            else:
-                summary += ", and closed Sunday"
-        return f"At {settings.business_company_name}, we are open {summary}."
-
-    parts: list[str] = []
-    for d in day_names:
-        if d in hours:
-            v = hours[d]
-            if v.lower() == "closed":
-                parts.append(f"closed on {d.title()}")
-            else:
-                parts.append(f"{d.title()} from {v}")
-    return f"At {settings.business_company_name}, our hours are {', '.join(parts)}."
-
-
-
-def _is_general_question(text: str) -> bool:
-    """Detect if caller is asking a general question or objection rather than booking."""
-    lower = text.lower().strip()
-    if "?" in lower:
-        return True
-    question_starters = (
-        "how much", "what are your", "do you", "can you", "where are", "who are",
-        "what hours", "what brands", "what is", "whats", "how does", "pricing",
-        "cost", "rates", "why", "why are", "why do", "why would", "what for",
-        "who", "how", "explain", "tell me", "what is the reason", "why you",
-        "i have no", "i don't have", "i dont have", "no number", "no phone",
-    )
-    return any(lower.startswith(q) or f" {q}" in lower for q in question_starters)
-
-
-def _is_booking_flow_active(slots: dict[str, Any], text: str) -> bool:
-    """Determine if the caller is in an active booking dialogue."""
-    if slots.get("service") or slots.get("phone") or slots.get("date") or slots.get("time"):
-        return True
-    lower = text.lower()
-    booking_intents = (
-        "book", "schedule", "appointment", "technician", "come out",
-        "repair", "service", "tune up", "tune-up",
-    )
-    return any(kw in lower for kw in booking_intents)
-
-
-def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
-    """Execute real business scheduling tools against SQLite."""
     if name == "check_my_appointments":
         return (
             "For privacy and security, appointment details cannot be looked up or disclosed "
@@ -904,7 +230,7 @@ def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
             return "I could not understand that date or time. Please provide a clear date and time."
 
         with new_session() as session:
-            _appointment, message = book_appointment(
+            appointment, message = book_appointment(
                 session,
                 settings,
                 phone_number=phone_number,
@@ -913,6 +239,31 @@ def _execute_tool(settings: Settings, name: str, args: dict[str, Any]) -> str:
                 name=caller_name,
                 notes=notes,
             )
+            if appointment is not None and call_id is not None:
+                ledger_now = datetime.now(UTC)
+                session.add(
+                    ConfirmationTicket(
+                        ticket_id=f"tool_{uuid4().hex[:16]}",
+                        call_id=str(call_id),
+                        service=service,
+                        phone=phone_number,
+                        scheduled_for=when,
+                        fingerprint=booking_confirmation_fingerprint(
+                            {
+                                "phone": phone_number,
+                                "service": service,
+                                "date": date_str,
+                                "time": time_str,
+                            }
+                        ),
+                        status="consumed",
+                        created_at=ledger_now,
+                        expires_at=ledger_now,
+                        consumed_at=ledger_now,
+                        appointment_id=appointment.id,
+                    )
+                )
+                session.flush()
             return message
 
     return f"Unknown tool: {name}"
@@ -970,38 +321,6 @@ BOOKING_TOOLS: list[dict[str, Any]] = [
 TOOLS = READ_ONLY_TOOLS
 
 
-def _is_closing_or_polite_remark(text: str) -> bool:
-    """Check if caller is merely expressing gratitude or saying goodbye."""
-    cleaned = "".join(c for c in text.lower() if c.isalnum() or c.isspace()).strip()
-    polite_exact = {
-        "thank you", "thanks", "thank you so much", "thanks so much",
-        "thank you very much", "thanks a lot", "many thanks",
-        "bye", "goodbye", "bye bye", "have a good day", "have a great day",
-        "have a good one", "take care",
-        "no", "no that is all", "no thats all", "no thank you", "no thanks",
-        "that is all", "thats all", "that is it", "thats it", "nope",
-        "nothing else", "i am good", "im good", "all good",
-        "perfect thank you", "great thank you", "ok thank you", "okay thank you",
-        "ok thanks", "okay thanks",
-        "sounds good thank you", "sounds great thank you",
-    }
-    if cleaned in polite_exact:
-        return True
-    if len(cleaned) < 35 and (
-        cleaned.startswith("thank")
-        or cleaned.startswith("bye")
-        or cleaned.startswith("goodbye")
-        or cleaned.startswith("have a")
-        or cleaned.startswith("no thank")
-        or cleaned.startswith("no that")
-        or cleaned.startswith("thats all")
-        or cleaned.startswith("that is all")
-        or cleaned.startswith("take care")
-    ):
-        return True
-    return False
-
-
 def _is_rate_limit_error(err_text: str) -> bool:
     """Detect Groq rate limit errors including HTTP 429, TPD, and TPM."""
     t = err_text.lower()
@@ -1017,14 +336,24 @@ def _is_rate_limit_error(err_text: str) -> bool:
     )
 
 
-def _get_candidate_models(primary_model: str) -> list[str]:
-    """Return prioritized candidate models on Groq for transparent failover on quota limits."""
-    supported = [
-        "qwen/qwen3.8-27b",
-        "openai/gpt-oss-20b",
-        "qwen/qwen3.6-27b",
-        "openai/gpt-oss-120b",
-    ]
+def _get_candidate_models(
+    primary_model: str, fallback_models: str | None = None
+) -> list[str]:
+    """Return prioritized candidate models for transparent failover on quota limits.
+
+    When fallback_models is None, the built-in default order is used; otherwise
+    it is a comma-separated override (typically Settings.llm_fallback_models).
+    """
+    supported = (
+        [model.strip() for model in fallback_models.split(",") if model.strip()]
+        if fallback_models is not None
+        else [
+            "qwen/qwen3.8-27b",
+            "openai/gpt-oss-20b",
+            "qwen/qwen3.6-27b",
+            "openai/gpt-oss-120b",
+        ]
+    )
     candidates = [primary_model] if primary_model else []
     for m in supported:
         if m not in candidates:
@@ -1094,12 +423,20 @@ async def _try_create_completion(
 
 async def _create_stream_completion(
     client: AsyncOpenAI,
+    settings: Settings | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Create streaming completion with lowest latency, tool repair, and model failover."""
-    kwargs["max_tokens"] = kwargs.get("max_tokens", 128)
+    """Create streaming completion with lowest latency, tool repair, and model failover.
+
+    When settings is provided, the failover list and default max_tokens come
+    from configuration; otherwise the previous built-in defaults apply.
+    """
+    kwargs["max_tokens"] = kwargs.get(
+        "max_tokens", settings.llm_max_tokens if settings is not None else 128
+    )
     primary_model = kwargs.get("model", "qwen/qwen3.8-27b")
-    candidate_models = _get_candidate_models(primary_model)
+    fallback_models = settings.llm_fallback_models if settings is not None else None
+    candidate_models = _get_candidate_models(primary_model, fallback_models)
 
     last_error: Exception | None = None
 
@@ -1654,10 +991,11 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             # First pass: request streaming chat completion with tools if applicable
             comp_kwargs: dict[str, Any] = {
                 "client": client,
+                "settings": settings,
                 "model": settings.llm_model,
                 "messages": messages,
                 "temperature": 0.1,
-                "max_tokens": 128,
+                "max_tokens": settings.llm_max_tokens,
                 "stop": ["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                 "stream": True,
             }
@@ -1738,7 +1076,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     args = parsed_args[i]
 
                     logger.info("executing_chat_tool", tool=name, argument_names=sorted(args))
-                    tool_result = await asyncio.to_thread(_execute_tool, settings, name, args)
+                    tool_result = await asyncio.to_thread(
+                        _execute_tool, settings, name, args, active_call_id
+                    )
 
                     if name == "book_appointment_tool" and (
                         tool_result.startswith("Booked ")
@@ -1775,10 +1115,11 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 # Second stream: generate voice reply based on tool execution result
                 second_response = await _create_stream_completion(
                     client=client,
+                    settings=settings,
                     model=settings.llm_model,
                     messages=messages,
                     temperature=0.1,
-                    max_tokens=128,
+                    max_tokens=settings.llm_max_tokens,
                     stop=["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                     stream=True,
                 )
@@ -1885,14 +1226,6 @@ def _get_client_ip(request: Request | None) -> str:
     return "127.0.0.1"
 
 
-class TranscribeRequest(BaseModel):
-    audio_base64: str = Field(
-        max_length=5_000_000, description="Base64-encoded audio bytes"
-    )
-    content_type: str = Field(default="audio/webm", max_length=64)
-    filename: str = Field(default="audio.webm", max_length=64)
-
-
 @router.post("/transcribe")
 async def transcribe_audio(req: TranscribeRequest, request: Request) -> dict[str, str]:
     """Transcribe caller audio using Groq Whisper API (free tier, ~200ms turnaround)."""
@@ -1930,23 +1263,6 @@ async def transcribe_audio(req: TranscribeRequest, request: Request) -> dict[str
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Transcription failed: {e}",
         ) from e
-
-
-class ConfirmBookingRequest(BaseModel):
-    call_id: str | int
-    call_secret: str
-    ticket_id: str
-    fingerprint: str
-
-
-class ConfirmBookingResponse(BaseModel):
-    status: Literal["confirmed", "already_confirmed"]
-    booking_id: int | str
-    service: str
-    phone: str
-    date: str
-    time: str
-    confirmation_message: str
 
 
 def _confirm_booking_sync(

@@ -336,9 +336,10 @@ export class NeuralAudioPlayer {
   private async processQueue(): Promise<void> {
     if (this.isFetching || this.queue.length === 0) return;
     this.isFetching = true;
+    const workerTurnId = this.currentTurnId;
 
     try {
-      while (this.queue.length > 0 && this.isTurnActive) {
+      while (this.queue.length > 0 && this.isTurnActive && this.currentTurnId === workerTurnId) {
         // Drain the queue into a batch and fetch ALL sentences in parallel so
         // the next sentence's audio is decoded before the current one finishes
         // playing. Sequential fetching left a dead-air gap whenever a short
@@ -376,7 +377,7 @@ export class NeuralAudioPlayer {
           }
 
           if (buffer && this.isTurnActive && this.currentTurnId === item.turnId) {
-            await this.scheduleAudioBuffer(buffer, item.text);
+            await this.scheduleAudioBuffer(buffer, item.text, item.turnId);
           }
         }
 
@@ -390,9 +391,14 @@ export class NeuralAudioPlayer {
         }
       }
     } finally {
-      this.isFetching = false;
+      // A stopped worker must not release the replacement worker's queue lock.
+      if (this.currentTurnId === workerTurnId) {
+        this.isFetching = false;
+      }
     }
-    this.checkTurnCompletion();
+    if (this.currentTurnId === workerTurnId) {
+      this.checkTurnCompletion();
+    }
   }
 
   private async fetchAudioBuffer(text: string, signal: AbortSignal): Promise<AudioBuffer | null> {
@@ -451,7 +457,11 @@ export class NeuralAudioPlayer {
     return audioBuffer;
   }
 
-  private async scheduleAudioBuffer(buffer: AudioBuffer, _sentence: string): Promise<void> {
+  private async scheduleAudioBuffer(
+    buffer: AudioBuffer,
+    _sentence: string,
+    turnId: number = this.currentTurnId,
+  ): Promise<void> {
     const ctx = this.initAudioContext();
     if (!ctx) return;
 
@@ -466,7 +476,8 @@ export class NeuralAudioPlayer {
       }
     }
 
-    if (!this.isTurnActive) return;
+    // resume() may settle after stop(), a replacement turn, or context disposal.
+    if (!this.isTurnActive || this.currentTurnId !== turnId || this.audioContext !== ctx) return;
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;

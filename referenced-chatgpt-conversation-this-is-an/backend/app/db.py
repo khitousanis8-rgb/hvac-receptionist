@@ -135,6 +135,21 @@ class CallTurn(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=_utcnow)
 
 
+class RateLimitEvent(Base):
+    """One sliding-window rate-limit event for the durable limiter backend."""
+
+    __tablename__ = "rate_limit_events"
+    __table_args__ = (
+        Index("ix_rate_limit_events_key_created_at", "key", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=_utcnow
+    )
+
+
 class ConfirmationTicket(Base):
     """Short-lived, single-use confirmation ticket bound to a call and booking fingerprint."""
 

@@ -1,0 +1,72 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "referenced-chatgpt-conversation-this-is-an/backend[dev]"
+      - name: Run harness unit tests
+        run: python -m unittest discover -s tools/verification/tests -v
+      - name: Run fast verification profile
+        run: python tools/verification/runner.py --profile fast
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-evidence
+          path: artifacts/verification/**/report.md
+          if-no-files-found: ignore
+          retention-days: 7
+
+  postgres:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: synthetic-ci-password
+          POSTGRES_DB: hvac_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "referenced-chatgpt-conversation-this-is-an/backend[dev]"
+      - name: Run PostgreSQL integration tests
+        working-directory: referenced-chatgpt-conversation-this-is-an/backend
+        env:
+          TEST_POSTGRES_URL: postgresql://postgres:synthetic-ci-password@localhost:5432/hvac_test
+        run: python -m pytest tests/test_postgres_integration.py -v -m postgres
