@@ -187,14 +187,31 @@ export class NeuralAudioPlayer {
   }
 
   /**
+   * Return the estimated physical hardware/OS output buffer delay in milliseconds.
+   * Incorporates W3C Web Audio `outputLatency` and `baseLatency`, with platform-calibrated
+   * minimums for Android AAudio (180ms) and Windows WASAPI (100ms).
+   */
+  public getHardwareOutputLatencyMs(): number {
+    const ctx = this.audioContext;
+    const measuredMs = ctx
+      ? Math.round((((ctx as any).outputLatency || 0) + ((ctx as any).baseLatency || 0)) * 1000)
+      : 0;
+    const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+    const isWindows = typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent);
+    const platformMinHalMs = isAndroid ? 180 : (isWindows ? 100 : 0);
+    return Math.max(measuredMs, platformMinHalMs);
+  }
+
+  /**
    * Real-time audio output active check.
    * Determines if physical sound is currently playing or lingering through speakers,
-   * active AudioBufferSourceNodes, scheduled Web Audio clock time, speech synthesis,
-   * or AnalyserNode peak time-domain amplitude (> thresholdDb, default -60 dBFS).
+   * active AudioBufferSourceNodes, scheduled Web Audio clock time + hardware HAL latency,
+   * speech synthesis, or AnalyserNode peak time-domain amplitude (> thresholdDb, default -60 dBFS).
    */
   public isAudioOutputActive(thresholdDb: number = -60): boolean {
     if (this.isPlaying || this.activeSources.length > 0) return true;
-    if (this.audioContext && this.audioContext.currentTime < this.nextPlayTime) return true;
+    const physicalEndTime = this.nextPlayTime + (this.getHardwareOutputLatencyMs() / 1000);
+    if (this.audioContext && this.audioContext.currentTime < physicalEndTime) return true;
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       if (window.speechSynthesis.speaking || window.speechSynthesis.pending) return true;
     }
@@ -618,10 +635,12 @@ export class NeuralAudioPlayer {
       "speechSynthesis" in window &&
       (window.speechSynthesis.speaking || window.speechSynthesis.pending);
 
-    // Audio is playing if sources exist, context clock hasn't passed nextPlayTime, or synth is speaking
+    // Audio is playing if sources exist, context clock hasn't passed physicalEndTime (hardware HAL buffer delay), or synth is speaking
+    const hardwareHalDelaySec = this.getHardwareOutputLatencyMs() / 1000;
+    const physicalEndTime = this.nextPlayTime + hardwareHalDelaySec;
     const isAudioPlaying =
       this.activeSources.length > 0 ||
-      (ctx !== null && ctx.currentTime < this.nextPlayTime) ||
+      (ctx !== null && ctx.currentTime < physicalEndTime) ||
       isSynthSpeaking;
 
     if (this.endTurnSignaled && this.queue.length === 0 && !this.isFetching && !isAudioPlaying) {
@@ -658,11 +677,11 @@ export class NeuralAudioPlayer {
       }
       this.finishTurn();
     } else if (isAudioPlaying && ctx) {
-      // Re-check 20ms after the scheduled completion timestamp
+      // Re-check 20ms after the physical completion timestamp (accounting for hardware HAL delay)
       if (this.endTurnTimer) {
         window.clearTimeout(this.endTurnTimer);
       }
-      const delayMs = Math.max(15, Math.round((this.nextPlayTime - ctx.currentTime) * 1000) + 20);
+      const delayMs = Math.max(15, Math.round((physicalEndTime - ctx.currentTime) * 1000) + 20);
       this.endTurnTimer = window.setTimeout(() => {
         this.checkTurnCompletion();
       }, delayMs);

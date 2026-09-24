@@ -926,9 +926,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 )
                 await asyncio.to_thread(record_call_turn, active_call_id, "assistant", guidance)
 
-                # Re-emit the active ticket so the frontend renders the Confirm button
+                # Re-emit or mint the active ticket so the frontend renders the Confirm button
                 active_ticket_id = slots.get("active_ticket_id")
                 ticket_payload: dict[str, object] | None = None
+                ticket = None
                 if active_ticket_id:
                     def _load_ticket() -> ConfirmationTicket | None:
                         with new_session() as s:
@@ -938,20 +939,60 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                             return None
 
                     ticket = await asyncio.to_thread(_load_ticket)
-                    if ticket:
-                        tz = ZoneInfo(settings.business_timezone)
-                        local_dt = ticket.scheduled_for.astimezone(tz)
-                        delta = ticket.expires_at - datetime.now(UTC)
-                        remaining = max(0, int(delta.total_seconds()))
-                        ticket_payload = {
-                            "ticket_id": ticket.ticket_id,
-                            "service": ticket.service,
-                            "phone": ticket.phone,
-                            "date": local_dt.strftime("%Y-%m-%d"),
-                            "time": local_dt.strftime("%I:%M %p"),
-                            "fingerprint": ticket.fingerprint,
-                            "expires_in_seconds": remaining,
-                        }
+
+                if not ticket:
+                    # Mint a fresh ticket if the prior one expired or was lost
+                    d_val = slots.get("date")
+                    t_val = slots.get("time")
+                    parsed_dt = (
+                        _parse_local_datetime(settings, str(d_val), str(t_val))
+                        if d_val and t_val
+                        else None
+                    )
+                    if parsed_dt is not None:
+                        target_dt = parsed_dt
+                        verified_service = str(
+                            slots.get("service")
+                            or (slots.get("verified") or {}).get("service")
+                            or "HVAC Service"
+                        )
+                        verified_phone = str(
+                            slots.get("phone")
+                            or (slots.get("verified") or {}).get("phone")
+                            or ""
+                        )
+                        def _mint_fresh_ticket() -> ConfirmationTicket:
+                            with new_session() as s:
+                                return create_confirmation_ticket(
+                                    s,
+                                    call_id=active_call_id,
+                                    service=verified_service,
+                                    phone=verified_phone,
+                                    scheduled_for=target_dt,
+                                    fingerprint=current_fp,
+                                    ttl_seconds=300,
+                                )
+                        ticket = await asyncio.to_thread(_mint_fresh_ticket)
+                        await asyncio.to_thread(
+                            update_call_slots,
+                            active_call_id,
+                            {"active_ticket_id": ticket.ticket_id},
+                        )
+
+                if ticket:
+                    tz = ZoneInfo(settings.business_timezone)
+                    local_dt = ticket.scheduled_for.astimezone(tz)
+                    delta = ticket.expires_at - datetime.now(UTC)
+                    remaining = max(0, int(delta.total_seconds()))
+                    ticket_payload = {
+                        "ticket_id": ticket.ticket_id,
+                        "service": ticket.service,
+                        "phone": ticket.phone,
+                        "date": local_dt.strftime("%Y-%m-%d"),
+                        "time": local_dt.strftime("%I:%M %p"),
+                        "fingerprint": ticket.fingerprint,
+                        "expires_in_seconds": remaining,
+                    }
 
                 async def tap_prompt_generator() -> AsyncIterator[str]:
                     yield f"event: delta\ndata: {json.dumps({'text': guidance})}\n\n"

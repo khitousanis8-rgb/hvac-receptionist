@@ -176,9 +176,9 @@ console.log("=== Running AEC Half-Duplex, Epoch Tracking & Decay Calibration Tes
     writable: true,
   });
   const androidConfig = speech.getDynamicAcousticCooldownMs();
-  assert.equal(androidConfig.minFloorMs, 500, "Android minFloorMs is 500ms");
+  assert.equal(androidConfig.minFloorMs, 850, "Android minFloorMs is 850ms");
   assert.equal(androidConfig.targetDb, -60, "Android targetDb is -60 dBFS");
-  assert.equal(androidConfig.maxTimeoutMs, 1200, "Android maxTimeoutMs is 1200ms");
+  assert.equal(androidConfig.maxTimeoutMs, 1500, "Android maxTimeoutMs is 1500ms");
 
   // 3b: Windows Desktop
   Object.defineProperty(globalThis, "navigator", {
@@ -189,9 +189,9 @@ console.log("=== Running AEC Half-Duplex, Epoch Tracking & Decay Calibration Tes
     writable: true,
   });
   const windowsConfig = speech.getDynamicAcousticCooldownMs();
-  assert.equal(windowsConfig.minFloorMs, 600, "Windows minFloorMs is 600ms");
+  assert.equal(windowsConfig.minFloorMs, 800, "Windows minFloorMs is 800ms");
   assert.equal(windowsConfig.targetDb, -60, "Windows targetDb is -60 dBFS");
-  assert.equal(windowsConfig.maxTimeoutMs, 1400, "Windows maxTimeoutMs is 1400ms");
+  assert.equal(windowsConfig.maxTimeoutMs, 1500, "Windows maxTimeoutMs is 1500ms");
 
   // 3c: iOS / macOS (Apple WebKit)
   Object.defineProperty(globalThis, "navigator", {

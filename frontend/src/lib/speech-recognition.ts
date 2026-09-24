@@ -332,11 +332,11 @@ export class BrowserSpeechRecognition {
       return { minFloorMs: 250, maxTimeoutMs: 500, targetDb: -50 };
     }
     if (platform === "mobile" || /Android/i.test(ua)) {
-      // Android Mobile: 500ms min floor, < -60 dBFS threshold, 1,200ms max timeout
-      return { minFloorMs: 500, maxTimeoutMs: 1200, targetDb: -60 };
+      // Android Mobile: 850ms min floor (250ms HAL delay + 350ms reverb + 250ms safety margin), < -60 dBFS threshold, 1,500ms max timeout
+      return { minFloorMs: 850, maxTimeoutMs: 1500, targetDb: -60 };
     }
-    // Windows Desktop: 600ms min floor, < -60 dBFS threshold, 1,400ms max timeout
-    return { minFloorMs: 600, maxTimeoutMs: 1400, targetDb: -60 };
+    // Windows Desktop: 800ms min floor (150ms WASAPI delay + 400ms reverb + 250ms safety margin), < -60 dBFS threshold, 1,500ms max timeout
+    return { minFloorMs: 800, maxTimeoutMs: 1500, targetDb: -60 };
   }
 
   public getAcousticCooldownMs(): number {
@@ -353,9 +353,73 @@ export class BrowserSpeechRecognition {
     }
   }
 
+  /**
+   * Check if candidate text matches words or clauses in the tail of recent assistant speech.
+   * Eliminates the Whitelist Paradox by detecting when options presented by the assistant
+   * bleed into the microphone immediately when playback ends.
+   */
+  public isTailOfRecentAssistantSpeech(cleanText: string): boolean {
+    if (!cleanText || this.recentAssistantUtterances.length === 0) return false;
+    const clean = cleanText.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    if (!clean) return false;
+
+    const candWords = clean.split(/\s+/).filter(Boolean);
+    if (candWords.length === 0) return false;
+
+    // Inspect the 2 most recent assistant utterances (clause + full sentence)
+    const recent = this.recentAssistantUtterances.slice(-2);
+    for (const utterance of recent) {
+      const uWords = utterance.split(/\s+/).filter(Boolean);
+      if (uWords.length === 0) continue;
+
+      // Exact substring of the utterance
+      if (utterance.includes(clean)) return true;
+
+      // The tail is the last 60% of words (or up to the last 14 words)
+      const tailCount = Math.max(Math.ceil(uWords.length * 0.6), Math.min(uWords.length, 14));
+      const tailWords = uWords.slice(-tailCount);
+      const tailText = tailWords.join(" ");
+
+      if (tailText.includes(clean)) return true;
+
+      // If candidate is 1-2 words and all appear in the utterance
+      if (candWords.length <= 2 && candWords.every((w) => uWords.includes(w))) {
+        return true;
+      }
+
+      // If candidate has >= 3 words and >= 66% appear in the utterance
+      if (candWords.length >= 3) {
+        const matchCount = candWords.filter((w) => uWords.includes(w)).length;
+        if (matchCount / candWords.length >= 0.66) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
   private isAcousticEcho(transcript: string): boolean {
     const clean = transcript.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
     if (!clean || clean.length < 2) return false;
+
+    // 0a. Caller providing phone digits is NEVER an echo of Sarah's callback question
+    const rawDigits = transcript.replace(/\D/g, "");
+    if (rawDigits.length >= 7 && !clean.startsWith("just to confirm") && !clean.startsWith("would you like me to book")) {
+      return false;
+    }
+
+    // 0b. Cognitive Response Delay & Prompt-Tail Echo Discrimination:
+    // If a transcript arrives within the human cognitive response window (< 700ms since mic opened)
+    // AND matches words in Sarah's recent speech, it is physically impossible to be
+    // human speech (human acoustic reaction + articulation + STT cloud round-trip >= 750-1200ms).
+    // It is loudspeaker audio buffer bleed / room reverberation and MUST be suppressed.
+    const timeSinceMicStart = Date.now() - this.sessionStartTime;
+    if (timeSinceMicStart < 700 && this.isTailOfRecentAssistantSpeech(clean)) {
+      this.echoSuppressionCount++;
+      console.warn(`[EchoGuard] Suppressed prompt-tail acoustic echo (<700ms cognitive window: ${timeSinceMicStart}ms):`, transcript);
+      return true;
+    }
 
     // Explicit caller booking confirmations, conversational greetings, and common affirmative answers are NEVER echo
     const GENUINE_CONFIRMATIONS = new Set([
@@ -368,12 +432,6 @@ export class BrowserSpeechRecognition {
       "correct", "perfect", "absolutely", "no", "nope", "cancel",
     ]);
     if (GENUINE_CONFIRMATIONS.has(clean)) {
-      return false;
-    }
-
-    // 0. Caller providing phone digits is NEVER an echo of Sarah's callback question
-    const rawDigits = transcript.replace(/\D/g, "");
-    if (rawDigits.length >= 7 && !clean.startsWith("just to confirm") && !clean.startsWith("would you like me to book")) {
       return false;
     }
 
