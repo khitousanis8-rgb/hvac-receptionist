@@ -332,11 +332,11 @@ export class BrowserSpeechRecognition {
       return { minFloorMs: 250, maxTimeoutMs: 500, targetDb: -50 };
     }
     if (platform === "mobile" || /Android/i.test(ua)) {
-      // Android Mobile: 850ms min floor (250ms HAL delay + 350ms reverb + 250ms safety margin), < -60 dBFS threshold, 1,500ms max timeout
-      return { minFloorMs: 850, maxTimeoutMs: 1500, targetDb: -60 };
+      // Android Mobile: 250ms min floor, < -55 dBFS threshold, 600ms max timeout
+      return { minFloorMs: 250, maxTimeoutMs: 600, targetDb: -55 };
     }
-    // Windows Desktop: 800ms min floor (150ms WASAPI delay + 400ms reverb + 250ms safety margin), < -60 dBFS threshold, 1,500ms max timeout
-    return { minFloorMs: 800, maxTimeoutMs: 1500, targetDb: -60 };
+    // Windows Desktop: 250ms min floor, < -55 dBFS threshold, 600ms max timeout
+    return { minFloorMs: 250, maxTimeoutMs: 600, targetDb: -55 };
   }
 
   public getAcousticCooldownMs(): number {
@@ -365,6 +365,13 @@ export class BrowserSpeechRecognition {
 
     const candWords = clean.split(/\s+/).filter(Boolean);
     if (candWords.length === 0) return false;
+
+    // Never consider genuine service or temporal terms as prompt-tail echo
+    const hasServiceTerm = /\b(ac|air|conditioning|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter|service|hvac|inspection|boiler)\b/i.test(clean);
+    const hasDateTimeTerm = /\b(tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|asap|earliest|\d+)\b/i.test(clean);
+    if (candWords.length <= 6 && (hasServiceTerm || hasDateTimeTerm)) {
+      return false;
+    }
 
     // Inspect the 2 most recent assistant utterances (clause + full sentence)
     const recent = this.recentAssistantUtterances.slice(-2);
@@ -403,25 +410,25 @@ export class BrowserSpeechRecognition {
     const clean = transcript.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
     if (!clean || clean.length < 2) return false;
 
+    const rawWords = clean.split(/\s+/).filter(Boolean);
+    const isAssistantLeadIn =
+      clean.startsWith("just to confirm") ||
+      clean.startsWith("would you like me to book") ||
+      clean.startsWith("my name is") ||
+      clean.startsWith("this is sarah") ||
+      clean.startsWith("thank you for calling") ||
+      clean.startsWith("thanks for calling") ||
+      clean.startsWith("tap confirm") ||
+      clean.startsWith("confirm booking") ||
+      clean.startsWith("our technician will");
+
     // 0a. Caller providing phone digits is NEVER an echo of Sarah's callback question
     const rawDigits = transcript.replace(/\D/g, "");
-    if (rawDigits.length >= 7 && !clean.startsWith("just to confirm") && !clean.startsWith("would you like me to book")) {
+    if (rawDigits.length >= 7 && !isAssistantLeadIn) {
       return false;
     }
 
-    // 0b. Cognitive Response Delay & Prompt-Tail Echo Discrimination:
-    // If a transcript arrives within the human cognitive response window (< 700ms since mic opened)
-    // AND matches words in Sarah's recent speech, it is physically impossible to be
-    // human speech (human acoustic reaction + articulation + STT cloud round-trip >= 750-1200ms).
-    // It is loudspeaker audio buffer bleed / room reverberation and MUST be suppressed.
-    const timeSinceMicStart = Date.now() - this.sessionStartTime;
-    if (timeSinceMicStart < 700 && this.isTailOfRecentAssistantSpeech(clean)) {
-      this.echoSuppressionCount++;
-      console.warn(`[EchoGuard] Suppressed prompt-tail acoustic echo (<700ms cognitive window: ${timeSinceMicStart}ms):`, transcript);
-      return true;
-    }
-
-    // Explicit caller booking confirmations, conversational greetings, and common affirmative answers are NEVER echo
+    // 0b. Explicit caller booking confirmations, conversational greetings, and common affirmative answers are NEVER echo
     const GENUINE_CONFIRMATIONS = new Set([
       "hello", "hi", "hey", "hi there", "hello there", "good morning", "good afternoon", "good evening",
       "morning", "afternoon", "evening",
@@ -435,6 +442,29 @@ export class BrowserSpeechRecognition {
       return false;
     }
 
+    // 0c. Whitelist short (<= 6 words) genuine service selections and date/time phrases.
+    // When the assistant offers choices ("...heating or AC repair?", "...furnace tune up?", "...openings tomorrow at 10 AM?"),
+    // the caller naturally responds with those exact words ("ac repair", "tune up", "tomorrow at 10 AM", "furnace maintenance").
+    // These must NEVER be suppressed as acoustic echo, provided they don't contain assistant signature prompts or lead-in phrases.
+    const isAssistantPromptFragment =
+      clean === "cooling today" ||
+      clean === "heating today" ||
+      clean === "heating or cooling" ||
+      clean === "heating or cooling today" ||
+      clean === "with your heating" ||
+      clean === "with your cooling" ||
+      clean === "with your heating or cooling" ||
+      clean === "with your heating or cooling today" ||
+      clean === "callback phone";
+
+    if (rawWords.length <= 6 && !isAssistantLeadIn && !isAssistantPromptFragment) {
+      const hasServiceTerm = /\b(ac|air|conditioning|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter|service|hvac|inspection|boiler)\b/i.test(clean);
+      const hasDateTimeTerm = /\b(tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|asap|earliest|\d+)\b/i.test(clean);
+      if (hasServiceTerm || hasDateTimeTerm) {
+        return false;
+      }
+    }
+
     // 1. Signature assistant phrases that should NEVER be accepted as caller input
     const SIGNATURE_ASST_PATTERNS = [
       "thank you for calling",
@@ -442,26 +472,15 @@ export class BrowserSpeechRecognition {
       "my name is sarah",
       "this is sarah",
       "how can i assist",
-      "how can i help",
-      "heating or cooling today",
       "with your heating or cooling",
-      "what service do you need help with",
       "what is the best callback phone number",
       "what s the best callback phone number",
       "best callback phone number",
       "technician to reach you",
-      "technician to reach",
       "technician reach",
-      "for our technician",
-      "for the technician",
-      "callback phone number",
-      "best callback phone",
       "callback phone",
       "cooling today",
-      "heating today",
-      "heating or cooling",
-      "how can i help with",
-      "help with your heating",
+      "for our technician to visit",
       "tap confirm booking",
       "confirm booking on your screen",
       "would you like me to book it",
@@ -469,16 +488,8 @@ export class BrowserSpeechRecognition {
       "quick yes or no",
       "confirm your appointment",
       "book your appointment",
-      "just to confirm",
-      "you re all set",
-      "you are all set",
       "our technician will see you then",
-      "is there anything else i can help with",
-      "is there anything else",
       "sorry i heard an echo of my own voice",
-      "no problem at all",
-      "what day and time works best",
-      "what day and time works",
       "check a different day or time",
     ];
 
@@ -487,30 +498,6 @@ export class BrowserSpeechRecognition {
         this.echoSuppressionCount++;
         console.warn("[EchoGuard] Suppressed signature assistant phrase echo:", transcript);
         return true;
-      }
-    }
-
-    // 2. Whitelist short (<= 5 words) genuine service selections and date/time phrases.
-    // When the assistant offers choices ("...heating or AC repair?", "...furnace tune up?", "...openings tomorrow at 10 AM?"),
-    // the caller naturally responds with those exact words ("ac repair", "tune up", "tomorrow at 10 AM", "furnace maintenance").
-    // These must NEVER be suppressed as acoustic echo, provided they don't contain assistant signature prompts or lead-in phrases.
-    const rawWords = clean.split(/\s+/).filter(Boolean);
-    const isAssistantLeadIn =
-      clean.startsWith("just to confirm") ||
-      clean.startsWith("would you like me to book") ||
-      clean.startsWith("my name is") ||
-      clean.startsWith("this is sarah") ||
-      clean.startsWith("thank you for calling") ||
-      clean.startsWith("thanks for calling") ||
-      clean.startsWith("tap confirm") ||
-      clean.startsWith("confirm booking") ||
-      clean.startsWith("our technician will");
-
-    if (rawWords.length <= 5 && !isAssistantLeadIn) {
-      const hasServiceTerm = /\b(ac|air|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter)\b/i.test(clean);
-      const hasDateTimeTerm = /\b(tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|\d+)\b/i.test(clean);
-      if (hasServiceTerm || hasDateTimeTerm) {
-        return false;
       }
     }
 

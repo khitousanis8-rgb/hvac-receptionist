@@ -539,26 +539,20 @@ async function runGatingAndLatencyStressTests() {
     assert(isEcho("best callback phone number") === true, "3.3 'best callback phone number' IS suppressed");
   }
 
-  // 3.4 Prompt-Tail Acoustic Echo Discrimination vs. Cognitive Response Delay Window (<700ms vs >=700ms)
+  // 3.4 Prompt-Tail Acoustic Echo Discrimination vs. Genuine Caller Selections
   {
     const speech = new BrowserSpeechRecognition();
     const isEcho = (text: string) => (speech as any).isAcousticEcho(text);
     speech.registerAssistantSpeech("Do you need heating or AC repair?");
 
-    // Case A: Transcript arrives within 400ms (<700ms) - physically acoustic echo
-    (speech as any).sessionStartTime = Date.now() - 400;
-    assert(isEcho("ac repair") === true, "3.4 'ac repair' arriving at 400ms (<700ms cognitive window) IS suppressed as prompt-tail echo");
+    // Genuine caller choices are immediately accepted without artificial delay
+    assert(isEcho("ac repair") === false, "3.4 'ac repair' is ACCEPTED as genuine caller choice");
+    assert(isEcho("heating repair") === false, "3.4 'heating repair' is ACCEPTED as genuine caller choice");
 
-    // Case B: Transcript arrives after 850ms (>=700ms) - human cognitive response
-    (speech as any).sessionStartTime = Date.now() - 850;
-    assert(isEcho("ac repair") === false, "3.4 'ac repair' arriving at 850ms (>=700ms) is ACCEPTED as genuine caller choice");
-
-    // Case C: Assistant prompt with dates and times
+    // Assistant prompt with dates and times
     speech.registerAssistantSpeech("We have openings tomorrow at 10 AM or Friday at 2 PM.");
-    (speech as any).sessionStartTime = Date.now() - 350;
-    assert(isEcho("tomorrow at 10 AM") === true, "3.4 'tomorrow at 10 AM' arriving at 350ms IS suppressed as prompt-tail echo");
-    (speech as any).sessionStartTime = Date.now() - 900;
-    assert(isEcho("tomorrow at 10 AM") === false, "3.4 'tomorrow at 10 AM' arriving at 900ms is ACCEPTED as genuine caller choice");
+    assert(isEcho("tomorrow at 10 AM") === false, "3.4 'tomorrow at 10 AM' is ACCEPTED as genuine caller choice");
+    assert(isEcho("Friday at 2 PM") === false, "3.4 'Friday at 2 PM' is ACCEPTED as genuine caller choice");
   }
 }
 
@@ -661,9 +655,9 @@ async function runAecHalfDuplexEpochCalibrationTests() {
       writable: true,
     });
     const androidConfig = speech.getDynamicAcousticCooldownMs();
-    assert(androidConfig.minFloorMs === 850, "4.3a Android minFloorMs is 850ms");
-    assert(androidConfig.targetDb === -60, "4.3a Android targetDb is -60 dBFS");
-    assert(androidConfig.maxTimeoutMs === 1500, "4.3a Android maxTimeoutMs is 1500ms");
+    assert(androidConfig.minFloorMs === 250, "4.3a Android minFloorMs is 250ms");
+    assert(androidConfig.targetDb === -55, "4.3a Android targetDb is -55 dBFS");
+    assert(androidConfig.maxTimeoutMs === 600, "4.3a Android maxTimeoutMs is 600ms");
 
     // 4.3b: Windows Desktop
     Object.defineProperty(globalThis, "navigator", {
@@ -674,9 +668,9 @@ async function runAecHalfDuplexEpochCalibrationTests() {
       writable: true,
     });
     const windowsConfig = speech.getDynamicAcousticCooldownMs();
-    assert(windowsConfig.minFloorMs === 800, "4.3b Windows minFloorMs is 800ms");
-    assert(windowsConfig.targetDb === -60, "4.3b Windows targetDb is -60 dBFS");
-    assert(windowsConfig.maxTimeoutMs === 1500, "4.3b Windows maxTimeoutMs is 1500ms");
+    assert(windowsConfig.minFloorMs === 250, "4.3b Windows minFloorMs is 250ms");
+    assert(windowsConfig.targetDb === -55, "4.3b Windows targetDb is -55 dBFS");
+    assert(windowsConfig.maxTimeoutMs === 600, "4.3b Windows maxTimeoutMs is 600ms");
 
     // 4.3c: iOS / macOS (Apple WebKit)
     Object.defineProperty(globalThis, "navigator", {

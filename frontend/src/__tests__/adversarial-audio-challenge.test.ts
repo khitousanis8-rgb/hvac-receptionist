@@ -532,37 +532,37 @@ const matrixTestCases = [
   {
     name: "4.1 Android Mobile (Chrome on Samsung S24)",
     ua: "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.88 Mobile Safari/537.36",
-    expected: { minFloorMs: 850, targetDb: -60, maxTimeoutMs: 1500 },
+    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
   },
   {
     name: "4.2 Android Mobile (Samsung Internet Browser)",
     ua: "Mozilla/5.0 (Linux; Android 13; SAMSUNG SM-A536B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/23.0 Chrome/115.0.0.0 Mobile Safari/537.36",
-    expected: { minFloorMs: 850, targetDb: -60, maxTimeoutMs: 1500 },
+    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
   },
   {
     name: "4.3 Android Mobile (Pixel 8 Pro Chrome)",
     ua: "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-    expected: { minFloorMs: 850, targetDb: -60, maxTimeoutMs: 1500 },
+    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
   },
   {
     name: "4.4 Android Tablet (Linux Android UA)",
     ua: "Mozilla/5.0 (Linux; Android 14; SM-X910) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    expected: { minFloorMs: 850, targetDb: -60, maxTimeoutMs: 1500 },
+    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
   },
   {
     name: "4.5 Windows Desktop (Windows 11 Chrome x64)",
     ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    expected: { minFloorMs: 800, targetDb: -60, maxTimeoutMs: 1500 },
+    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
   },
   {
     name: "4.6 Windows Desktop (Windows 11 Edge x64)",
     ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0",
-    expected: { minFloorMs: 800, targetDb: -60, maxTimeoutMs: 1500 },
+    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
   },
   {
     name: "4.7 Windows Desktop (Firefox x64)",
     ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
-    expected: { minFloorMs: 800, targetDb: -60, maxTimeoutMs: 1500 },
+    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
   },
   {
     name: "4.8 iOS Mobile (iPhone 15 Pro Safari)",
@@ -587,7 +587,7 @@ const matrixTestCases = [
   {
     name: "4.12 Desktop Fallback (Linux x86_64 Chrome)",
     ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    expected: { minFloorMs: 800, targetDb: -60, maxTimeoutMs: 1500 },
+    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
   },
 ];
 

@@ -269,10 +269,11 @@ def _is_echo_of_assistant(
     # Shield 3: Standalone / Short Service Selections (<= 5 words without assistant scaffolding)
     canonical_services = {
         "ac repair", "air conditioning repair", "air conditioning", "ac maintenance",
+        "cooling repair", "cooling service", "cooling maintenance",
         "heating repair", "furnace repair", "furnace tune up", "furnace tuneup",
         "tune up", "tuneup", "maintenance", "inspection", "heat pump",
         "thermostat replacement", "duct cleaning", "boiler repair",
-        "emergency ac repair", "emergency heating repair", "ac service",
+        "emergency ac repair", "emergency heating repair", "emergency cooling repair", "ac service",
         "heating service", "furnace service", "hvac maintenance", "hvac tune up",
         "furnace maintenance",
     }
