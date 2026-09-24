@@ -21,6 +21,7 @@ interface QueuedItem {
   text: string;
   abortController: AbortController;
   turnId: number;
+  fetchPromise?: Promise<{ buffer: AudioBuffer | null; error: Error | null }>;
 }
 
 const MAX_CACHE_SIZE = 40;
@@ -41,6 +42,8 @@ export class NeuralAudioPlayer {
   private currentTurnId: number = 0;
   private endTurnSignaled: boolean = false;
   private endTurnTimer: number | null = null;
+  private consecutiveSilentFrames: number = 0;
+  private readonly REQUIRED_SILENT_FRAMES: number = 4;
 
   // SpeechSynthesis Fallback state
   private currentUtterance: SpeechSynthesisUtterance | null = null;
@@ -97,8 +100,8 @@ export class NeuralAudioPlayer {
         this.masterGain.gain.setValueAtTime(1.0, this.audioContext.currentTime);
 
         this.analyserNode = this.audioContext.createAnalyser();
-        this.analyserNode.fftSize = 256;
-        this.analyserNode.smoothingTimeConstant = 0.8;
+        this.analyserNode.fftSize = 1024;
+        this.analyserNode.smoothingTimeConstant = 0.0;
 
         this.masterGain.connect(this.analyserNode);
         this.analyserNode.connect(this.audioContext.destination);
@@ -136,29 +139,68 @@ export class NeuralAudioPlayer {
   }
 
   /**
+   * Real-time 32-bit floating-point AnalyserNode monitoring down to -60 dBFS.
+   * Target threshold: -60 dBFS (linear amplitude < 0.0010).
+   */
+  public getOutputDecibelLevel(): { peakDb: number; rmsDb: number; isTrueSilence: boolean } {
+    if (!this.analyserNode || !this.audioContext || this.audioContext.state !== "running") {
+      return { peakDb: -100, rmsDb: -100, isTrueSilence: true };
+    }
+
+    try {
+      const fftSize = this.analyserNode.fftSize || 1024;
+      const buffer = new Float32Array(fftSize);
+      if (typeof this.analyserNode.getFloatTimeDomainData === "function") {
+        this.analyserNode.getFloatTimeDomainData(buffer);
+        let peak = 0;
+        let sumSquares = 0;
+        for (let i = 0; i < buffer.length; i++) {
+          const abs = Math.abs(buffer[i]);
+          if (abs > peak) peak = abs;
+          sumSquares += abs * abs;
+        }
+        const rms = Math.sqrt(sumSquares / buffer.length);
+        const peakDb = peak > 1e-6 ? 20 * Math.log10(peak) : -120;
+        const rmsDb = rms > 1e-6 ? 20 * Math.log10(rms) : -120;
+
+        // < -60 dBFS corresponds to linear amplitude < 0.0010
+        const isTrueSilence = peak < 0.0010 && rms < 0.0010;
+        return { peakDb, rmsDb, isTrueSilence };
+      } else if (typeof this.analyserNode.getByteTimeDomainData === "function") {
+        const byteData = new Uint8Array(fftSize);
+        this.analyserNode.getByteTimeDomainData(byteData);
+        let maxDev = 0;
+        for (let i = 0; i < byteData.length; i++) {
+          const dev = Math.abs(byteData[i] - 128);
+          if (dev > maxDev) maxDev = dev;
+        }
+        const isTrueSilence = maxDev === 0;
+        return {
+          peakDb: isTrueSilence ? -100 : -36,
+          rmsDb: isTrueSilence ? -100 : -36,
+          isTrueSilence,
+        };
+      }
+    } catch {}
+
+    return { peakDb: -100, rmsDb: -100, isTrueSilence: true };
+  }
+
+  /**
    * Real-time audio output active check.
    * Determines if physical sound is currently playing or lingering through speakers,
    * active AudioBufferSourceNodes, scheduled Web Audio clock time, speech synthesis,
-   * or AnalyserNode peak time-domain amplitude deviation (> 2 out of 128).
+   * or AnalyserNode peak time-domain amplitude (> thresholdDb, default -60 dBFS).
    */
-  public isAudioOutputActive(): boolean {
+  public isAudioOutputActive(thresholdDb: number = -60): boolean {
     if (this.isPlaying || this.activeSources.length > 0) return true;
     if (this.audioContext && this.audioContext.currentTime < this.nextPlayTime) return true;
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       if (window.speechSynthesis.speaking || window.speechSynthesis.pending) return true;
     }
-    if (this.analyserNode && this.audioContext && this.audioContext.state === "running") {
-      try {
-        const data = new Uint8Array(this.analyserNode.fftSize || 256);
-        if (typeof this.analyserNode.getByteTimeDomainData === "function") {
-          this.analyserNode.getByteTimeDomainData(data);
-          for (let i = 0; i < data.length; i++) {
-            if (Math.abs(data[i] - 128) > 2) return true;
-          }
-        }
-      } catch {}
-    }
-    return false;
+    const { peakDb, isTrueSilence } = this.getOutputDecibelLevel();
+    if (isTrueSilence) return false;
+    return peakDb > thresholdDb;
   }
 
   /**
@@ -216,13 +258,30 @@ export class NeuralAudioPlayer {
   }
 
   /** Begin an assistant turn. Speech recognition will pause. */
-  public startTurn(): void {
+  public startTurn(turnId?: number): number {
     this.stopAudioInternal();
-    this.currentTurnId++;
+    this.currentTurnId = turnId ?? (this.currentTurnId + 1);
     this.isTurnActive = true;
     this.endTurnSignaled = false;
+    this.consecutiveSilentFrames = 0;
     this.onTurnStateChange?.(true);
     this.unlockAudio();
+    return this.currentTurnId;
+  }
+
+  public getCurrentTurnId(): number {
+    return this.currentTurnId;
+  }
+
+  private triggerFetchForItem(item: QueuedItem): void {
+    if (item.fetchPromise) return;
+    this.inFlightControllers.add(item.abortController);
+    item.fetchPromise = this.fetchAudioBuffer(item.text, item.abortController.signal)
+      .then((buffer) => ({ buffer, error: null as Error | null }))
+      .catch((err: unknown) => ({ buffer: null, error: err as Error }))
+      .finally(() => {
+        this.inFlightControllers.delete(item.abortController);
+      });
   }
 
   /** Queue a single sentence for streaming neural synthesis. */
@@ -243,6 +302,7 @@ export class NeuralAudioPlayer {
     if (!this.isTurnActive) {
       this.currentTurnId++;
       this.isTurnActive = true;
+      this.consecutiveSilentFrames = 0;
       this.onTurnStateChange?.(true);
     }
 
@@ -251,6 +311,7 @@ export class NeuralAudioPlayer {
       abortController: new AbortController(),
       turnId: this.currentTurnId,
     };
+    this.triggerFetchForItem(item);
     this.queue.push(item);
     this.processQueue();
   }
@@ -328,6 +389,7 @@ export class NeuralAudioPlayer {
       window.clearTimeout(this.endTurnTimer);
       this.endTurnTimer = null;
     }
+    this.consecutiveSilentFrames = 0;
 
     // 7. Reset hardware playback clock
     if (this.audioContext) {
@@ -360,66 +422,65 @@ export class NeuralAudioPlayer {
   }
 
   private async processQueue(): Promise<void> {
-    if (this.isFetching || this.queue.length === 0) return;
+    if (this.isFetching) {
+      // Inter-sentence batch trigger: prefetch newly enqueued sentences in parallel immediately
+      for (const item of this.queue) {
+        this.triggerFetchForItem(item);
+      }
+      return;
+    }
+    if (this.queue.length === 0) return;
     this.isFetching = true;
     const workerTurnId = this.currentTurnId;
 
     try {
       while (this.queue.length > 0 && this.isTurnActive && this.currentTurnId === workerTurnId) {
-        // Drain the queue into a batch and fetch ALL sentences in parallel so
-        // the next sentence's audio is decoded before the current one finishes
-        // playing. Sequential fetching left a dead-air gap whenever a short
-        // sentence finished before the next fetch completed.
-        const batch = this.queue.splice(0, this.queue.length);
-
-        const results = batch.map((item) => {
-          this.inFlightControllers.add(item.abortController);
-          return this.fetchAudioBuffer(item.text, item.abortController.signal)
-            .then((buffer) => ({ item, buffer, error: null as Error | null }))
-            .catch((err: unknown) => ({ item, buffer: null, error: err as Error }))
-            .finally(() => {
-              this.inFlightControllers.delete(item.abortController);
-            });
-        });
-
-        // Schedule strictly in queue order so the hardware playback clock
-        // (nextPlayTime) chains the buffers with zero inter-sentence gap.
-        let scheduledCount = 0;
-        for (; scheduledCount < batch.length; scheduledCount++) {
-          const item = batch[scheduledCount];
-          // Zero Zombie Sounds: drop everything if the turn changed mid-batch
-          if (item.turnId !== this.currentTurnId || !this.isTurnActive) break;
-          const { buffer, error } = await results[scheduledCount];
-
-          if (error) {
-            if ((error as Error)?.name === "AbortError" || (error as DOMException)?.code === 20) {
-              break;
-            }
-            if (this.isTurnActive && this.currentTurnId === item.turnId) {
-              console.warn("[NeuralAudioPlayer] Stream fetch failed, falling back to Web Speech API:", error);
-              this.fallbackSpeak(item.text, item.turnId);
-            }
-            continue;
-          }
-
-          if (buffer && this.isTurnActive && this.currentTurnId === item.turnId) {
-            await this.scheduleAudioBuffer(buffer, item.text, item.turnId);
-          }
+        // Pre-trigger parallel fetches for all pending sentences
+        for (const item of this.queue) {
+          this.triggerFetchForItem(item);
         }
 
-        // Abort any batch items that never got scheduled (turn changed mid-batch)
-        for (let j = scheduledCount; j < batch.length; j++) {
+        const item = this.queue.shift()!;
+        if (item.turnId !== this.currentTurnId || !this.isTurnActive) {
           try {
-            batch[j].abortController.abort();
-          } catch {
-            // ignore
+            item.abortController.abort();
+          } catch {}
+          continue;
+        }
+
+        this.triggerFetchForItem(item);
+        const { buffer, error } = await item.fetchPromise!;
+
+        // Zero Zombie Sounds: drop everything if the turn changed mid-batch
+        if (item.turnId !== this.currentTurnId || !this.isTurnActive) {
+          try {
+            item.abortController.abort();
+          } catch {}
+          break;
+        }
+
+        if (error) {
+          if ((error as Error)?.name === "AbortError" || (error as DOMException)?.code === 20) {
+            break;
           }
+          if (this.isTurnActive && this.currentTurnId === item.turnId) {
+            console.warn("[NeuralAudioPlayer] Stream fetch failed, falling back to Web Speech API:", error);
+            this.fallbackSpeak(item.text, item.turnId);
+          }
+          continue;
+        }
+
+        if (buffer && this.isTurnActive && this.currentTurnId === item.turnId) {
+          await this.scheduleAudioBuffer(buffer, item.text, item.turnId);
         }
       }
     } finally {
       // A stopped worker must not release the replacement worker's queue lock.
       if (this.currentTurnId === workerTurnId) {
         this.isFetching = false;
+        if (this.queue.length > 0 && this.isTurnActive) {
+          this.processQueue();
+        }
       }
     }
     if (this.currentTurnId === workerTurnId) {
@@ -564,45 +625,44 @@ export class NeuralAudioPlayer {
       isSynthSpeaking;
 
     if (this.endTurnSignaled && this.queue.length === 0 && !this.isFetching && !isAudioPlaying) {
-      // Physical output silence verification: verify speaker energy has decayed
-      if (this.analyserNode && ctx && ctx.state === "running") {
-        try {
-          const data = new Uint8Array(this.analyserNode.fftSize || 256);
-          if (typeof this.analyserNode.getByteTimeDomainData === "function") {
-            this.analyserNode.getByteTimeDomainData(data);
-            let maxDeviation = 0;
-            for (let i = 0; i < data.length; i++) {
-              const dev = Math.abs(data[i] - 128);
-              if (dev > maxDeviation) maxDeviation = dev;
-            }
-            // If speaker buffer is still oscillating (peak deviation > 2 out of 128),
-            // delay turn completion until physical silence settles.
-            if (maxDeviation > 2) {
-              if (this.endTurnTimer) {
-                window.clearTimeout(this.endTurnTimer);
-              }
-              this.endTurnTimer = window.setTimeout(() => {
-                this.checkTurnCompletion();
-              }, 60);
-              return;
-            }
-          }
-        } catch {
-          // In mock/test environments without full AnalyserNode implementation, proceed cleanly
+      // Physical output silence verification: verify speaker energy has decayed below -60 dBFS
+      const { isTrueSilence } = this.getOutputDecibelLevel();
+
+      if (!isTrueSilence) {
+        this.consecutiveSilentFrames = 0;
+        if (this.endTurnTimer) {
+          window.clearTimeout(this.endTurnTimer);
         }
+        this.endTurnTimer = window.setTimeout(() => {
+          this.checkTurnCompletion();
+        }, 20);
+        return;
       }
 
+      this.consecutiveSilentFrames++;
+      if (this.consecutiveSilentFrames < this.REQUIRED_SILENT_FRAMES) {
+        if (this.endTurnTimer) {
+          window.clearTimeout(this.endTurnTimer);
+        }
+        this.endTurnTimer = window.setTimeout(() => {
+          this.checkTurnCompletion();
+        }, 20);
+        return;
+      }
+
+      // Audio has decayed to true silence (< -60 dBFS) for 4 consecutive frames (~80ms)
+      this.consecutiveSilentFrames = 0;
       if (this.isPlaying) {
         this.isPlaying = false;
         this.onPlaybackStateChange?.(false);
       }
       this.finishTurn();
     } else if (isAudioPlaying && ctx) {
-      // Re-check 25ms after the scheduled completion timestamp
+      // Re-check 20ms after the scheduled completion timestamp
       if (this.endTurnTimer) {
         window.clearTimeout(this.endTurnTimer);
       }
-      const delayMs = Math.max(15, Math.round((this.nextPlayTime - ctx.currentTime) * 1000) + 25);
+      const delayMs = Math.max(15, Math.round((this.nextPlayTime - ctx.currentTime) * 1000) + 20);
       this.endTurnTimer = window.setTimeout(() => {
         this.checkTurnCompletion();
       }, delayMs);

@@ -1681,6 +1681,208 @@ def test_already_confirmed_call_affirmation() -> None:
     assert 'event: done\ndata: {"outcome": "booked"}' in res.text
 
 
+def test_server_side_echo_detection_three_tier_pipeline() -> None:
+    """R4: Comprehensive verification of the 3-tier acoustic echo detection engine."""
+    from app.chat.intent import _is_assistant_echo
+    from app.chat_api import ChatMessage, _is_echo_of_assistant
+
+    # -------------------------------------------------------------------------
+    # Tier 0: Caller Slot Preservation Shields (Guaranteed NOT echo -> return False)
+    # -------------------------------------------------------------------------
+
+    # Case 1: Assistant asks for callback number
+    history_phone = [
+        ChatMessage(
+            role="assistant",
+            content="What is the best callback phone number for our technician to reach you?",
+        )
+    ]
+    # Phone shield variations: raw digits, formatted, spoken digits, with caller prefix
+    assert _is_echo_of_assistant("555-123-4567", history_phone) is False
+    assert _is_echo_of_assistant("5551234567", history_phone) is False
+    assert _is_echo_of_assistant("(555) 123-4567", history_phone) is False
+    assert _is_echo_of_assistant("My callback number is 555-234-5678", history_phone) is False
+    assert _is_echo_of_assistant("The callback phone is 555-234-5678", history_phone) is False
+    assert _is_echo_of_assistant("five one two eight zero zero zero zero one one", history_phone) is False
+    assert _is_echo_of_assistant("five five five one two three four", history_phone) is False
+
+    # Case 2: Assistant recaps or asks for confirmation
+    history_recap = [
+        ChatMessage(
+            role="assistant",
+            content="Just to confirm, that's AC repair for tomorrow at 10:00 AM. Would you like me to book it?",
+        )
+    ]
+    # Affirmative shield: explicit confirmations and conversational affirmations
+    assert _is_echo_of_assistant("yes", history_recap) is False
+    assert _is_echo_of_assistant("yes please", history_recap) is False
+    assert _is_echo_of_assistant("sounds good", history_recap) is False
+    assert _is_echo_of_assistant("sounds great", history_recap) is False
+    assert _is_echo_of_assistant("perfect", history_recap) is False
+    assert _is_echo_of_assistant("sure", history_recap) is False
+    assert _is_echo_of_assistant("okay", history_recap) is False
+    assert _is_echo_of_assistant("alright", history_recap) is False
+    assert _is_echo_of_assistant("please do", history_recap) is False
+    assert _is_echo_of_assistant("please book it", history_recap) is False
+    assert _is_echo_of_assistant("that works for me", history_recap) is False
+    assert _is_echo_of_assistant("go ahead", history_recap) is False
+
+    # Case 3: Assistant offers services
+    history_services = [
+        ChatMessage(
+            role="assistant",
+            content="Do you need heating repair, furnace tune up, or emergency AC repair?",
+        )
+    ]
+    # Service shield: canonical HVAC services without scaffolding
+    assert _is_echo_of_assistant("ac repair", history_services) is False
+    assert _is_echo_of_assistant("air conditioning repair", history_services) is False
+    assert _is_echo_of_assistant("heating repair", history_services) is False
+    assert _is_echo_of_assistant("furnace repair", history_services) is False
+    assert _is_echo_of_assistant("furnace tune up", history_services) is False
+    assert _is_echo_of_assistant("tune up", history_services) is False
+    assert _is_echo_of_assistant("maintenance", history_services) is False
+    assert _is_echo_of_assistant("inspection", history_services) is False
+    assert _is_echo_of_assistant("heat pump", history_services) is False
+    assert _is_echo_of_assistant("thermostat replacement", history_services) is False
+    assert _is_echo_of_assistant("duct cleaning", history_services) is False
+    assert _is_echo_of_assistant("boiler repair", history_services) is False
+    assert _is_echo_of_assistant("emergency ac repair", history_services) is False
+    assert _is_echo_of_assistant("I need AC repair", history_services) is False
+
+    # Case 4: Assistant offers dates and times
+    history_dates = [
+        ChatMessage(
+            role="assistant",
+            content="We have openings tomorrow at 10 AM or Friday at 2 PM for our technician to visit.",
+        )
+    ]
+    # Date/time shield: standalone temporal expressions without assistant scaffolding
+    assert _is_echo_of_assistant("tomorrow at 10 AM", history_dates) is False
+    assert _is_echo_of_assistant("tomorrow at 10", history_dates) is False
+    assert _is_echo_of_assistant("10:00 AM", history_dates) is False
+    assert _is_echo_of_assistant("Friday at 2 PM", history_dates) is False
+    assert _is_echo_of_assistant("tomorrow morning", history_dates) is False
+    assert _is_echo_of_assistant("Monday afternoon", history_dates) is False
+    assert _is_echo_of_assistant("noon", history_dates) is False
+    assert _is_echo_of_assistant("today at 3 PM", history_dates) is False
+
+    # Case 5: Caller name introductions
+    history_name = [
+        ChatMessage(role="assistant", content="May I have your name, please?")
+    ]
+    assert _is_echo_of_assistant("my name is Anis", history_name) is False
+    assert _is_echo_of_assistant("this is John Smith", history_name) is False
+    assert _is_echo_of_assistant("John Smith here", history_name) is False
+    assert _is_echo_of_assistant("call me David", history_name) is False
+    assert _is_echo_of_assistant("John Smith", history_name) is False
+
+    # -------------------------------------------------------------------------
+    # Tier 1 & Tier 2: Assistant Echoes (Must Return True)
+    # -------------------------------------------------------------------------
+
+    # 1. Distorted callback prompts picked up mid-conversation
+    assert _is_echo_of_assistant("what is the best callback number for technician to reach", history_phone) is True
+    assert _is_echo_of_assistant("what s the best callback number for technician", history_phone) is True
+    assert _is_echo_of_assistant("best callback phone number", history_phone) is True
+    assert _is_echo_of_assistant("technician to reach you", history_phone) is True
+    assert _is_echo_of_assistant("for our technician to reach", history_phone) is True
+
+    # 2. Distorted date/time offers picked up mid-conversation
+    assert _is_echo_of_assistant("have openings tomorrow at 10 AM or Friday at 2 PM", history_dates) is True
+    assert _is_echo_of_assistant("openings tomorrow at 10 AM or Friday", history_dates) is True
+    assert _is_echo_of_assistant("we have openings tomorrow at 10 AM", history_dates) is True
+    assert _is_echo_of_assistant("for our technician to visit", history_dates) is True
+    assert _is_echo_of_assistant("technician to visit", history_dates) is True
+
+    # 3. Distorted recap guidance picked up mid-conversation
+    history_guidance = [
+        ChatMessage(
+            role="assistant",
+            content="I have you down for AC repair on Monday at 10 AM. Please tap Confirm Booking on your screen to complete your appointment.",
+        )
+    ]
+    assert _is_echo_of_assistant("tap Confirm Booking on your screen to complete your appointment", history_guidance) is True
+    assert _is_echo_of_assistant("tap confirm booking on your screen", history_guidance) is True
+    assert _is_echo_of_assistant("tap confirm booking", history_guidance) is True
+    assert _is_echo_of_assistant("confirm booking on your screen", history_guidance) is True
+
+    # 4. Opening greeting echoes with and without intro phrase
+    assert _is_assistant_echo("how can I help with your heating or cooling today") is True
+    assert _is_assistant_echo("how can I assist with your heating or cooling today") is True
+    assert _is_assistant_echo("Apex HVAC this is Sarah how can I help with heating or cooling") is True
+    assert _is_assistant_echo("Thank you for calling Apex HVAC, my name is Sarah. How can I help with your heating or cooling today?") is True
+    assert _is_assistant_echo("My AC is not cooling well") is False
+    assert _is_assistant_echo("I need heating repair") is False
+
+
+def test_server_side_echo_with_persisted_call_turns() -> None:
+    """R4: Verify echo detection operates authoritatively with database CallTurn persistence."""
+    from uuid import uuid4
+
+    from app.chat_api import _is_echo_of_assistant
+    from app.db import record_call_turn
+
+    room = f"echo-test-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+
+    # Persist assistant turn in DB
+    record_call_turn(
+        call_id,
+        "assistant",
+        "We have openings tomorrow at 10 AM or Friday at 2 PM for our technician to visit.",
+    )
+
+    # Echo of date offer (without history argument, consulting call_id)
+    assert _is_echo_of_assistant(
+        "have openings tomorrow at 10 AM or Friday at 2 PM",
+        call_id=call_id,
+    ) is True
+    assert _is_echo_of_assistant(
+        "technician to visit",
+        call_id=call_id,
+    ) is True
+
+    # Genuine caller inputs are preserved
+    assert _is_echo_of_assistant("tomorrow at 10 AM", call_id=call_id) is False
+    assert _is_echo_of_assistant("Friday at 2 PM", call_id=call_id) is False
+    assert _is_echo_of_assistant("AC repair", call_id=call_id) is False
+    assert _is_echo_of_assistant("555-123-4567", call_id=call_id) is False
+    assert _is_echo_of_assistant("yes please", call_id=call_id) is False
+    assert _is_echo_of_assistant("my name is Anis", call_id=call_id) is False
+
+
+def test_chat_stream_drops_distorted_echo_without_llm() -> None:
+    """R4: Verify chat stream returns silent no-op SSE stream when echo is detected."""
+    from uuid import uuid4
+
+    from app.db import record_call_turn
+
+    settings = Settings(LLM_API_KEY="test-key", _env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"echo-stream-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+
+    record_call_turn(
+        call_id,
+        "assistant",
+        "What is the best callback phone number for our technician to reach you?",
+    )
+
+    # Send distorted echo
+    res = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "what is the best callback number for technician to reach"),
+    )
+    assert res.status_code == 200
+    # Must be silent no-op (event: done with info_only, no delta events)
+    assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
+    assert "event: delta" not in res.text
+
+
+
 
 
 

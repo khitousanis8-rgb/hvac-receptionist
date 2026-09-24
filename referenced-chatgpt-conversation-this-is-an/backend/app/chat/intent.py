@@ -30,7 +30,8 @@ __all__ = [
 def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
     """Detect if caller input is an echo of assistant speech picked up by mic.
 
-    Only flags true if the message closely mirrors the opening greeting pattern
+    Flags true if the message mirrors the opening greeting pattern (including when
+    the intro phrase is clipped and only the greeting question was transcribed)
     and does NOT contain genuine caller booking/problem intent.
     """
     clean = text.lower().strip()
@@ -45,7 +46,17 @@ def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
         or "how can i help" in clean
         or "heating or cooling today" in clean
     )
-    if not (has_intro and has_prompt):
+    # Catch opening greeting question even when mic starts late and misses the intro phrase
+    has_greeting_question = (
+        ("how can i help" in clean or "how can i assist" in clean)
+        and ("heating or cooling" in clean or "heating today" in clean or "cooling today" in clean)
+    ) or (
+        "how can i help with your heating or cooling today" in clean
+        or "how can i assist with your heating or cooling today" in clean
+        or "how can i help with your heating or cooling" in clean
+    )
+
+    if not (has_intro and has_prompt) and not has_greeting_question:
         return False
 
     stripped = clean
@@ -58,11 +69,20 @@ def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
         "this is sarah",
         "how can i help with your heating or cooling today",
         "how can i assist you with your heating or cooling today",
+        "how can i assist with your heating or cooling today",
+        "how can i help with your heating or cooling",
+        "how can i assist with your heating or cooling",
+        "how can i help with heating or cooling today",
+        "how can i assist with heating or cooling today",
+        "how can i help with heating or cooling",
+        "how can i assist with heating or cooling",
         "with your heating or cooling today",
         "with your heating or cooling",
         "heating or cooling today",
+        "heating or cooling",
         "how can i help with",
         "how can i assist you with",
+        "how can i assist with",
         "how can i help you",
         "how can i assist you",
         "how can i help",

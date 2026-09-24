@@ -96,6 +96,89 @@ def _get_client(settings: Settings) -> AsyncOpenAI:
     return _client
 
 
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """Compute standard Levenshtein edit distance between two strings."""
+    if s1 == s2:
+        return 0
+    if not s1:
+        return len(s2)
+    if not s2:
+        return len(s1)
+    prev_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr_row = [i + 1] * (len(s2) + 1)
+        for j, c2 in enumerate(s2):
+            cost = 0 if c1 == c2 else 1
+            curr_row[j + 1] = min(
+                curr_row[j] + 1,
+                prev_row[j + 1] + 1,
+                prev_row[j] + cost,
+            )
+        prev_row = curr_row
+    return prev_row[len(s2)]
+
+
+def _sliding_window_levenshtein_ratio(clean_msg: str, asst_tokens: list[str]) -> float:
+    """Compute maximum Levenshtein similarity ratio over a sliding token window.
+
+    Tests windows of length M +/- 2 tokens against the assistant utterance tokens.
+    Prunes candidate windows whose character length difference alone precludes a ratio >= 0.80.
+    """
+    m_tokens = len(clean_msg.split())
+    a_len = len(asst_tokens)
+    msg_len = len(clean_msg)
+    if msg_len == 0 or a_len == 0:
+        return 0.0
+
+    best_ratio = 0.0
+    min_k = max(1, m_tokens - 2)
+    max_k = min(a_len, m_tokens + 2)
+
+    for k in range(min_k, max_k + 1):
+        for i in range(a_len - k + 1):
+            window = " ".join(asst_tokens[i : i + k])
+            win_len = len(window)
+            max_len = max(msg_len, win_len)
+            if max_len == 0:
+                continue
+            if abs(msg_len - win_len) / max_len > 0.20:
+                continue
+            dist = _levenshtein_distance(clean_msg, window)
+            ratio = 1.0 - (dist / max_len)
+            if ratio > best_ratio:
+                best_ratio = ratio
+                if best_ratio >= 0.80:
+                    return best_ratio
+
+    return best_ratio
+
+
+def _token_ngram_containment(msg_tokens: list[str], asst_tokens: list[str], n: int) -> float:
+    """Compute the fraction of caller message n-grams contained in the assistant utterance."""
+    if len(msg_tokens) < n or len(asst_tokens) < n:
+        return 0.0
+    msg_ngrams = [tuple(msg_tokens[i : i + n]) for i in range(len(msg_tokens) - n + 1)]
+    asst_ngrams = set(tuple(asst_tokens[j : j + n]) for j in range(len(asst_tokens) - n + 1))
+    if not msg_ngrams:
+        return 0.0
+    matches = sum(1 for ng in msg_ngrams if ng in asst_ngrams)
+    return matches / len(msg_ngrams)
+
+
+def _content_word_overlap(
+    msg_tokens: list[str],
+    asst_tokens: list[str],
+    stop_words: set[str],
+) -> tuple[int, float]:
+    """Compute content word count and overlap ratio against assistant tokens."""
+    content_words = [w for w in msg_tokens if w not in stop_words and len(w) >= 3]
+    if not content_words:
+        return (0, 0.0)
+    asst_words = set(asst_tokens)
+    overlap = sum(1 for w in content_words if w in asst_words) / len(content_words)
+    return (len(content_words), overlap)
+
+
 def _is_echo_of_assistant(
     message: str,
     history: list[ChatMessage] | None = None,
@@ -103,29 +186,130 @@ def _is_echo_of_assistant(
 ) -> bool:
     """Detect speaker-feedback echo: the mic re-captured the assistant's TTS.
 
-    If the user utterance is an exact prefix, suffix, substring (>=2 words),
-    or >=75% word overlap with a recent assistant utterance from server turns
-    or session history, it is flagged as echo.
+    Implements a resilient 3-tier detection pipeline:
+    - Tier 0: Caller Slot Preservation Shields (Guaranteed NOT echo -> return False):
+        1. Callback phone numbers (raw numeric digits >= 7 or spoken digit words >= 7).
+        2. Explicit booking confirmations & affirmations.
+        3. Standalone / short services (<= 5 words matching canonical HVAC services
+           without assistant question scaffolding).
+        4. Standalone / short dates & times (<= 5 words containing temporal expressions
+           without assistant question scaffolding).
+        5. Caller name introductions (excluding Sarah/assistant).
+    - Tier 1: Static Assistant Signatures & Scaffolding patterns.
+    - Tier 2: Dynamic comparison against recent assistant utterances:
+        2A: Exact substring / affix match.
+        2B: Normalized Token N-Gram Containment (Cn >= 0.70 on bigrams for len >= 4 words,
+            C3 >= 0.66 on trigrams for len >= 3 words).
+        2C: Sliding-Window Levenshtein Similarity Ratio (Swin >= 0.80 on windows of
+            length M +/- 2 tokens, len >= 12 chars).
+        2D: Content-Word Overlap (>= 0.75 for >= 3 content words; or 2-word exact content
+            subset without service/time).
     """
     clean_msg = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", message.lower())).strip()
     if not clean_msg:
         return False
 
-    msg_words = [w for w in clean_msg.split() if len(w) >= 2]
+    msg_tokens = clean_msg.split()
+    msg_words = [w for w in msg_tokens if len(w) >= 2]
     if not msg_words:
         return False
 
-    # 0. Caller providing phone digits is NEVER an echo of Sarah's callback question
-    # (since the assistant's prompt asking for a callback number never contains phone digits).
+    # -------------------------------------------------------------------------
+    # Tier 0: Caller Slot Preservation Shields (Guaranteed NOT Echo -> return False)
+    # -------------------------------------------------------------------------
+
+    # Shield 1: Callback Phone Numbers (raw digits >= 7 or spoken digit words >= 7)
     raw_digits = re.sub(r"\D", "", message)
-    if len(raw_digits) >= 7 and not (
-        clean_msg.startswith("just to confirm")
-        or clean_msg.startswith("would you like me to book")
-    ):
+    spoken_digit_words = {
+        "zero", "oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    }
+    num_spoken_digits = sum(1 for w in msg_tokens if w in spoken_digit_words)
+    recap_lead_ins = (
+        "just to confirm",
+        "would you like me to book",
+        "i have you down for",
+        "to confirm that s",
+        "to confirm that is",
+    )
+    is_recap_lead_in = any(clean_msg.startswith(lead) for lead in recap_lead_ins)
+    if (len(raw_digits) >= 7 or num_spoken_digits >= 7) and not is_recap_lead_in:
         return False
 
-    # 1. Signature assistant phrases that should NEVER be accepted as caller input
-    # (distorted loudspeaker echoes common on Android/Windows)
+    # Shield 2: Explicit Booking Confirmations & Affirmations
+    if is_explicit_booking_confirmation(message):
+        return False
+
+    affirmative_phrases = {
+        "yes", "yeah", "yep", "sure", "sounds good", "sounds great",
+        "perfect", "okay", "alright", "please", "go ahead", "yes please",
+        "yes thank you", "yes thanks", "that works", "that works for me",
+        "that sounds good", "that sounds great", "please do", "confirm",
+        "confirmed", "absolutely", "definitely", "correct",
+    }
+    if clean_msg in affirmative_phrases:
+        return False
+
+    # Combined assistant scaffolding check: if message contains assistant question/prompt
+    # scaffolding, it must NOT be shielded by either the service or date/time shield.
+    assistant_scaffolding = {
+        "how can i help", "how can i assist", "what service do you need",
+        "what service", "service do you need", "thanks for calling",
+        "thank you for calling", "can i help with", "can i assist you with",
+        "help you schedule", "need help with", "do you need", "would you like",
+        "heating or cooling today", "with your heating or cooling",
+        "help with your heating", "help with your cooling", "cooling today",
+        "heating today", "heating or cooling",
+        "i have", "we have", "available", "does that work", "works best for you",
+        "what day and time", "what day", "what time", "technician to visit",
+        "for our technician", "technician will see you", "openings",
+        "would that work", "works for you",
+    }
+    has_scaffolding = any(scaffold in clean_msg for scaffold in assistant_scaffolding)
+
+    # Shield 3: Standalone / Short Service Selections (<= 5 words without assistant scaffolding)
+    canonical_services = {
+        "ac repair", "air conditioning repair", "air conditioning", "ac maintenance",
+        "heating repair", "furnace repair", "furnace tune up", "furnace tuneup",
+        "tune up", "tuneup", "maintenance", "inspection", "heat pump",
+        "thermostat replacement", "duct cleaning", "boiler repair",
+        "emergency ac repair", "emergency heating repair", "ac service",
+        "heating service", "furnace service", "hvac maintenance", "hvac tune up",
+        "furnace maintenance",
+    }
+    if len(msg_tokens) <= 5 and not has_scaffolding:
+        for cs in canonical_services:
+            if cs in clean_msg:
+                return False
+
+    # Shield 4: Standalone / Short Date & Time Selections (<= 5 words without assistant scaffolding)
+    temporal_expressions = {
+        "today", "tomorrow", "yesterday", "monday", "tuesday", "wednesday",
+        "thursday", "friday", "saturday", "sunday", "morning", "afternoon",
+        "evening", "am", "pm", "noon", "o clock", "oclock", "asap", "earliest",
+    }
+    has_temporal_expr = any(te in clean_msg.split() for te in temporal_expressions)
+    if len(msg_tokens) <= 5 and has_temporal_expr and not has_scaffolding:
+        return False
+
+
+    # Shield 5: Caller Name Introductions
+    name_intro_match = re.match(
+        r"^(?:my name is|i am|i'm|this is|call me|name's|name is)\s+([a-z]+(?:\s+[a-z]+)?)$",
+        clean_msg,
+    )
+    if name_intro_match:
+        introduced_name = name_intro_match.group(1).strip()
+        if "sarah" not in introduced_name:
+            return False
+    name_here_match = re.match(r"^([a-z]+(?:\s+[a-z]+)?)\s+here$", clean_msg)
+    if name_here_match:
+        introduced_name = name_here_match.group(1).strip()
+        if "sarah" not in introduced_name:
+            return False
+
+    # -------------------------------------------------------------------------
+    # Tier 1: Static Assistant Signatures & Scaffolding Patterns
+    # -------------------------------------------------------------------------
     signature_asst_patterns = [
         "thank you for calling",
         "thanks for calling",
@@ -166,37 +350,20 @@ def _is_echo_of_assistant(
         "our technician will see you then",
         "is there anything else i can help with",
         "is there anything else",
+        "what day and time works best",
+        "what day works best",
+        "what time works best",
+        "for our technician to visit",
+        "technician to visit",
+        "we have openings tomorrow",
+        "we have openings",
     ]
     if any(sig in clean_msg for sig in signature_asst_patterns):
         return True
 
-    # 2. Never treat genuine booking confirmations, short service selections,
-    # or date/time answers as acoustic echo.
-    # When the assistant offers choices ("...heating or AC repair?", "...furnace tune up?",
-    # "...openings tomorrow at 10 AM?"), the caller naturally responds with those exact words
-    # ("ac repair", "tune up", "tomorrow at 10 AM", "furnace maintenance").
-    if is_explicit_booking_confirmation(message):
-        return False
-
-    is_assistant_lead_in = (
-        clean_msg.startswith("just to confirm")
-        or clean_msg.startswith("would you like me to book")
-        or clean_msg.startswith("my name is")
-        or clean_msg.startswith("this is sarah")
-        or clean_msg.startswith("thank you for calling")
-        or clean_msg.startswith("thanks for calling")
-        or clean_msg.startswith("tap confirm")
-        or clean_msg.startswith("confirm booking")
-        or clean_msg.startswith("our technician will")
-    )
-    if len(msg_words) <= 5 and not is_assistant_lead_in:
-        service_or_time_pattern = re.compile(
-            r"\b(ac|air|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter|tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|\d+)\b",
-            re.IGNORECASE,
-        )
-        if service_or_time_pattern.search(clean_msg):
-            return False
-
+    # -------------------------------------------------------------------------
+    # Tier 2: Dynamic Comparison Against Recent Assistant Utterances
+    # -------------------------------------------------------------------------
     assistant_texts: list[str] = []
     if call_id is not None:
         try:
@@ -216,43 +383,59 @@ def _is_echo_of_assistant(
         "a", "an", "the", "in", "on", "at", "to", "for", "with", "of",
         "and", "or", "is", "are", "i", "you", "we", "it", "do", "can",
         "my", "your", "what", "when", "how", "this", "that", "there",
+        "be", "would", "could", "should", "me", "us", "so", "if",
     }
-    content_words = [w for w in msg_words if w not in stop_words]
 
     for asst_text in assistant_texts:
         clean_asst = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", asst_text.lower())).strip()
         if not clean_asst:
             continue
+        asst_tokens = clean_asst.split()
+        if not asst_tokens:
+            continue
 
-        # 1. Exact prefix or suffix match for short echoed phrases (>= 2 words)
-        if len(msg_words) >= 2:
+        # 2A: Exact Substring / Affix Match
+        if len(msg_tokens) >= 2:
             if clean_asst.startswith(clean_msg) or clean_asst.endswith(clean_msg):
                 return True
-            # Interior substring match if >= 3 words and >= 8 characters
-            if len(msg_words) >= 3 and len(clean_msg) >= 8 and clean_msg in clean_asst:
+        if len(msg_tokens) >= 3 and len(clean_msg) >= 8 and clean_msg in clean_asst:
+            return True
+
+        # 2B: Normalized Token N-Gram Containment
+        # Cn >= 0.70 for bigrams (len >= 4 words), C3 >= 0.66 for trigrams (len >= 3 words)
+        if len(msg_tokens) >= 4:
+            c2 = _token_ngram_containment(msg_tokens, asst_tokens, n=2)
+            if c2 >= 0.70:
+                return True
+        if len(msg_tokens) >= 3:
+            c3 = _token_ngram_containment(msg_tokens, asst_tokens, n=3)
+            if c3 >= 0.66:
                 return True
 
-        # 2. High word overlap for longer utterances using content words (>= 3 content words)
-        if len(content_words) >= 3:
-            asst_words = set(clean_asst.split())
-            if asst_words:
-                overlap = sum(1 for w in content_words if w in asst_words) / len(content_words)
-                if overlap >= 0.8:
-                    return True
+        # 2C: Sliding-Window Levenshtein Similarity Ratio
+        # Swin >= 0.80 on windows of length M +/- 2 tokens, len >= 12 chars
+        if len(msg_tokens) >= 3 and len(clean_msg) >= 12:
+            s_win = _sliding_window_levenshtein_ratio(clean_msg, asst_tokens)
+            if s_win >= 0.80:
+                return True
 
-        # 3. 2-word exact content subset: if caller message has exactly 2 content words
+        # 2D: Content-Word Overlap (>= 0.75)
+        num_content, overlap = _content_word_overlap(msg_tokens, asst_tokens, stop_words)
+        if num_content >= 3 and overlap >= 0.75:
+            return True
+
+        # 2-word exact content subset: if caller message has exactly 2 content words
         # and both appear in assistant utterance
-        if len(content_words) == 2:
-            asst_words = set(clean_asst.split())
-            if asst_words and all(w in asst_words for w in content_words):
-                # Guard genuine service queries, dates, times, and problem descriptions
-                service_or_time_pattern = re.compile(
-                    r"\b(ac|air|repair|heating|cooling|tune|tuneup|maintenance|heat|pump|furnace|leak|noise|pipe|duct|thermostat|filter|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm|morning|afternoon|evening|noon|\d+)\b",
-                    re.IGNORECASE,
-                )
-                if not service_or_time_pattern.search(clean_msg):
-                    return True
+        if num_content == 2 and overlap == 1.0:
+            service_or_time_pattern = re.compile(
+                r"\b(ac|air|repair|heating|cooling|tune|tuneup|maintenance|heat|pump|furnace|leak|noise|pipe|duct|thermostat|filter|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm|morning|afternoon|evening|noon|\d+)\b",
+                re.IGNORECASE,
+            )
+            if not service_or_time_pattern.search(clean_msg):
+                return True
+
     return False
+
 
 
 

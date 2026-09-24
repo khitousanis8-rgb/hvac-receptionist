@@ -6,7 +6,7 @@
  */
 
 import { apiPost } from "./api.ts";
-import { type InputPath } from "./telemetry.ts";
+import { type InputPath, detectPlatformClass, detectBrowserEngine } from "./telemetry.ts";
 import { neuralVoice } from "./neural-audio-player.ts";
 
 export type SpeechTranscriptCallback = (text: string, isFinal: boolean) => void;
@@ -53,8 +53,10 @@ export class BrowserSpeechRecognition {
   private recentAssistantUtterances: string[] = [];
   private lastAgentSpeechEndTime: number = 0;
   private captureEpoch: number = 0;
-  private speechEpoch: number = 0;
+  private speechEpoch: number = 1;
   private activeRecognitionEpoch: number = 0;
+  private currentSpeechEpoch: number = 1;
+  private activeListeningEpoch: number = 0;
   private sessionStartTime: number = 0;
   private SpeechRecognitionClass: any = null;
   private isAudioOutputActiveFn: (() => boolean) | null = null;
@@ -79,6 +81,19 @@ export class BrowserSpeechRecognition {
     }
   }
 
+  public getCurrentSpeechEpoch(): number {
+    return this.currentSpeechEpoch;
+  }
+
+  public getActiveListeningEpoch(): number {
+    return this.activeListeningEpoch;
+  }
+
+  public setSpeechEpoch(epoch: number): void {
+    this.currentSpeechEpoch = epoch;
+    this.speechEpoch = epoch;
+  }
+
   public setMediaStream(stream: MediaStream | null): void {
     this.mediaStream = stream;
   }
@@ -94,12 +109,12 @@ export class BrowserSpeechRecognition {
     this.isAudioOutputActiveFn = fn;
   }
 
-  public isAudioOutputActive(): boolean {
+  public isAudioOutputActive(thresholdDb: number = -60): boolean {
     if (this.isAudioOutputActiveFn) {
       return this.isAudioOutputActiveFn();
     }
     try {
-      return neuralVoice.isAudioOutputActive();
+      return neuralVoice.isAudioOutputActive(thresholdDb);
     } catch {
       return false;
     }
@@ -121,8 +136,9 @@ export class BrowserSpeechRecognition {
           !this.shouldBeListening ||
           this.isMuted ||
           this.isPausedForAgent ||
-          this.activeRecognitionEpoch !== this.speechEpoch
+          this.activeListeningEpoch !== this.currentSpeechEpoch
         ) {
+          console.warn(`[EpochGuard] Dropped stale transcript from epoch ${this.activeListeningEpoch} (current: ${this.currentSpeechEpoch})`);
           return;
         }
 
@@ -305,14 +321,26 @@ export class BrowserSpeechRecognition {
     return this.isSupported ? "native_web_speech" : "media_recorder_transcription";
   }
 
+  public getDynamicAcousticCooldownMs(): { minFloorMs: number; maxTimeoutMs: number; targetDb: number } {
+    const platform = detectPlatformClass();
+    const engine = detectBrowserEngine();
+    const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+    const isApple = engine === "webkit" || /iPhone|iPad|iPod|Macintosh/i.test(ua);
+
+    if (isApple) {
+      // iOS / macOS: 250ms min floor, < -50 dBFS threshold, 500ms max timeout
+      return { minFloorMs: 250, maxTimeoutMs: 500, targetDb: -50 };
+    }
+    if (platform === "mobile" || /Android/i.test(ua)) {
+      // Android Mobile: 500ms min floor, < -60 dBFS threshold, 1,200ms max timeout
+      return { minFloorMs: 500, maxTimeoutMs: 1200, targetDb: -60 };
+    }
+    // Windows Desktop: 600ms min floor, < -60 dBFS threshold, 1,400ms max timeout
+    return { minFloorMs: 600, maxTimeoutMs: 1400, targetDb: -60 };
+  }
+
   public getAcousticCooldownMs(): number {
-    const isAppleMobile =
-      typeof navigator !== "undefined" &&
-      /iPad|iPhone|iPod/.test(navigator.userAgent || "");
-    // iOS has hardware VoiceProcessingIO DSP, so 1100ms is sufficient.
-    // Windows & Android have significant DAC buffer latencies, laptop speaker resonance,
-    // and Bluetooth audio latency, requiring 1600ms acoustic drain.
-    return isAppleMobile ? 1100 : 1600;
+    return this.getDynamicAcousticCooldownMs().minFloorMs;
   }
 
   public registerAssistantSpeech(text: string): void {
@@ -517,7 +545,9 @@ export class BrowserSpeechRecognition {
       }
       if (this.recognition) {
         try {
-          this.activeRecognitionEpoch = this.speechEpoch;
+          this.activeListeningEpoch = this.currentSpeechEpoch;
+          this.activeRecognitionEpoch = this.currentSpeechEpoch;
+          this.speechEpoch = this.currentSpeechEpoch;
           this.sessionStartTime = Date.now();
           this.recognition.start();
           this.isListening = true;
@@ -530,6 +560,9 @@ export class BrowserSpeechRecognition {
       }
     } else {
       // Start Fallback MediaRecorder
+      this.activeListeningEpoch = this.currentSpeechEpoch;
+      this.activeRecognitionEpoch = this.currentSpeechEpoch;
+      this.speechEpoch = this.currentSpeechEpoch;
       this.sessionStartTime = Date.now();
       await this.startMediaRecorderFallback();
     }
@@ -616,7 +649,7 @@ export class BrowserSpeechRecognition {
    * bump captureEpoch to discard in-flight frames, wait 200ms for speaker tail-energy to dissipate,
    * then resume input.
    */
-  public resumeImmediatelyForInterrupt(): void {
+  public resumeImmediatelyForInterrupt(epoch?: number): void {
     if (this.restartTimer !== null) {
       window.clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -628,6 +661,13 @@ export class BrowserSpeechRecognition {
     if (this.debounceTimer !== null) {
       window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
+    }
+    if (epoch !== undefined) {
+      this.currentSpeechEpoch = epoch;
+      this.speechEpoch = epoch;
+    } else {
+      this.currentSpeechEpoch++;
+      this.speechEpoch = this.currentSpeechEpoch;
     }
     this.captureEpoch++;
     this.accumulatedFinalText = "";
@@ -658,9 +698,14 @@ export class BrowserSpeechRecognition {
       }
     }
 
+    const targetEpoch = this.currentSpeechEpoch;
     // 200ms tail-audio drain cooldown
     this.cooldownTimer = window.setTimeout(() => {
       this.cooldownTimer = null;
+      if (targetEpoch !== this.currentSpeechEpoch) return;
+      this.activeListeningEpoch = targetEpoch;
+      this.activeRecognitionEpoch = targetEpoch;
+      this.speechEpoch = targetEpoch;
       this.isPausedForAgent = false;
 
       // Re-enable physical microphone tracks after speaker tail-energy settled
@@ -678,7 +723,6 @@ export class BrowserSpeechRecognition {
         }
         if (this.recognition) {
           try {
-            this.activeRecognitionEpoch = this.speechEpoch;
             this.sessionStartTime = Date.now();
             this.recognition.start();
             this.isListening = true;
@@ -700,131 +744,170 @@ export class BrowserSpeechRecognition {
   }
 
   /**
-   * Hardware auto-gating with platform-aware acoustic cooldown (1,100ms iOS, 1,600ms Windows/Android).
+   * Monotonically enter assistant playback turn.
+   * Immediately invalidates and aborts any active or pending recognition events,
+   * nullifies event listeners on recognition, clears all timers, releases recognition instance,
+   * halts MediaRecorder, and mutes physical MediaStreamTracks.
+   */
+  public enterAssistantTurn(turnEpoch?: number): number {
+    this.currentSpeechEpoch = turnEpoch ?? (this.currentSpeechEpoch + 1);
+    this.speechEpoch = this.currentSpeechEpoch;
+    this.captureEpoch++;
+    this.isPausedForAgent = true;
+
+    if (this.restartTimer !== null) {
+      window.clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    if (this.cooldownTimer !== null) {
+      window.clearTimeout(this.cooldownTimer);
+      this.cooldownTimer = null;
+    }
+    if (this.debounceTimer !== null) {
+      window.clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.accumulatedFinalText = "";
+    this.audioChunks = [];
+
+    // 1. Native Web Speech: detach all handlers, abort recognition, and nullify instance
+    if (this.recognition) {
+      try {
+        this.recognition.onresult = null;
+        this.recognition.onerror = null;
+        this.recognition.onend = null;
+        this.recognition.abort();
+      } catch {
+        // ignore
+      }
+      this.recognition = null;
+    }
+
+    // 2. MediaRecorder Fallback: stop recorder, clear audio chunks, and cancel VAD
+    if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
+      try {
+        this.mediaRecorder.stop();
+      } catch {
+        // ignore
+      }
+    }
+    if (this.vadInterval !== null) {
+      window.clearInterval(this.vadInterval);
+      this.vadInterval = null;
+    }
+
+    // 3. True hardware gating: mute physical mediaStream tracks so zero signal reaches AudioContext/VAD
+    if (this.mediaStream) {
+      this.mediaStream.getAudioTracks().forEach((track) => {
+        track.enabled = false;
+      });
+    }
+
+    this.isListening = false;
+    this.onStateChange?.(false);
+    return this.currentSpeechEpoch;
+  }
+
+  /**
+   * Resume recognition bound strictly to the current monotonic epoch after
+   * acoustic decay verification passes.
+   */
+  public resumeAfterAcousticDecay(epoch: number): void {
+    // If epoch changed while waiting for decay, discard this resumption
+    if (epoch !== this.currentSpeechEpoch || !this.shouldBeListening || this.isMuted) {
+      return;
+    }
+
+    this.activeListeningEpoch = epoch;
+    this.activeRecognitionEpoch = epoch;
+    this.speechEpoch = epoch;
+    this.isPausedForAgent = false;
+    this.sessionStartTime = Date.now();
+
+    // Re-enable physical microphone tracks after speaker reverberation has fully settled
+    if (this.mediaStream) {
+      this.mediaStream.getAudioTracks().forEach((track) => {
+        track.enabled = true;
+      });
+    }
+
+    // Resume exactly one active input method
+    if (this.isSupported) {
+      if (!this.recognition && this.SpeechRecognitionClass) {
+        this.initNativeRecognition(this.SpeechRecognitionClass);
+      }
+      if (this.recognition) {
+        try {
+          this.recognition.start();
+          this.isListening = true;
+          this.onStateChange?.(true);
+        } catch (err: any) {
+          if (err?.name === "InvalidStateError") {
+            this.isListening = true;
+            this.onStateChange?.(true);
+          } else {
+            console.warn("[SpeechRecognition] Start after cooldown:", err);
+          }
+        }
+      }
+    } else {
+      this.sessionStartTime = Date.now();
+      this.startMediaRecorderFallback().catch((err) => {
+        console.warn("[SpeechRecognition] Fallback restart after cooldown:", err);
+      });
+    }
+  }
+
+  /**
+   * Hardware auto-gating with platform-aware acoustic cooldown.
    * While assistant is speaking, both native recognition and fallback MediaRecorder
    * are completely halted and any pending audio chunks discarded.
-   * On speech finish, waits for acoustic drain before resuming exactly one input method.
+   * On speech finish, waits for acoustic drain before resuming input on the current epoch.
    */
   public pauseForAgentPlayback(isSpeaking: boolean) {
     if (isSpeaking) {
-      this.speechEpoch++;
-      this.captureEpoch++;
-      this.isPausedForAgent = true;
-
-      if (this.restartTimer !== null) {
-        window.clearTimeout(this.restartTimer);
-        this.restartTimer = null;
-      }
-
-      // True hardware gating: mute physical mediaStream tracks so zero signal reaches AudioContext/VAD
-      if (this.mediaStream) {
-        this.mediaStream.getAudioTracks().forEach((track) => {
-          track.enabled = false;
-        });
-      }
+      this.enterAssistantTurn();
+    } else {
+      this.lastAgentSpeechEndTime = Date.now();
+      this.accumulatedFinalText = "";
+      this.audioChunks = [];
 
       if (this.cooldownTimer !== null) {
         window.clearTimeout(this.cooldownTimer);
         this.cooldownTimer = null;
       }
-      if (this.debounceTimer !== null) {
-        window.clearTimeout(this.debounceTimer);
-        this.debounceTimer = null;
-      }
-      this.accumulatedFinalText = "";
 
-      // 1. Native Web Speech: detach all handlers and abort recognition immediately so speaker audio
-      // is never captured and in-flight cloud socket frames cannot bleed into subsequent turns.
-      if (this.recognition) {
-        try {
-          this.recognition.onresult = null;
-          this.recognition.onerror = null;
-          this.recognition.onend = null;
-          this.recognition.abort();
-        } catch {
-          // ignore
-        }
-        this.recognition = null;
-      }
+      const epochToResume = this.currentSpeechEpoch;
+      const { minFloorMs, maxTimeoutMs, targetDb } = this.getDynamicAcousticCooldownMs();
+      const startTime = Date.now();
 
-      // 2. MediaRecorder Fallback: stop recorder, clear audio chunks, and cancel VAD
-      if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
-        try {
-          this.mediaRecorder.stop();
-        } catch {
-          // ignore
-        }
-      }
-      this.audioChunks = [];
-      if (this.vadInterval !== null) {
-        window.clearInterval(this.vadInterval);
-        this.vadInterval = null;
-      }
-
-      this.isListening = false;
-      this.onStateChange?.(false);
-    } else {
-      this.lastAgentSpeechEndTime = Date.now();
-      // Keep isPausedForAgent = true during cooldown so asynchronous onend events
-      // from abort() do not prematurely restart recognition before speaker reverb drains.
-      this.accumulatedFinalText = "";
-      this.audioChunks = [];
-
-      if (this.cooldownTimer !== null) {
-        window.clearTimeout(this.cooldownTimer);
-      }
-
-      // Acoustic cooldown: 1,100ms on iOS (hardware AEC); 1,600ms on Windows/Android (large DAC buffer & speaker reverb)
-      const cooldownMs = this.getAcousticCooldownMs();
-      const checkAndResume = () => {
-        if (this.isAudioOutputActive()) {
-          // Physical output energy is still detected (speaker reverberation or DAC buffer draining)
-          // Defer restart by 60ms until silence is confirmed
-          this.cooldownTimer = window.setTimeout(checkAndResume, 60);
+      const checkDecayAndResume = () => {
+        if (epochToResume !== this.currentSpeechEpoch || !this.shouldBeListening || this.isMuted) {
+          this.cooldownTimer = null;
           return;
         }
 
+        const elapsed = Date.now() - startTime;
+
+        // 1. Wait out the minimum platform acoustic floor
+        if (elapsed < minFloorMs) {
+          this.cooldownTimer = window.setTimeout(checkDecayAndResume, 25);
+          return;
+        }
+
+        // 2. Poll AnalyserNode for true silence (< targetDb)
+        const isOutputActive = this.isAudioOutputActive(targetDb);
+        if (isOutputActive && elapsed < maxTimeoutMs) {
+          this.cooldownTimer = window.setTimeout(checkDecayAndResume, 30);
+          return;
+        }
+
+        // 3. Silence verified or safety timeout reached: resume recognition on current epoch
         this.cooldownTimer = null;
-        this.isPausedForAgent = false;
-        if (!this.shouldBeListening || this.isMuted) return;
-
-        // Re-enable hardware media tracks after speaker reverberation has fully settled
-        if (this.mediaStream) {
-          this.mediaStream.getAudioTracks().forEach((track) => {
-            track.enabled = true;
-          });
-        }
-
-        // Resume exactly one active input method
-        if (this.isSupported) {
-          if (!this.recognition && this.SpeechRecognitionClass) {
-            this.initNativeRecognition(this.SpeechRecognitionClass);
-          }
-          if (this.recognition) {
-            try {
-              this.activeRecognitionEpoch = this.speechEpoch;
-              this.sessionStartTime = Date.now();
-              this.recognition.start();
-              this.isListening = true;
-              this.onStateChange?.(true);
-            } catch (err: any) {
-              if (err?.name === "InvalidStateError") {
-                this.isListening = true;
-                this.onStateChange?.(true);
-              } else {
-                console.warn("[SpeechRecognition] Start after cooldown:", err);
-              }
-            }
-          }
-        } else {
-          this.sessionStartTime = Date.now();
-          this.startMediaRecorderFallback().catch((err) => {
-            console.warn("[SpeechRecognition] Fallback restart after cooldown:", err);
-          });
-        }
+        this.resumeAfterAcousticDecay(epochToResume);
       };
 
-      this.cooldownTimer = window.setTimeout(checkAndResume, cooldownMs);
+      this.cooldownTimer = window.setTimeout(checkDecayAndResume, minFloorMs);
     }
   }
 

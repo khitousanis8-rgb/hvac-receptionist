@@ -106,6 +106,7 @@ export function KokoroCallSession({
   const callOutcomeRef = useRef<string>("info_only");
   const callEndRequestedRef = useRef<boolean>(false);
   const speechRecRef = useRef<BrowserSpeechRecognition | null>(null);
+  const speechEpochRef = useRef<number>(1);
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptHistoryRef = useRef<ChatMessage[]>([]);
   const visibilityGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -174,8 +175,10 @@ export function KokoroCallSession({
     neuralVoice.setTurnStateCallback((turnActive) => {
       if (turnActive) {
         setCurrentCallerText("");
+        speechRecRef.current?.enterAssistantTurn(speechEpochRef.current);
+      } else {
+        speechRecRef.current?.pauseForAgentPlayback(false);
       }
-      speechRecRef.current?.pauseForAgentPlayback(turnActive);
     });
     return () => {
       neuralVoice.setPlaybackStateCallback(null);
@@ -193,13 +196,16 @@ export function KokoroCallSession({
       setCurrentCallerText("");
       setCurrentAssistantText("");
 
-      // Immediately pause speech recognition so mic is completely dead while agent thinks & responds
-      speechRecRef.current?.pauseForAgentPlayback(true);
+      speechEpochRef.current += 1;
+      const currentEpoch = speechEpochRef.current;
+
+      // Immediately enter assistant turn so mic is completely dead while agent thinks & responds
+      speechRecRef.current?.enterAssistantTurn(currentEpoch);
 
       // Interrupt any current speech and cancel any in-flight request
       neuralVoice.stop();
-      // Ensure microphone remains locked in paused state after neuralVoice.stop()
-      speechRecRef.current?.pauseForAgentPlayback(true);
+      // Ensure microphone remains locked in assistant turn
+      speechRecRef.current?.enterAssistantTurn(currentEpoch);
 
       abortControllerRef.current?.abort();
       const controller = new AbortController();
@@ -240,7 +246,7 @@ export function KokoroCallSession({
         const reader = response.body?.getReader();
         if (!reader) throw new Error("No readable stream in response");
 
-        neuralVoice.startTurn();
+        neuralVoice.startTurn(currentEpoch);
 
         const decoder = new TextDecoder();
         let buffer = "";
@@ -406,8 +412,10 @@ export function KokoroCallSession({
         }
 
         // Setup speech recognition
+        // Setup speech recognition
         const speech = new BrowserSpeechRecognition(initialMediaStream);
         speechRecRef.current = speech;
+        speech.setSpeechEpoch(speechEpochRef.current);
 
         speech.setCallbacks({
           onTranscript: (text, isFinal) => {
@@ -435,11 +443,13 @@ export function KokoroCallSession({
               abortControllerRef.current.abort();
               abortControllerRef.current = null;
             }
+            speechEpochRef.current += 1;
+            const interruptEpoch = speechEpochRef.current;
             neuralVoice.stop();
             setIsAgentSpeaking(false);
             isAgentSpeakingRef.current = false;
             setIsAgentThinking(false);
-            speechRecRef.current?.resumeImmediatelyForInterrupt();
+            speechRecRef.current?.resumeImmediatelyForInterrupt(interruptEpoch);
           },
           onError: (err) => {
             console.warn("[VoiceCall] speech notice:", err);
@@ -453,8 +463,8 @@ export function KokoroCallSession({
           },
         });
 
-        // Pause microphone immediately so opening greeting audio is not captured as echo
-        speech.pauseForAgentPlayback(true);
+        // Enter assistant turn immediately so opening greeting audio is not captured as echo
+        speech.enterAssistantTurn(speechEpochRef.current);
 
         // Start listening (in paused state) so permission is requested and mic is primed
         speech.start();

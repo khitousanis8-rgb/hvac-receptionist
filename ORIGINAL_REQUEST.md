@@ -270,3 +270,67 @@ Integrity mode: development
 - [ ] Ruff checks pass with 0 errors (python -m ruff check .).
 - [ ] AST architecture checker passes with 0 violations (python tools/verification/check_architecture.py).
 - [ ] Frontend production build succeeds (npm run build).
+
+## Follow-up — 2026-09-24T15:28:45Z
+
+Perform a deep forensic analysis and implement a definitive, multi-layered solution to eliminate persistent loudspeaker acoustic echo where the assistant hears its own voice through device loudspeakers and answers itself mid-conversation on Android mobile devices (Chrome/Samsung Internet) and Windows desktop/laptop PCs (Chrome/Edge), while strictly preserving genuine caller dialogue.
+
+Working directory: c:/Users/TL/Documents/Codex/2026-08-27
+Integrity mode: development
+
+## Requirements
+
+### R1. Root-Cause Forensic Diagnosis of Mid-Conversation Loudspeaker Bleed
+- Conduct a deep forensic investigation into why the assistant transcribes and answers its own voice mid-conversation on Android and Windows Chromium browsers.
+- Analyze:
+  1. Chromium's `webkitSpeechRecognition` OS capture architecture: why Chromium bypasses `MediaStreamTrack.enabled = false` and opens a direct platform recording handle (`WASAPI` on Windows, `AAudio`/`AudioRecord` on Android) without attaching WebRTC software Acoustic Echo Cancellation (AEC3).
+  2. Multi-turn clause streaming & playback timing: identify race conditions between SSE delta sentence chunking, parallel sentence fetching in `NeuralAudioPlayer`, and speech recognition resume timing (`checkTurnCompletion`).
+  3. Speaker-to-mic physical proximity on Android mobile devices (loudspeaker located inches from bottom microphone) and laptop speaker acoustic reflections.
+  4. Compare with iOS Safari's immune behavior (where iOS hardware `VoiceProcessingIO` DSP performs hardware-level acoustic echo cancellation).
+
+### R2. WebRTC Hardware-Level Acoustic Echo Cancellation & Stream Isolation
+- Implement guaranteed acoustic echo protection at the audio input layer:
+  - Route speech recognition through an active, AEC-constrained `MediaStream` (`echoCancellation: true`, `noiseSuppression: true`, `autoGainControl: true`) to ensure Chromium's WebRTC AEC3 DSP active noise cancellation processes microphone input.
+  - Evaluate and implement architectural remedies, including transitioning Android and Windows devices to an AEC-protected input path or enforcing strict physical half-duplex stream disconnection during speech output.
+  - Ensure microphone input tracks are physically muted/disconnected during assistant audio playback and during speaker DAC/room reverberation decay.
+
+### R3. In-Flight Speech Invalidation & Dynamic Reverb Decay Calibration
+- Guarantee that any audio frames or recognition events buffered during or immediately following assistant speech cannot bleed into the caller transcript:
+  - Enforce monotonic speech epoch tracking that immediately invalidates and discards any recognition events belonging to prior turns.
+  - Dynamically calibrate post-playback silence windows based on device platform class (`mobile` vs `desktop`) and measured audio output decay.
+  - Continuously analyze real-time speaker output waveforms (`AnalyserNode`) so recognition cannot resume until the speaker output buffer and physical room reverberation have decayed to true silence.
+
+### R4. Resilient Server-Side Acoustic Echo Detection & Fuzzy Matching
+- Strengthen server-side echo rejection in `chat_api.py` (`_is_echo_of_assistant` and `_is_assistant_echo`):
+  - Catch distorted, fragmented, or partially transcribed assistant phrases picked up by the microphone mid-conversation.
+  - Implement robust normalized n-gram, Levenshtein, and semantic overlap matching against recent assistant turns without false-positive suppression of legitimate caller responses.
+  - Preserve caller responses: short genuine answers (services like "AC repair", "furnace tune up", times/dates like "tomorrow at 10 AM", callback phone numbers with digits, and affirmative confirmations) must NEVER be suppressed as echo.
+
+### R5. Comprehensive Programmatic Verification & Production Release Gates
+- Implement automated verification across all layers:
+  - Frontend challenger test suites verifying AEC stream isolation, physical half-duplex gating, epoch invalidation, and acoustic echo suppression.
+  - Backend pytest suites verifying mid-conversation echo rejection, slot preservation, and zero runtime DB contamination (`hvac_receptionist.db` remains 100% untouched).
+  - Strict type checking (`python -m mypy --strict app`) and linting (`python -m ruff check .`) with 0 errors.
+  - AST architecture boundary enforcement (`python tools/verification/check_architecture.py`) with 0 violations across all 22 modules.
+  - Clean frontend production build (`npm run build`).
+
+## Acceptance Criteria
+
+### Acoustic Echo Resistance (Android & Windows)
+- [ ] On Android Chrome and Windows Chrome/Edge with device loudspeaker volume set to 80%+, assistant speech never loops or triggers a response to its own voice mid-conversation.
+- [ ] Any acoustic feedback captured while assistant is speaking or during reverb decay is dropped cleanly without triggering LLM invocation or assistant reply.
+- [ ] Genuine caller inputs ("AC repair", "heating tune up", "tomorrow at 10 AM", callback numbers with digits, "yes please") are 100% preserved and never falsely classified as echo.
+
+### Voice Quality & Conversational Latency
+- [ ] Transition between assistant speech and caller listening feels natural with minimal dead air (<400ms delay after speaker silence).
+- [ ] Spoken phone numbers and date/time expressions remain intact through chunking and processing.
+
+### Quality, Architecture & Production Integrity
+- [ ] 100% of frontend tests pass (`npm test`).
+- [ ] 100% of backend tests pass (`python -m pytest`).
+- [ ] Strict mypy passes with 0 errors (`python -m mypy --strict app`).
+- [ ] Ruff checks pass with 0 errors (`python -m ruff check .`).
+- [ ] AST architecture checker passes with 0 violations (`python tools/verification/check_architecture.py`).
+- [ ] Frontend production bundle build succeeds with 0 errors (`npm run build`).
+- [ ] Runtime database `hvac_receptionist.db` is 100% untouched by test runs.
+

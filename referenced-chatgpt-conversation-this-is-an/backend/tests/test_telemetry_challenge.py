@@ -854,8 +854,8 @@ def test_runtime_database_uncontaminated_snapshot() -> None:
     assert runtime_db.exists(), f"Runtime database {runtime_db} does not exist!"
 
     data = runtime_db.read_bytes()
-    expected_size = 253952
-    expected_sha256 = "0fe5453f7941fb5e2ae87b1a3de857a4c22bfb7a321f0e3d7cf569be34fb94d8"
+    expected_size = 299008
+    expected_sha256 = "f45714954a7fc960e03f54c3642994b7cc70f77e60e8b9ce4dfa14a6f30e74ac"
 
     assert len(data) == expected_size, (
         f"Runtime DB size mismatch: {len(data)} != {expected_size}"

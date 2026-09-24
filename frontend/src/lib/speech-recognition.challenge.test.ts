@@ -54,7 +54,33 @@ class MockSpeechRecognition {
 (globalThis as any).SpeechRecognition = MockSpeechRecognition;
 (globalThis as any).webkitSpeechRecognition = MockSpeechRecognition;
 
+if (!(globalThis as any).document) {
+  (globalThis as any).document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {} };
+}
+if (!(globalThis as any).addEventListener) {
+  (globalThis as any).addEventListener = () => {};
+  (globalThis as any).removeEventListener = () => {};
+}
+
+class MockMediaStreamTrack {
+  enabled = true;
+  kind = "audio";
+  stop() {}
+}
+
+class MockAnalyserNode {
+  fftSize = 1024;
+  smoothingTimeConstant = 0.0;
+  mockData: Float32Array = new Float32Array(1024);
+  getFloatTimeDomainData(array: Float32Array) {
+    array.set(this.mockData);
+  }
+  connect() {}
+  disconnect() {}
+}
+
 import { BrowserSpeechRecognition } from "./speech-recognition.ts";
+import { NeuralAudioPlayer } from "./neural-audio-player.ts";
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -514,6 +540,254 @@ async function runGatingAndLatencyStressTests() {
   }
 }
 
+async function runAecHalfDuplexEpochCalibrationTests() {
+  console.log("\n=== TEST SUITE 4: AEC Half-Duplex, Monotonic Epoch & AnalyserNode Decay Calibration ===");
+
+  // 4.1 Physical Half-Duplex Stream Disconnection (enterAssistantTurn)
+  {
+    const speech = new BrowserSpeechRecognition();
+    const mockTrack = new MockMediaStreamTrack();
+    (speech as any).mediaStream = {
+      getAudioTracks: () => [mockTrack],
+    };
+    await speech.start();
+    const mockRec = (speech as any).recognition as MockSpeechRecognition;
+
+    assert(mockRec.startCalls === 1, "4.1 Initial start calls start()");
+    assert((speech as any).isListening === true, "4.1 isListening is true initially");
+    assert(mockTrack.enabled === true, "4.1 Physical MediaStreamTrack is enabled initially");
+
+    // Enter assistant turn with epoch 10
+    const returnedEpoch = speech.enterAssistantTurn(10);
+
+    assert(returnedEpoch === 10, "4.1 enterAssistantTurn returns new epoch (10)");
+    assert(speech.getCurrentSpeechEpoch() === 10, "4.1 getCurrentSpeechEpoch is 10");
+    assert((speech as any).recognition === null, "4.1 recognition instance is nullified on enterAssistantTurn");
+    assert(mockRec.abortCalls >= 1, "4.1 abort() called on recognition instance");
+    assert(mockRec.onresult === null, "4.1 onresult event listener nullified");
+    assert(mockRec.onerror === null, "4.1 onerror event listener nullified");
+    assert(mockRec.onend === null, "4.1 onend event listener nullified");
+    assert((speech as any).restartTimer === null, "4.1 restartTimer is null");
+    assert((speech as any).cooldownTimer === null, "4.1 cooldownTimer is null");
+    assert((speech as any).debounceTimer === null, "4.1 debounceTimer is null");
+    assert(mockTrack.enabled === false, "4.1 Physical MediaStreamTrack is hardware gated (enabled = false)");
+    assert((speech as any).isListening === false, "4.1 isListening is false");
+    assert((speech as any).isPausedForAgent === true, "4.1 isPausedForAgent is true");
+  }
+
+  // 4.2 Monotonic Speech Epoch Tracking & Ghost Audio Frame Invalidation
+  {
+    const speech = new BrowserSpeechRecognition();
+    let transcriptCount = 0;
+    speech.setCallbacks({
+      onTranscript: () => {
+        transcriptCount++;
+      },
+    });
+    await speech.start();
+
+    // Advance assistant turn to epoch 2
+    speech.enterAssistantTurn(2);
+
+    // Scenario A: Ghost frame arriving with stale epoch (activeListeningEpoch 1 vs currentSpeechEpoch 2)
+    (speech as any).initNativeRecognition(MockSpeechRecognition);
+    const activeMock = (speech as any).recognition as MockSpeechRecognition;
+    (speech as any).activeListeningEpoch = 1;
+    (speech as any).currentSpeechEpoch = 2;
+    (speech as any).sessionStartTime = Date.now() - 500;
+
+    activeMock.onresult({
+      resultIndex: 0,
+      results: [[{ transcript: "stale audio from previous turn", isFinal: true }]],
+    });
+    assert(transcriptCount === 0, "4.2 Stale epoch frame (epoch 1 vs 2) is discarded");
+
+    // Scenario B: Frame arriving within 350ms warm-up window
+    (speech as any).activeListeningEpoch = 2;
+    (speech as any).currentSpeechEpoch = 2;
+    (speech as any).sessionStartTime = Date.now() - 100; // Only 100ms since start (< 350ms)
+
+    activeMock.onresult({
+      resultIndex: 0,
+      results: [[{ transcript: "warmup click noise", isFinal: true }]],
+    });
+    assert(transcriptCount === 0, "4.2 Frame arriving within 350ms of session start is discarded as warm-up noise");
+
+    // Scenario C: Legitimate frame arriving after 350ms with matching epoch
+    speech.resumeAfterAcousticDecay(2);
+    const legitimateMock = (speech as any).recognition as MockSpeechRecognition;
+    (speech as any).sessionStartTime = Date.now() - 400; // 400ms since start (>= 350ms)
+    legitimateMock.onresult({
+      resultIndex: 0,
+      results: [[{ transcript: "my furnace is making noise", isFinal: true }]],
+    });
+    assert(transcriptCount === 1, "4.2 Legitimate frame with matching epoch and >350ms elapsed is accepted");
+
+    speech.stop();
+  }
+
+  // 4.3 Platform-Calibrated Dynamic Reverb Decay Configuration
+  {
+    const speech = new BrowserSpeechRecognition();
+
+    // 4.3a: Android Mobile
+    Object.defineProperty(globalThis, "navigator", {
+      value: {
+        userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36",
+      },
+      configurable: true,
+      writable: true,
+    });
+    const androidConfig = speech.getDynamicAcousticCooldownMs();
+    assert(androidConfig.minFloorMs === 500, "4.3a Android minFloorMs is 500ms");
+    assert(androidConfig.targetDb === -60, "4.3a Android targetDb is -60 dBFS");
+    assert(androidConfig.maxTimeoutMs === 1200, "4.3a Android maxTimeoutMs is 1200ms");
+
+    // 4.3b: Windows Desktop
+    Object.defineProperty(globalThis, "navigator", {
+      value: {
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+      },
+      configurable: true,
+      writable: true,
+    });
+    const windowsConfig = speech.getDynamicAcousticCooldownMs();
+    assert(windowsConfig.minFloorMs === 600, "4.3b Windows minFloorMs is 600ms");
+    assert(windowsConfig.targetDb === -60, "4.3b Windows targetDb is -60 dBFS");
+    assert(windowsConfig.maxTimeoutMs === 1400, "4.3b Windows maxTimeoutMs is 1400ms");
+
+    // 4.3c: iOS / macOS (Apple WebKit)
+    Object.defineProperty(globalThis, "navigator", {
+      value: {
+        userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+      },
+      configurable: true,
+      writable: true,
+    });
+    const iosConfig = speech.getDynamicAcousticCooldownMs();
+    assert(iosConfig.minFloorMs === 250, "4.3c iOS minFloorMs is 250ms");
+    assert(iosConfig.targetDb === -50, "4.3c iOS targetDb is -50 dBFS");
+    assert(iosConfig.maxTimeoutMs === 500, "4.3c iOS maxTimeoutMs is 500ms");
+  }
+
+  // 4.4 32-bit Float32Array AnalyserNode Decay Monitoring Down to < -60 dBFS
+  {
+    const player = new NeuralAudioPlayer();
+    const mockAnalyser = new MockAnalyserNode();
+    (player as any).analyserNode = mockAnalyser;
+    (player as any).audioContext = { state: "running", currentTime: 0 };
+
+    // 4.4a: Absolute digital silence (all zeros)
+    mockAnalyser.mockData.fill(0);
+    const silenceResult = player.getOutputDecibelLevel();
+    assert(silenceResult.peakDb <= -100, "4.4a Absolute silence yields <= -100 peakDb");
+    assert(silenceResult.isTrueSilence === true, "4.4a Absolute silence satisfies isTrueSilence (< -60 dBFS)");
+
+    // 4.4b: True silence below -60 dBFS (amplitude 0.0005 -> ~ -66.02 dBFS)
+    mockAnalyser.mockData.fill(0.0005);
+    const sub60Result = player.getOutputDecibelLevel();
+    assert(sub60Result.peakDb < -60, "4.4b Amplitude 0.0005 peakDb is below -60 dBFS");
+    assert(sub60Result.isTrueSilence === true, "4.4b Amplitude 0.0005 is recognized as true silence (< 0.0010)");
+
+    // 4.4c: Active audible signal (amplitude 0.05 -> ~ -26.02 dBFS)
+    mockAnalyser.mockData.fill(0.05);
+    const activeResult = player.getOutputDecibelLevel();
+    assert(activeResult.peakDb > -60, "4.4c Amplitude 0.05 peakDb is well above -60 dBFS (~ -26 dBFS)");
+    assert(activeResult.isTrueSilence === false, "4.4c Amplitude 0.05 is recognized as active audio (isTrueSilence = false)");
+
+    // 4.4d: Exact boundary precision (0.0010 vs 0.00099)
+    mockAnalyser.mockData.fill(0.0010);
+    const boundary60Result = player.getOutputDecibelLevel();
+    assert(boundary60Result.isTrueSilence === false, "4.4d Exact 0.0010 linear amplitude (-60.00 dBFS) is not silence");
+
+    mockAnalyser.mockData.fill(0.00099);
+    const boundarySub60Result = player.getOutputDecibelLevel();
+    assert(boundarySub60Result.isTrueSilence === true, "4.4d Amplitude 0.00099 (< 0.0010 linear) is recognized as true silence");
+  }
+
+  // 4.5 Consecutive Silent Frames (~80ms / 4 frames) Turn Completion Gating
+  {
+    const player = new NeuralAudioPlayer();
+    const mockAnalyser = new MockAnalyserNode();
+    (player as any).analyserNode = mockAnalyser;
+    (player as any).audioContext = { state: "running", currentTime: 0 };
+    (player as any).isTurnActive = true;
+    (player as any).endTurnSignaled = true;
+    (player as any).queue = [];
+    (player as any).activeSources = [];
+    (player as any).isPlaying = true;
+    (player as any).isFetching = false;
+    (player as any).consecutiveSilentFrames = 0;
+
+    let turnFinished: boolean = false;
+    player.setTurnStateCallback((active) => {
+      if (!active) turnFinished = true;
+    });
+
+    // Frame 1: silent
+    mockAnalyser.mockData.fill(0.0005); // below -60 dBFS
+    (player as any).checkTurnCompletion();
+    assert((player as any).consecutiveSilentFrames === 1, "4.5 Frame 1 silent increments counter to 1");
+    assert(turnFinished === false, "4.5 Turn not finished after 1 silent frame");
+
+    // Frame 2: silent
+    (player as any).checkTurnCompletion();
+    assert((player as any).consecutiveSilentFrames === 2, "4.5 Frame 2 silent increments counter to 2");
+    assert(turnFinished === false, "4.5 Turn not finished after 2 silent frames");
+
+    // Frame 3: non-silent noise burst (0.02 amplitude)
+    mockAnalyser.mockData.fill(0.02);
+    (player as any).checkTurnCompletion();
+    assert((player as any).consecutiveSilentFrames === 0, "4.5 Non-silent burst resets counter back to 0");
+    assert(turnFinished === false, "4.5 Turn not finished after noise burst");
+
+    // Frames 4-7: 4 consecutive silent frames
+    mockAnalyser.mockData.fill(0.0002);
+    (player as any).checkTurnCompletion();
+    assert((player as any).consecutiveSilentFrames === 1, "4.5 Frame 4 silent: counter 1");
+    (player as any).checkTurnCompletion();
+    assert((player as any).consecutiveSilentFrames === 2, "4.5 Frame 5 silent: counter 2");
+    (player as any).checkTurnCompletion();
+    assert((player as any).consecutiveSilentFrames === 3, "4.5 Frame 6 silent: counter 3");
+    assert(turnFinished === false, "4.5 Turn not finished after 3 silent frames");
+
+    (player as any).checkTurnCompletion();
+    assert(Boolean(turnFinished) === true, "4.5 4 consecutive silent frames triggers turn completion");
+    assert((player as any).isTurnActive === false, "4.5 isTurnActive is set to false");
+  }
+
+  // 4.6 Inter-Sentence Parallel Pre-Fetching in Queue Processing
+  {
+    const player = new NeuralAudioPlayer();
+    const fetchedSentences: string[] = [];
+    (player as any).fetchAudioBuffer = (text: string) => {
+      fetchedSentences.push(text);
+      return Promise.resolve({
+        duration: 1.0,
+        length: 24000,
+        sampleRate: 24000,
+        numberOfChannels: 1,
+      });
+    };
+    (player as any).scheduleAudioBuffer = () => Promise.resolve();
+
+    player.startTurn(1);
+    // Queue sentence 1
+    player.speakSentence("First sentence of response.");
+    // Queue sentence 2 and 3 immediately as SSE deltas arrive
+    player.speakSentence("Second sentence prefetching in background.");
+    player.speakSentence("Third sentence also prebuffering.");
+
+    // Verify all 3 sentences had fetch initiated immediately without blocking on prior sentence playback
+    assert(fetchedSentences.length === 3, "4.6 All 3 sentences triggered network prefetch in parallel without starvation");
+    assert(fetchedSentences[0] === "First sentence of response.", "4.6 Sentence 1 prefetch initiated");
+    assert(fetchedSentences[1] === "Second sentence prefetching in background.", "4.6 Sentence 2 prefetch initiated");
+    assert(fetchedSentences[2] === "Third sentence also prebuffering.", "4.6 Sentence 3 prefetch initiated");
+
+    player.stop();
+  }
+}
+
 async function main() {
   console.log("================================================================================");
   console.log("STARTING EMPIRICAL ADVERSARIAL VERIFICATION HARNESS");
@@ -523,6 +797,7 @@ async function main() {
     await runBackoffWindowStressTests();
     await runEchoSuppressionWhitelistTests();
     await runGatingAndLatencyStressTests();
+    await runAecHalfDuplexEpochCalibrationTests();
   } catch (err) {
     console.error("Fatal test execution error:", err);
     process.exit(1);
