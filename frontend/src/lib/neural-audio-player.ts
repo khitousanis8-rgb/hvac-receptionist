@@ -136,6 +136,32 @@ export class NeuralAudioPlayer {
   }
 
   /**
+   * Real-time audio output active check.
+   * Determines if physical sound is currently playing or lingering through speakers,
+   * active AudioBufferSourceNodes, scheduled Web Audio clock time, speech synthesis,
+   * or AnalyserNode peak time-domain amplitude deviation (> 2 out of 128).
+   */
+  public isAudioOutputActive(): boolean {
+    if (this.isPlaying || this.activeSources.length > 0) return true;
+    if (this.audioContext && this.audioContext.currentTime < this.nextPlayTime) return true;
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) return true;
+    }
+    if (this.analyserNode && this.audioContext && this.audioContext.state === "running") {
+      try {
+        const data = new Uint8Array(this.analyserNode.fftSize || 256);
+        if (typeof this.analyserNode.getByteTimeDomainData === "function") {
+          this.analyserNode.getByteTimeDomainData(data);
+          for (let i = 0; i < data.length; i++) {
+            if (Math.abs(data[i] - 128) > 2) return true;
+          }
+        }
+      } catch {}
+    }
+    return false;
+  }
+
+  /**
    * Synchronously unlock AudioContext on user interaction (touch/click).
    * Mobile Safari requires a silent buffer to be played synchronously
    * inside the user gesture event loop to unlock the physical audio hardware.
@@ -549,9 +575,9 @@ export class NeuralAudioPlayer {
               const dev = Math.abs(data[i] - 128);
               if (dev > maxDeviation) maxDeviation = dev;
             }
-            // If speaker buffer is still oscillating (peak deviation > 4 out of 128),
+            // If speaker buffer is still oscillating (peak deviation > 2 out of 128),
             // delay turn completion until physical silence settles.
-            if (maxDeviation > 4) {
+            if (maxDeviation > 2) {
               if (this.endTurnTimer) {
                 window.clearTimeout(this.endTurnTimer);
               }

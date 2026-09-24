@@ -406,6 +406,112 @@ async function runEchoSuppressionWhitelistTests() {
   const hiThereYesResult = isEcho("hi there yes");
   console.log(`  [Edge Case Check] 'hi there yes': isEcho = ${hiThereYesResult}`);
   assert(hiThereYesResult === false, "2.4 'hi there yes' is NOT suppressed");
+
+  // Edge Case E: Caller providing callback number with phone digits
+  speech.registerAssistantSpeech("What is the best callback phone number for our technician to reach you?");
+  const callbackPhoneWithDigits = isEcho("my callback number is 555-234-5678");
+  assert(callbackPhoneWithDigits === false, "2.4 'my callback number is 555-234-5678' is NOT suppressed");
+  const callbackPhone2 = isEcho("the callback phone is 555-234-5678");
+  assert(callbackPhone2 === false, "2.4 'the callback phone is 555-234-5678' is NOT suppressed");
+}
+
+async function runGatingAndLatencyStressTests() {
+  console.log("\n=== TEST SUITE 3: Minimum Speech Latency Guard & Real-Time Audio Level Gating ===");
+
+  // 3.1 350ms Minimum Speech Latency Guard
+  {
+    const speech = new BrowserSpeechRecognition();
+    let transcriptReceived: boolean = false;
+    speech.setCallbacks({
+      onTranscript: () => {
+        transcriptReceived = true;
+      },
+    });
+    await speech.start();
+    const mockRec = (speech as any).recognition as MockSpeechRecognition;
+
+    // Simulate in-flight transcript arriving at 50ms after session start
+    (speech as any).sessionStartTime = Date.now();
+    mockRec.onresult({
+      resultIndex: 0,
+      results: [[{ transcript: "hello there", isFinal: true }]],
+    });
+    assert(transcriptReceived === false, "3.1 In-flight transcript arriving within 350ms is DROPPED");
+
+    // Simulate genuine speech arriving at 400ms after session start
+    (speech as any).sessionStartTime = Date.now() - 400;
+    mockRec.onresult({
+      resultIndex: 0,
+      results: [[{ transcript: "hello there", isFinal: true }]],
+    });
+    assert(Boolean(transcriptReceived) === true, "3.1 Genuine speech arriving after 350ms latency guard is ACCEPTED");
+
+    speech.stop();
+  }
+
+  // 3.2 Continuous Audio Level Output Gating
+  {
+    const speech = new BrowserSpeechRecognition();
+    let transcriptReceived: boolean = false;
+    speech.setCallbacks({
+      onTranscript: () => {
+        transcriptReceived = true;
+      },
+    });
+    await speech.start();
+    const mockRec = (speech as any).recognition as MockSpeechRecognition;
+    (speech as any).sessionStartTime = Date.now() - 500;
+
+    // Simulate physical audio output active (loudspeaker playing)
+    speech.setAudioOutputActiveCheck(() => true);
+    mockRec.onresult({
+      resultIndex: 0,
+      results: [[{ transcript: "hello there", isFinal: true }]],
+    });
+    assert(transcriptReceived === false, "3.2 Microphone input while audio output is active is DROPPED");
+
+    // Simulate audio output silent
+    speech.setAudioOutputActiveCheck(() => false);
+    mockRec.onresult({
+      resultIndex: 0,
+      results: [[{ transcript: "hello there", isFinal: true }]],
+    });
+    assert(Boolean(transcriptReceived) === true, "3.2 Microphone input when audio output is silent is ACCEPTED");
+
+    speech.stop();
+  }
+
+  // 3.3 Genuine Service & Date/Time Suffix/Substring Whitelist
+  {
+    const speech = new BrowserSpeechRecognition();
+    const isEcho = (text: string) => (speech as any).isAcousticEcho(text);
+
+    // Case 1: Assistant prompt ending with "AC repair"
+    speech.registerAssistantSpeech("Do you need heating or AC repair?");
+    assert(isEcho("ac repair") === false, "3.3 'ac repair' choice when prompt ends with 'AC repair' is NOT echo");
+    assert(isEcho("heating repair") === false, "3.3 'heating repair' choice is NOT echo");
+
+    // Case 2: Assistant prompt ending with "tune up"
+    speech.registerAssistantSpeech("Would you like a furnace tune up?");
+    assert(isEcho("tune up") === false, "3.3 'tune up' choice when prompt ends with 'tune up' is NOT echo");
+    assert(isEcho("furnace maintenance") === false, "3.3 'furnace maintenance' choice is NOT echo");
+
+    // Case 3: Assistant prompt containing dates and times
+    speech.registerAssistantSpeech("We have openings tomorrow at 10 AM or Friday at 2 PM for our technician to visit.");
+    assert(isEcho("tomorrow at 10 AM") === false, "3.3 'tomorrow at 10 AM' appointment choice is NOT echo");
+    assert(isEcho("tomorrow at 10") === false, "3.3 'tomorrow at 10' appointment choice is NOT echo");
+    assert(isEcho("Friday at 2 PM") === false, "3.3 'Friday at 2 PM' appointment choice is NOT echo");
+
+    // Case 4: Assistant prompt containing emergency service
+    speech.registerAssistantSpeech("We provide emergency AC repair and maintenance throughout the valley.");
+    assert(isEcho("emergency AC repair") === false, "3.3 'emergency AC repair' is NOT echo");
+
+    // Negative Controls: Assistant echoes must still be 100% suppressed
+    assert(isEcho("cooling today") === true, "3.3 'cooling today' assistant phrase IS suppressed");
+    assert(isEcho("technician reach") === true, "3.3 'technician reach' assistant phrase IS suppressed");
+    assert(isEcho("callback phone") === true, "3.3 'callback phone' assistant phrase IS suppressed");
+    assert(isEcho("best callback phone number") === true, "3.3 'best callback phone number' IS suppressed");
+  }
 }
 
 async function main() {
@@ -416,6 +522,7 @@ async function main() {
   try {
     await runBackoffWindowStressTests();
     await runEchoSuppressionWhitelistTests();
+    await runGatingAndLatencyStressTests();
   } catch (err) {
     console.error("Fatal test execution error:", err);
     process.exit(1);

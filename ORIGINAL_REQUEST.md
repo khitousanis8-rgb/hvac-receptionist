@@ -228,3 +228,45 @@ Run the following after implementation:
 - `python -m ruff check app/ tests/` in the backend directory (must pass)
 
 Each acceptance criterion above should have at least one automated test covering it.
+
+## Follow-up — 2026-09-24T09:22:23Z
+
+Resolve the persistent loudspeaker acoustic echo on Android and Windows devices, and fix the missing "Confirm Booking" confirmation button in the voice call interface across mobile and desktop.
+
+Working directory: c:/Users/TL/Documents/Codex/2026-08-27
+Integrity mode: development
+
+## Requirements
+
+### R1. Elimination of Loudspeaker Acoustic Echo on Android & Windows
+- Eliminate acoustic feedback loops where the assistant transcribes and answers its own voice when playing through device loudspeakers on Android (mobile Chrome) and Windows (desktop Chrome/Edge).
+- Enforce strict half-duplex hardware gating and analyze real-time audio playback levels so microphone input is completely silenced while the assistant speaks and during speaker DAC/room reverberation decay.
+- Guard against asynchronous Google Speech in-flight frame bleed-through and refine echo signature matching for distorted conversational fragments.
+
+### R2. Guaranteed Confirm Booking Button & Review Card Visibility
+- Ensure that whenever an appointment recap is issued or the assistant instructs the user to "tap Confirm Booking on your screen", the Confirmation Review Card and the interactive "Confirm Booking" button are guaranteed to render clearly, prominently, and accessibly.
+- In the backend (chat_api.py), guarantee that event: confirmation_ticket is emitted during both recap generation and subsequent confirmation guidance turns (Case A) if a ticket is active.
+- In the frontend (kokoro-call-session.tsx), ensure the review card is always visible in viewport on mobile (<640px) and desktop (>768px), auto-scrolls into view when minted, and never gets clipped or hidden by fixed containers or null state checks.
+
+### R3. Programmatic Line-by-Line Verification
+- Run verification tests line by line: frontend challenger suites, backend pytest suites, strict mypy typing, ruff linting, and AST architecture boundary enforcement.
+- Verify both desktop and mobile viewports render the button with high contrast and full touch/click interactivity.
+
+## Acceptance Criteria
+
+### Acoustic Echo Resistance
+- [ ] On Android and Windows Chrome with loudspeaker volume at 80%+, assistant speech never loops or answers its own spoken words.
+- [ ] Genuine caller responses ("AC repair", "tomorrow at 10 AM", "yes please", "tune up") are never falsely classified as echo.
+
+### Confirmation UI & Interaction
+- [ ] When all booking details are gathered or when assistant says "Please tap Confirm Booking", the Review Card with the "Confirm Booking" button appears immediately.
+- [ ] Tapping "Confirm Booking" consumes the single-use ticket atomically and transitions to "Booking Confirmed" with ref number.
+- [ ] The Confirm Booking button is fully visible without manual scrolling on standard mobile screens (360px-480px) and desktop.
+
+### Quality & Architecture Gates
+- [ ] 100% of frontend tests pass (npm test).
+- [ ] 100% of backend tests pass (python -m pytest).
+- [ ] Strict mypy passes with 0 errors (python -m mypy --strict app).
+- [ ] Ruff checks pass with 0 errors (python -m ruff check .).
+- [ ] AST architecture checker passes with 0 violations (python tools/verification/check_architecture.py).
+- [ ] Frontend production build succeeds (npm run build).

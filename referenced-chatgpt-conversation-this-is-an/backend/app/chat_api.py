@@ -62,6 +62,7 @@ from app.db import (
     CallRecord,
     ConfirmationTicket,
     create_confirmation_ticket,
+    get_confirmation_ticket,
     get_recent_call_turns,
     new_session,
     record_call_turn,
@@ -114,19 +115,87 @@ def _is_echo_of_assistant(
     if not msg_words:
         return False
 
-    # Never treat genuine affirmative responses or time clarifications as echo
-    if is_explicit_booking_confirmation(message):
-        return False
-    clarification_tokens = {"morning", "afternoon", "evening", "am", "pm"}
-    if (
-        len(msg_words) <= 4
-        and any(p in clean_msg.split() for p in clarification_tokens)
-        and not (
-            clean_msg.startswith("just to confirm")
-            or clean_msg.startswith("would you like me to book")
-        )
+    # 0. Caller providing phone digits is NEVER an echo of Sarah's callback question
+    # (since the assistant's prompt asking for a callback number never contains phone digits).
+    raw_digits = re.sub(r"\D", "", message)
+    if len(raw_digits) >= 7 and not (
+        clean_msg.startswith("just to confirm")
+        or clean_msg.startswith("would you like me to book")
     ):
         return False
+
+    # 1. Signature assistant phrases that should NEVER be accepted as caller input
+    # (distorted loudspeaker echoes common on Android/Windows)
+    signature_asst_patterns = [
+        "thank you for calling",
+        "thanks for calling",
+        "my name is sarah",
+        "this is sarah",
+        "how can i assist",
+        "how can i help",
+        "heating or cooling today",
+        "with your heating or cooling",
+        "what service do you need help with",
+        "what is the best callback phone number",
+        "what s the best callback phone number",
+        "best callback phone number",
+        "technician to reach you",
+        "technician to reach",
+        "technician reach",
+        "for our technician",
+        "for the technician",
+        "callback phone number",
+        "best callback phone",
+        "callback phone",
+        "cooling today",
+        "heating today",
+        "heating or cooling",
+        "how can i help with",
+        "help with your heating",
+        "tap confirm booking",
+        "confirm booking on your screen",
+        "would you like me to book it",
+        "would you like me to book",
+        "i just need a quick yes or no",
+        "quick yes or no",
+        "confirm your appointment",
+        "book your appointment",
+        "just to confirm",
+        "you re all set",
+        "you are all set",
+        "our technician will see you then",
+        "is there anything else i can help with",
+        "is there anything else",
+    ]
+    if any(sig in clean_msg for sig in signature_asst_patterns):
+        return True
+
+    # 2. Never treat genuine booking confirmations, short service selections,
+    # or date/time answers as acoustic echo.
+    # When the assistant offers choices ("...heating or AC repair?", "...furnace tune up?",
+    # "...openings tomorrow at 10 AM?"), the caller naturally responds with those exact words
+    # ("ac repair", "tune up", "tomorrow at 10 AM", "furnace maintenance").
+    if is_explicit_booking_confirmation(message):
+        return False
+
+    is_assistant_lead_in = (
+        clean_msg.startswith("just to confirm")
+        or clean_msg.startswith("would you like me to book")
+        or clean_msg.startswith("my name is")
+        or clean_msg.startswith("this is sarah")
+        or clean_msg.startswith("thank you for calling")
+        or clean_msg.startswith("thanks for calling")
+        or clean_msg.startswith("tap confirm")
+        or clean_msg.startswith("confirm booking")
+        or clean_msg.startswith("our technician will")
+    )
+    if len(msg_words) <= 5 and not is_assistant_lead_in:
+        service_or_time_pattern = re.compile(
+            r"\b(ac|air|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter|tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|\d+)\b",
+            re.IGNORECASE,
+        )
+        if service_or_time_pattern.search(clean_msg):
+            return False
 
     assistant_texts: list[str] = []
     if call_id is not None:
@@ -674,8 +743,37 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 )
                 await asyncio.to_thread(record_call_turn, active_call_id, "assistant", guidance)
 
+                # Re-emit the active ticket so the frontend renders the Confirm button
+                active_ticket_id = slots.get("active_ticket_id")
+                ticket_payload: dict[str, object] | None = None
+                if active_ticket_id:
+                    def _load_ticket() -> ConfirmationTicket | None:
+                        with new_session() as s:
+                            t = get_confirmation_ticket(s, str(active_ticket_id))
+                            if t and t.status == "pending" and t.expires_at > datetime.now(UTC):
+                                return t
+                            return None
+
+                    ticket = await asyncio.to_thread(_load_ticket)
+                    if ticket:
+                        tz = ZoneInfo(settings.business_timezone)
+                        local_dt = ticket.scheduled_for.astimezone(tz)
+                        delta = ticket.expires_at - datetime.now(UTC)
+                        remaining = max(0, int(delta.total_seconds()))
+                        ticket_payload = {
+                            "ticket_id": ticket.ticket_id,
+                            "service": ticket.service,
+                            "phone": ticket.phone,
+                            "date": local_dt.strftime("%Y-%m-%d"),
+                            "time": local_dt.strftime("%I:%M %p"),
+                            "fingerprint": ticket.fingerprint,
+                            "expires_in_seconds": remaining,
+                        }
+
                 async def tap_prompt_generator() -> AsyncIterator[str]:
                     yield f"event: delta\ndata: {json.dumps({'text': guidance})}\n\n"
+                    if ticket_payload:
+                        yield f"event: confirmation_ticket\ndata: {json.dumps(ticket_payload)}\n\n"
                     yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
                 return StreamingResponse(

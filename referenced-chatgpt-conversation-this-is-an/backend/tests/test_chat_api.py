@@ -511,6 +511,55 @@ def test_is_echo_of_assistant_multi_turn() -> None:
     assert _is_echo_of_assistant("please book it", history) is False
 
 
+def test_echo_detection_genuine_service_and_time_whitelist() -> None:
+    from app.chat_api import ChatMessage, _is_echo_of_assistant
+
+    # Case 1: Assistant asks "Do you need heating or AC repair?"
+    # Caller selects "ac repair" (exact suffix of assistant prompt)
+    history_ac = [
+        ChatMessage(role="assistant", content="Do you need heating or AC repair?")
+    ]
+    assert _is_echo_of_assistant("ac repair", history_ac) is False
+    assert _is_echo_of_assistant("heating repair", history_ac) is False
+
+    # Case 2: Assistant asks "Would you like a furnace tune up?"
+    # Caller responds with "tune up" (exact suffix)
+    history_tune = [
+        ChatMessage(role="assistant", content="Would you like a furnace tune up?")
+    ]
+    assert _is_echo_of_assistant("tune up", history_tune) is False
+    assert _is_echo_of_assistant("furnace maintenance", history_tune) is False
+
+    # Case 3: Assistant offers specific date & time
+    # Caller selects "tomorrow at 10 AM" or "tomorrow at 10" (substrings)
+    history_time = [
+        ChatMessage(
+            role="assistant",
+            content="We have openings tomorrow at 10 AM or Friday at 2 PM for our technician to visit.",
+        )
+    ]
+    assert _is_echo_of_assistant("tomorrow at 10 AM", history_time) is False
+    assert _is_echo_of_assistant("tomorrow at 10", history_time) is False
+    assert _is_echo_of_assistant("Friday at 2 PM", history_time) is False
+
+    # Case 4: Assistant says "We provide emergency AC repair and maintenance throughout the valley."
+    history_emerg = [
+        ChatMessage(
+            role="assistant",
+            content="We provide emergency AC repair and maintenance throughout the valley.",
+        )
+    ]
+    assert _is_echo_of_assistant("emergency AC repair", history_emerg) is False
+    assert _is_echo_of_assistant("My callback number is 555-234-5678", history_time) is False
+    assert _is_echo_of_assistant("The callback phone is 555-234-5678", history_time) is False
+
+    # Negative Controls: Assistant echoes must still be 100% suppressed
+    assert _is_echo_of_assistant("cooling today", history_ac) is True
+    assert _is_echo_of_assistant("technician reach", history_time) is True
+    assert _is_echo_of_assistant("callback phone", history_time) is True
+    assert _is_echo_of_assistant("best callback phone number", history_time) is True
+
+
 def test_closing_remark_vs_confirmation_delineation() -> None:
     from app.chat_api import _is_closing_or_polite_remark
 
@@ -1547,6 +1596,7 @@ def test_spoken_yes_during_recap_prompts_tap_and_freezes_authority() -> None:
         )
         assert res.status_code == 200
         assert "tap Confirm Booking on your screen" in res.text
+        assert "event: confirmation_ticket" in res.text
         assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
 
     # Zero appointments booked in database

@@ -644,6 +644,23 @@ export function KokoroCallSession({
     }
   };
 
+  // Auto-scroll review card into view when a confirmation ticket arrives
+  useEffect(() => {
+    if (!confirmationTicket || confirmedBookingId) return;
+    // Small delay to let framer-motion animate in
+    const timer = setTimeout(() => {
+      const cards = document.querySelectorAll<HTMLElement>('[data-testid="booking-review-card"]');
+      for (const card of cards) {
+        // Only scroll the visible card (handles dual mobile/desktop DOM trees)
+        if (card.offsetParent !== null) {
+          card.scrollIntoView({ behavior: "smooth", block: "center" });
+          break;
+        }
+      }
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [confirmationTicket, confirmedBookingId]);
+
   const renderReviewCard = (compact: boolean = false) => {
     if (!confirmationTicket) return null;
 

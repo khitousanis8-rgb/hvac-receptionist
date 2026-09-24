@@ -7,6 +7,7 @@
 
 import { apiPost } from "./api.ts";
 import { type InputPath } from "./telemetry.ts";
+import { neuralVoice } from "./neural-audio-player.ts";
 
 export type SpeechTranscriptCallback = (text: string, isFinal: boolean) => void;
 export type SpeechStateCallback = (isListening: boolean) => void;
@@ -54,6 +55,9 @@ export class BrowserSpeechRecognition {
   private captureEpoch: number = 0;
   private speechEpoch: number = 0;
   private activeRecognitionEpoch: number = 0;
+  private sessionStartTime: number = 0;
+  private SpeechRecognitionClass: any = null;
+  private isAudioOutputActiveFn: (() => boolean) | null = null;
 
   constructor(initialStream?: MediaStream | null, sharedAudioCtx?: AudioContext | null) {
     if (initialStream) {
@@ -70,6 +74,7 @@ export class BrowserSpeechRecognition {
 
     if (SpeechRecognitionClass) {
       this.isSupported = true;
+      this.SpeechRecognitionClass = SpeechRecognitionClass;
       this.initNativeRecognition(SpeechRecognitionClass);
     }
   }
@@ -85,8 +90,24 @@ export class BrowserSpeechRecognition {
     }
   }
 
+  public setAudioOutputActiveCheck(fn: (() => boolean) | null): void {
+    this.isAudioOutputActiveFn = fn;
+  }
+
+  public isAudioOutputActive(): boolean {
+    if (this.isAudioOutputActiveFn) {
+      return this.isAudioOutputActiveFn();
+    }
+    try {
+      return neuralVoice.isAudioOutputActive();
+    } catch {
+      return false;
+    }
+  }
+
   private initNativeRecognition(SpeechRecognitionClass: any) {
     try {
+      this.SpeechRecognitionClass = SpeechRecognitionClass;
       this.recognition = new SpeechRecognitionClass();
       this.recognition.continuous = true;
       this.recognition.interimResults = true;
@@ -102,6 +123,18 @@ export class BrowserSpeechRecognition {
           this.isPausedForAgent ||
           this.activeRecognitionEpoch !== this.speechEpoch
         ) {
+          return;
+        }
+
+        // Minimum Speech Latency Guard: any transcript arriving within 350ms of session start
+        // is physically impossible to be human conversational speech and must be dropped
+        // (e.g. in-flight Google Speech socket frames or residual audio buffer bleed-through).
+        if (Date.now() - this.sessionStartTime < 350) {
+          return;
+        }
+
+        // Level-based gating: immediately drop capture if physical audio output is active
+        if (this.isAudioOutputActive()) {
           return;
         }
 
@@ -217,6 +250,7 @@ export class BrowserSpeechRecognition {
 
             try {
               this.activeRecognitionEpoch = this.speechEpoch;
+              this.sessionStartTime = Date.now();
               this.recognition.start();
               this.isListening = true;
               this.onStateChange?.(true);
@@ -309,6 +343,12 @@ export class BrowserSpeechRecognition {
       return false;
     }
 
+    // 0. Caller providing phone digits is NEVER an echo of Sarah's callback question
+    const rawDigits = transcript.replace(/\D/g, "");
+    if (rawDigits.length >= 7 && !clean.startsWith("just to confirm") && !clean.startsWith("would you like me to book")) {
+      return false;
+    }
+
     // 1. Signature assistant phrases that should NEVER be accepted as caller input
     const SIGNATURE_ASST_PATTERNS = [
       "thank you for calling",
@@ -330,9 +370,7 @@ export class BrowserSpeechRecognition {
       "for the technician",
       "callback phone number",
       "best callback phone",
-      "best callback number",
       "callback phone",
-      "callback number",
       "cooling today",
       "heating today",
       "heating or cooling",
@@ -366,13 +404,36 @@ export class BrowserSpeechRecognition {
       }
     }
 
-    // 2. Per-utterance evaluation against recent assistant speech:
+    // 2. Whitelist short (<= 5 words) genuine service selections and date/time phrases.
+    // When the assistant offers choices ("...heating or AC repair?", "...furnace tune up?", "...openings tomorrow at 10 AM?"),
+    // the caller naturally responds with those exact words ("ac repair", "tune up", "tomorrow at 10 AM", "furnace maintenance").
+    // These must NEVER be suppressed as acoustic echo, provided they don't contain assistant signature prompts or lead-in phrases.
+    const rawWords = clean.split(/\s+/).filter(Boolean);
+    const isAssistantLeadIn =
+      clean.startsWith("just to confirm") ||
+      clean.startsWith("would you like me to book") ||
+      clean.startsWith("my name is") ||
+      clean.startsWith("this is sarah") ||
+      clean.startsWith("thank you for calling") ||
+      clean.startsWith("thanks for calling") ||
+      clean.startsWith("tap confirm") ||
+      clean.startsWith("confirm booking") ||
+      clean.startsWith("our technician will");
+
+    if (rawWords.length <= 5 && !isAssistantLeadIn) {
+      const hasServiceTerm = /\b(ac|air|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter)\b/i.test(clean);
+      const hasDateTimeTerm = /\b(tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|\d+)\b/i.test(clean);
+      if (hasServiceTerm || hasDateTimeTerm) {
+        return false;
+      }
+    }
+
+    // 3. Per-utterance evaluation against recent assistant speech:
     // Evaluate one assistant utterance at a time to avoid false positives on genuine caller inputs.
     const COMMON_STOP_WORDS = new Set([
       "the", "a", "an", "and", "or", "to", "in", "at", "for", "with", "is", "it", "that", "this", "my", "you", "of", "on"
     ]);
     const candidateWords = clean.split(/\s+/).filter((w) => w.length >= 2 && !COMMON_STOP_WORDS.has(w));
-    const rawWords = clean.split(/\s+/).filter(Boolean);
 
     for (const utterance of this.recentAssistantUtterances) {
       // 2a. Prefix / Suffix match: if candidate is an exact prefix or suffix of the assistant utterance (>= 2 words)
@@ -450,19 +511,26 @@ export class BrowserSpeechRecognition {
       return;
     }
 
-    if (this.isSupported && this.recognition) {
-      try {
-        this.activeRecognitionEpoch = this.speechEpoch;
-        this.recognition.start();
-        this.isListening = true;
-        this.onStateChange?.(true);
-      } catch (e: any) {
-        if (e.name !== "InvalidStateError") {
-          console.error("[SpeechRecognition] Start error:", e);
+    if (this.isSupported) {
+      if (!this.recognition && this.SpeechRecognitionClass) {
+        this.initNativeRecognition(this.SpeechRecognitionClass);
+      }
+      if (this.recognition) {
+        try {
+          this.activeRecognitionEpoch = this.speechEpoch;
+          this.sessionStartTime = Date.now();
+          this.recognition.start();
+          this.isListening = true;
+          this.onStateChange?.(true);
+        } catch (e: any) {
+          if (e.name !== "InvalidStateError") {
+            console.error("[SpeechRecognition] Start error:", e);
+          }
         }
       }
     } else {
       // Start Fallback MediaRecorder
+      this.sessionStartTime = Date.now();
       await this.startMediaRecorderFallback();
     }
   }
@@ -493,10 +561,14 @@ export class BrowserSpeechRecognition {
 
     if (this.recognition) {
       try {
+        this.recognition.onresult = null;
+        this.recognition.onerror = null;
+        this.recognition.onend = null;
         this.recognition.abort();
       } catch {
         // ignore
       }
+      this.recognition = null;
     }
 
     this.stopMediaRecorderFallback();
@@ -600,19 +672,26 @@ export class BrowserSpeechRecognition {
 
       if (!this.shouldBeListening || this.isMuted) return;
 
-      if (this.isSupported && this.recognition) {
-        try {
-          this.activeRecognitionEpoch = this.speechEpoch;
-          this.recognition.start();
-          this.isListening = true;
-          this.onStateChange?.(true);
-        } catch (err: any) {
-          if (err?.name === "InvalidStateError") {
+      if (this.isSupported) {
+        if (!this.recognition && this.SpeechRecognitionClass) {
+          this.initNativeRecognition(this.SpeechRecognitionClass);
+        }
+        if (this.recognition) {
+          try {
+            this.activeRecognitionEpoch = this.speechEpoch;
+            this.sessionStartTime = Date.now();
+            this.recognition.start();
             this.isListening = true;
             this.onStateChange?.(true);
+          } catch (err: any) {
+            if (err?.name === "InvalidStateError") {
+              this.isListening = true;
+              this.onStateChange?.(true);
+            }
           }
         }
       } else {
+        this.sessionStartTime = Date.now();
         this.startMediaRecorderFallback().catch((err) => {
           console.warn("[SpeechRecognition] Fallback start on interrupt:", err);
         });
@@ -654,13 +733,18 @@ export class BrowserSpeechRecognition {
       }
       this.accumulatedFinalText = "";
 
-      // 1. Native Web Speech: abort recognition immediately so speaker audio is never captured
+      // 1. Native Web Speech: detach all handlers and abort recognition immediately so speaker audio
+      // is never captured and in-flight cloud socket frames cannot bleed into subsequent turns.
       if (this.recognition) {
         try {
+          this.recognition.onresult = null;
+          this.recognition.onerror = null;
+          this.recognition.onend = null;
           this.recognition.abort();
         } catch {
           // ignore
         }
+        this.recognition = null;
       }
 
       // 2. MediaRecorder Fallback: stop recorder, clear audio chunks, and cancel VAD
@@ -692,7 +776,14 @@ export class BrowserSpeechRecognition {
 
       // Acoustic cooldown: 1,100ms on iOS (hardware AEC); 1,600ms on Windows/Android (large DAC buffer & speaker reverb)
       const cooldownMs = this.getAcousticCooldownMs();
-      this.cooldownTimer = window.setTimeout(() => {
+      const checkAndResume = () => {
+        if (this.isAudioOutputActive()) {
+          // Physical output energy is still detected (speaker reverberation or DAC buffer draining)
+          // Defer restart by 60ms until silence is confirmed
+          this.cooldownTimer = window.setTimeout(checkAndResume, 60);
+          return;
+        }
+
         this.cooldownTimer = null;
         this.isPausedForAgent = false;
         if (!this.shouldBeListening || this.isMuted) return;
@@ -705,26 +796,35 @@ export class BrowserSpeechRecognition {
         }
 
         // Resume exactly one active input method
-        if (this.isSupported && this.recognition) {
-          try {
-            this.activeRecognitionEpoch = this.speechEpoch;
-            this.recognition.start();
-            this.isListening = true;
-            this.onStateChange?.(true);
-          } catch (err: any) {
-            if (err?.name === "InvalidStateError") {
+        if (this.isSupported) {
+          if (!this.recognition && this.SpeechRecognitionClass) {
+            this.initNativeRecognition(this.SpeechRecognitionClass);
+          }
+          if (this.recognition) {
+            try {
+              this.activeRecognitionEpoch = this.speechEpoch;
+              this.sessionStartTime = Date.now();
+              this.recognition.start();
               this.isListening = true;
               this.onStateChange?.(true);
-            } else {
-              console.warn("[SpeechRecognition] Start after cooldown:", err);
+            } catch (err: any) {
+              if (err?.name === "InvalidStateError") {
+                this.isListening = true;
+                this.onStateChange?.(true);
+              } else {
+                console.warn("[SpeechRecognition] Start after cooldown:", err);
+              }
             }
           }
         } else {
+          this.sessionStartTime = Date.now();
           this.startMediaRecorderFallback().catch((err) => {
             console.warn("[SpeechRecognition] Fallback restart after cooldown:", err);
           });
         }
-      }, cooldownMs);
+      };
+
+      this.cooldownTimer = window.setTimeout(checkAndResume, cooldownMs);
     }
   }
 
