@@ -538,6 +538,34 @@ export class NeuralAudioPlayer {
       isSynthSpeaking;
 
     if (this.endTurnSignaled && this.queue.length === 0 && !this.isFetching && !isAudioPlaying) {
+      // Physical output silence verification: verify speaker energy has decayed
+      if (this.analyserNode && ctx && ctx.state === "running") {
+        try {
+          const data = new Uint8Array(this.analyserNode.fftSize || 256);
+          if (typeof this.analyserNode.getByteTimeDomainData === "function") {
+            this.analyserNode.getByteTimeDomainData(data);
+            let maxDeviation = 0;
+            for (let i = 0; i < data.length; i++) {
+              const dev = Math.abs(data[i] - 128);
+              if (dev > maxDeviation) maxDeviation = dev;
+            }
+            // If speaker buffer is still oscillating (peak deviation > 4 out of 128),
+            // delay turn completion until physical silence settles.
+            if (maxDeviation > 4) {
+              if (this.endTurnTimer) {
+                window.clearTimeout(this.endTurnTimer);
+              }
+              this.endTurnTimer = window.setTimeout(() => {
+                this.checkTurnCompletion();
+              }, 60);
+              return;
+            }
+          }
+        } catch {
+          // In mock/test environments without full AnalyserNode implementation, proceed cleanly
+        }
+      }
+
       if (this.isPlaying) {
         this.isPlaying = false;
         this.onPlaybackStateChange?.(false);

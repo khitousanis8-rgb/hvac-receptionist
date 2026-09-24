@@ -52,6 +52,8 @@ export class BrowserSpeechRecognition {
   private recentAssistantUtterances: string[] = [];
   private lastAgentSpeechEndTime: number = 0;
   private captureEpoch: number = 0;
+  private speechEpoch: number = 0;
+  private activeRecognitionEpoch: number = 0;
 
   constructor(initialStream?: MediaStream | null, sharedAudioCtx?: AudioContext | null) {
     if (initialStream) {
@@ -92,11 +94,19 @@ export class BrowserSpeechRecognition {
       this.recognition.maxAlternatives = 1;
 
       this.recognition.onresult = (event: any) => {
-        // Drop any microphone capture while muted, inactive, or while assistant is speaking
-        if (!this.shouldBeListening || this.isMuted || this.isPausedForAgent) return;
+        // Drop any microphone capture while muted, inactive, while assistant is speaking,
+        // or if this result belongs to an earlier speech epoch (e.g. in-flight Google Speech socket frames)
+        if (
+          !this.shouldBeListening ||
+          this.isMuted ||
+          this.isPausedForAgent ||
+          this.activeRecognitionEpoch !== this.speechEpoch
+        ) {
+          return;
+        }
 
-        // Acoustic cooldown guard: discard any residual speaker reverb within 1100ms of playback finish
-        if (Date.now() - this.lastAgentSpeechEndTime < 1100) return;
+        // Acoustic cooldown guard: discard any residual speaker reverb within acoustic cooldown of playback finish
+        if (Date.now() - this.lastAgentSpeechEndTime < this.getAcousticCooldownMs()) return;
 
         let interimText = "";
         let finalText = "";
@@ -157,6 +167,7 @@ export class BrowserSpeechRecognition {
             window.setTimeout(() => {
               if (this.shouldBeListening && !this.isMuted && !this.isPausedForAgent && this.recognition) {
                 try {
+                  this.activeRecognitionEpoch = this.speechEpoch;
                   this.recognition.start();
                   this.isListening = true;
                   this.onStateChange?.(true);
@@ -205,6 +216,7 @@ export class BrowserSpeechRecognition {
             }
 
             try {
+              this.activeRecognitionEpoch = this.speechEpoch;
               this.recognition.start();
               this.isListening = true;
               this.onStateChange?.(true);
@@ -259,6 +271,16 @@ export class BrowserSpeechRecognition {
     return this.isSupported ? "native_web_speech" : "media_recorder_transcription";
   }
 
+  public getAcousticCooldownMs(): number {
+    const isAppleMobile =
+      typeof navigator !== "undefined" &&
+      /iPad|iPhone|iPod/.test(navigator.userAgent || "");
+    // iOS has hardware VoiceProcessingIO DSP, so 1100ms is sufficient.
+    // Windows & Android have significant DAC buffer latencies, laptop speaker resonance,
+    // and Bluetooth audio latency, requiring 1600ms acoustic drain.
+    return isAppleMobile ? 1100 : 1600;
+  }
+
   public registerAssistantSpeech(text: string): void {
     const clean = text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
     if (clean.length > 5) {
@@ -276,6 +298,7 @@ export class BrowserSpeechRecognition {
     // Explicit caller booking confirmations, conversational greetings, and common affirmative answers are NEVER echo
     const GENUINE_CONFIRMATIONS = new Set([
       "hello", "hi", "hey", "hi there", "hello there", "good morning", "good afternoon", "good evening",
+      "morning", "afternoon", "evening",
       "yes", "yeah", "yep", "sure", "ok", "okay", "go ahead",
       "yes please", "yes go ahead", "yes please go ahead", "yeah go ahead",
       "sure go ahead", "yes book it", "yes book that", "go ahead please",
@@ -301,6 +324,22 @@ export class BrowserSpeechRecognition {
       "what s the best callback phone number",
       "best callback phone number",
       "technician to reach you",
+      "technician to reach",
+      "technician reach",
+      "for our technician",
+      "for the technician",
+      "callback phone number",
+      "best callback phone",
+      "best callback number",
+      "callback phone",
+      "callback number",
+      "cooling today",
+      "heating today",
+      "heating or cooling",
+      "how can i help with",
+      "help with your heating",
+      "tap confirm booking",
+      "confirm booking on your screen",
       "would you like me to book it",
       "i just need a quick yes or no",
       "quick yes or no",
@@ -381,6 +420,21 @@ export class BrowserSpeechRecognition {
           }
         }
       }
+
+      // 2e. 2-word exact content subset: if candidate has exactly 2 content words and both appear in this assistant utterance
+      if (candidateWords.length === 2) {
+        const uWords = new Set(utterance.split(/\s+/).filter((w) => w.length >= 2 && !COMMON_STOP_WORDS.has(w)));
+        if (candidateWords.every((w) => uWords.has(w))) {
+          // Verify candidate is not a genuine service, date/time, or problem inquiry
+          const isDateOrTimeOrNumber = /\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|\d+)\b/i.test(clean);
+          const isServiceTerm = /\b(repair|tune|tuneup|maintenance|pump|furnace|leak|noise|duct|filter|thermostat|ac|air)\b/i.test(clean);
+          if (!isDateOrTimeOrNumber && !isServiceTerm) {
+            this.echoSuppressionCount++;
+            console.warn("[EchoGuard] Suppressed 2-word content echo match:", transcript);
+            return true;
+          }
+        }
+      }
     }
 
     return false;
@@ -398,6 +452,7 @@ export class BrowserSpeechRecognition {
 
     if (this.isSupported && this.recognition) {
       try {
+        this.activeRecognitionEpoch = this.speechEpoch;
         this.recognition.start();
         this.isListening = true;
         this.onStateChange?.(true);
@@ -547,6 +602,7 @@ export class BrowserSpeechRecognition {
 
       if (this.isSupported && this.recognition) {
         try {
+          this.activeRecognitionEpoch = this.speechEpoch;
           this.recognition.start();
           this.isListening = true;
           this.onStateChange?.(true);
@@ -565,13 +621,14 @@ export class BrowserSpeechRecognition {
   }
 
   /**
-   * Hardware auto-gating with 1,100ms acoustic cooldown.
+   * Hardware auto-gating with platform-aware acoustic cooldown (1,100ms iOS, 1,600ms Windows/Android).
    * While assistant is speaking, both native recognition and fallback MediaRecorder
    * are completely halted and any pending audio chunks discarded.
-   * On speech finish, waits 1,100ms before resuming exactly one input method.
+   * On speech finish, waits for acoustic drain before resuming exactly one input method.
    */
   public pauseForAgentPlayback(isSpeaking: boolean) {
     if (isSpeaking) {
+      this.speechEpoch++;
       this.captureEpoch++;
       this.isPausedForAgent = true;
 
@@ -633,8 +690,8 @@ export class BrowserSpeechRecognition {
         window.clearTimeout(this.cooldownTimer);
       }
 
-      // Acoustic cooldown: 1,100ms for speaker reverb, DAC buffers, and cloud recognition to drain
-      const cooldownMs = 1100;
+      // Acoustic cooldown: 1,100ms on iOS (hardware AEC); 1,600ms on Windows/Android (large DAC buffer & speaker reverb)
+      const cooldownMs = this.getAcousticCooldownMs();
       this.cooldownTimer = window.setTimeout(() => {
         this.cooldownTimer = null;
         this.isPausedForAgent = false;
@@ -650,6 +707,7 @@ export class BrowserSpeechRecognition {
         // Resume exactly one active input method
         if (this.isSupported && this.recognition) {
           try {
+            this.activeRecognitionEpoch = this.speechEpoch;
             this.recognition.start();
             this.isListening = true;
             this.onStateChange?.(true);

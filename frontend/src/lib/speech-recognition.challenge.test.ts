@@ -353,6 +353,10 @@ async function runEchoSuppressionWhitelistTests() {
   assert(isEcho("what is the best callback phone number") === true, "2.2 'what is the best callback phone number' IS suppressed");
   assert(isEcho("best callback phone number") === true, "2.2 'best callback phone number' IS suppressed");
   assert(isEcho("technician to reach you") === true, "2.2 'technician to reach you' IS suppressed");
+  // 2-word distorted echo fragments typical on Windows & Android loudspeakers
+  assert(isEcho("technician reach") === true, "2.2 'technician reach' 2-word echo IS suppressed");
+  assert(isEcho("callback phone") === true, "2.2 'callback phone' 2-word echo IS suppressed");
+  assert(isEcho("cooling today") === true, "2.2 'cooling today' 2-word echo IS suppressed");
 
   // Echo of closing phrases
   speech.registerAssistantSpeech("You are all set. Our technician will see you then. Is there anything else I can help with?");
@@ -363,6 +367,9 @@ async function runEchoSuppressionWhitelistTests() {
   // 2.3 Genuine Caller Inquiries (Must NOT be suppressed)
   console.log("\n  --- 2.3 Genuine Caller Inquiries ---");
   assert(isEcho("hello i need help with my ac") === false, "2.3 'hello i need help with my ac' is NOT suppressed");
+  assert(isEcho("ac repair") === false, "2.3 'ac repair' 2-word genuine service is NOT suppressed");
+  assert(isEcho("heating repair") === false, "2.3 'heating repair' 2-word genuine service is NOT suppressed");
+  assert(isEcho("tune up") === false, "2.3 'tune up' 2-word genuine service is NOT suppressed");
   assert(isEcho("hi there my furnace is making a strange noise") === false, "2.3 'hi there my furnace is making a strange noise' is NOT suppressed");
   assert(isEcho("good morning i would like to schedule maintenance") === false, "2.3 'good morning i would like to schedule maintenance' is NOT suppressed");
   assert(isEcho("hey sarah my air conditioner stopped cooling") === false, "2.3 'hey sarah my air conditioner stopped cooling' is NOT suppressed");

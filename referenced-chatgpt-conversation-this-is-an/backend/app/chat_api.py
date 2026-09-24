@@ -170,6 +170,19 @@ def _is_echo_of_assistant(
                 overlap = sum(1 for w in content_words if w in asst_words) / len(content_words)
                 if overlap >= 0.8:
                     return True
+
+        # 3. 2-word exact content subset: if caller message has exactly 2 content words
+        # and both appear in assistant utterance
+        if len(content_words) == 2:
+            asst_words = set(clean_asst.split())
+            if asst_words and all(w in asst_words for w in content_words):
+                # Guard genuine service queries, dates, times, and problem descriptions
+                service_or_time_pattern = re.compile(
+                    r"\b(ac|air|repair|heating|cooling|tune|tuneup|maintenance|heat|pump|furnace|leak|noise|pipe|duct|thermostat|filter|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm|morning|afternoon|evening|noon|\d+)\b",
+                    re.IGNORECASE,
+                )
+                if not service_or_time_pattern.search(clean_msg):
+                    return True
     return False
 
 

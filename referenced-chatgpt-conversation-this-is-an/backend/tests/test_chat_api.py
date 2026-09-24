@@ -490,11 +490,19 @@ def test_is_echo_of_assistant_multi_turn() -> None:
             role="assistant",
             content="Just to confirm, that's AC repair for Monday, October 19 at 11:00 AM. Would you like me to book it?",
         ),
+        ChatMessage(
+            role="assistant",
+            content="What is the best callback phone number for our technician to reach you?",
+        ),
     ]
 
     # Re-captured full assistant speech with booking keywords must be recognized as echo
     asst_echo = "Just to confirm that's AC repair for Monday October 19 at 11:00 AM would you like me to book it"
     assert _is_echo_of_assistant(asst_echo, history) is True
+
+    # 2-word distorted echo fragments common on Windows/Android loudspeakers
+    assert _is_echo_of_assistant("technician reach", history) is True
+    assert _is_echo_of_assistant("callback phone", history) is True
 
     # Short genuine caller responses must NEVER be treated as echo
     assert _is_echo_of_assistant("yes please", history) is False
