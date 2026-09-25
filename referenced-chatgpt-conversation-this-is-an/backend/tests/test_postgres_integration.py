@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import inspect, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.config import get_settings
 from app.db import (
@@ -103,19 +103,20 @@ def test_postgres_booking_uniqueness_and_cancellation(postgres_db: str) -> None:
             )
         )
 
-    # A second booked appointment at the same time violates the partial index.
     with new_session() as session:
         second = Customer(phone_number="+15555550902", name="PG Second")
         session.add(second)
-        session.flush()
-        session.add(
-            Appointment(
-                customer_id=second.id, service="Furnace repair",
-                scheduled_for=moment, status="booked",
+
+    # A second booked appointment at the same time violates the partial index.
+    with pytest.raises(IntegrityError):
+        with new_session() as session:
+            cust = session.query(Customer).filter_by(phone_number="+15555550902").one()
+            session.add(
+                Appointment(
+                    customer_id=cust.id, service="Furnace repair",
+                    scheduled_for=moment, status="booked",
+                )
             )
-        )
-        with pytest.raises(IntegrityError):
-            session.commit()
 
     with new_session() as session:
         booked = session.query(Appointment).filter_by(status="booked").one()
@@ -176,9 +177,10 @@ def test_postgres_call_turns_and_confirmation_tickets(postgres_db: str) -> None:
 def test_postgres_rollback_on_error_preserves_prior_state(postgres_db: str) -> None:
     with new_session() as session:
         session.add(CallRecord(room_name="pg-rollback-keep"))
-    with new_session() as session:
-        session.add(CallRecord(room_name="pg-rollback-doomed"))
-        session.execute(text("SELECT 1/0"))
+    with pytest.raises(DBAPIError):
+        with new_session() as session:
+            session.add(CallRecord(room_name="pg-rollback-doomed"))
+            session.execute(text("SELECT 1/0"))
     with new_session() as session:
         rooms = [
             record.room_name
