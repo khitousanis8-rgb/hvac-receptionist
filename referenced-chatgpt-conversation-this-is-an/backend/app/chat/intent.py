@@ -243,6 +243,8 @@ def _is_general_question(text: str) -> bool:
         "cost", "rates", "why", "why are", "why do", "why would", "what for",
         "who", "how", "explain", "tell me", "what is the reason", "why you",
         "i have no", "i don't have", "i dont have", "no number", "no phone",
+        "i want to know", "can someone", "could you", "would you",
+        "is it possible", "i'm wondering", "im wondering",
     )
     return any(lower.startswith(q) or f" {q}" in lower for q in question_starters)
 

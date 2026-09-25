@@ -310,7 +310,11 @@ export class NeuralAudioPlayer {
       .replace(/[*_~`#]/g, "")
       .replace(/[^\x20-\x7E]/g, " ")
       .replace(/\.{2,}/g, ".")
-      .replace(/[,;—–-]+/g, ", ")
+      .replace(/[\u2013\u2014;]+/g, ", ")
+      .replace(/\s+-\s+/g, ", ")
+      .replace(/--+/g, ", ")
+      .replace(/,{2,}/g, ", ")
+      .replace(/\s+,/g, ",")
       .replace(/\s+/g, " ")
       .trim();
 

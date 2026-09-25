@@ -85,6 +85,30 @@ const ORDINALS: Record<string, string> = {
   "31st": "thirty-first",
 };
 
+const CARDINALS: Record<string, string> = {
+  "0": "zero",
+  "1": "one",
+  "2": "two",
+  "3": "three",
+  "4": "four",
+  "5": "five",
+  "6": "six",
+  "7": "seven",
+  "8": "eight",
+  "9": "nine",
+  "10": "ten",
+  "11": "eleven",
+  "12": "twelve",
+  "13": "thirteen",
+  "14": "fourteen",
+  "15": "fifteen",
+  "16": "sixteen",
+  "17": "seventeen",
+  "18": "eighteen",
+  "19": "nineteen",
+  "20": "twenty",
+};
+
 /**
  * Format raw 7-digit, 10-digit, or 11-digit phone numbers into spaced digits
  * with natural pauses (e.g. "5 5 5, 1 2 3, 4 5 6 7") so speech engines speak them cleanly.
@@ -148,9 +172,14 @@ export function normalizeSpokenText(text: string): string {
 
   // 5. Phone numbers (BEFORE parens, dashes, or plus stripping):
   // Matches e.g. +1 (555) 123-4567, (555) 123-4567, 555-123-4567, +15551234567
+  const phoneTokens: string[] = [];
   out = out.replace(
     /(?:\+1[\s.-]*)?(?:\(([2-9]\d{2})\)|([2-9]\d{2}))[\s.-]*(\d{3})[\s.-]*(\d{4})\b/g,
-    (match) => formatSpokenPhoneNumber(match)
+    (match) => {
+      const token = `XYZPHONETOKEN${phoneTokens.length}XYZ`;
+      phoneTokens.push(formatSpokenPhoneNumber(match));
+      return token;
+    }
   );
 
   // 6. Percentages: 95% -> 95 percent
@@ -166,8 +195,8 @@ export function normalizeSpokenText(text: string): string {
   out = out.replace(/\bA\/C\b/gi, "air conditioning");
   out = out.replace(/\bAC\b/g, "air conditioning");
 
-  // HVAC -> H-V-A-C
-  out = out.replace(/\bHVAC\b/gi, "H-V-A-C");
+  // HVAC / H.V.A.C. -> H-V-A-C
+  out = out.replace(/\bH[.-]?V[.-]?A[.-]?C(?:\.|\b)/gi, "H-V-A-C");
 
   // BTU / BTUs -> B-T-Us
   out = out.replace(/\bBTUs\b/g, "B-T-Us");
@@ -207,18 +236,14 @@ export function normalizeSpokenText(text: string): string {
   out = out.replace(/\+/g, " plus ");
   out = out.replace(/=/g, " equals ");
 
-  // 12. Contraction expansions: "I'm" -> "I am", "can't" -> "cannot"
-  out = out.replace(/\b([a-zA-Z]+'[a-zA-Z]+)\b/g, (match) => {
-    const lower = match.toLowerCase();
-    const expanded = CONTRACTIONS[lower];
-    if (expanded) {
-      if (match[0] === match[0].toUpperCase()) {
-        return expanded.charAt(0).toUpperCase() + expanded.slice(1);
-      }
-      return expanded;
-    }
-    return match;
+  // 12. Cardinal numbers: convert standalone digits 0-20 to natural spoken words (e.g. "six" not "6")
+  // Keeps natural contractions untouched for warm human conversation.
+  out = out.replace(/\b([0-9]|1[0-9]|20)\b(?!\s*(?:AM|PM|am|pm|:|\.))/g, (match) => {
+    return CARDINALS[match] || match;
   });
+
+  // Restore protected phone numbers
+  out = out.replace(/XYZPHONETOKEN(\d+)XYZ/g, (_, idx) => phoneTokens[Number(idx)]);
 
   // 13. Punctuation cleanup: keep only speech-safe punctuation (. ? ! , : ')
   out = out
@@ -281,7 +306,7 @@ export function findClauseSplit(
     if (punct === ".") {
       const lastWord = (candidate.split(/\s+/).pop() || "").toLowerCase();
       if (
-        /^[a-z]$/.test(lastWord) ||
+        /^[a-z](\.[a-z])*$/i.test(lastWord) ||
         /^(mr|mrs|ms|dr|st|vs|etc|no|am|pm|a\.m|p\.m|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)$/.test(lastWord)
       ) {
         continue;

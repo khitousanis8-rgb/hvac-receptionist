@@ -1263,13 +1263,26 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     ):
         next_field = missing[0]
         if next_field == "service":
-            q_text = "What service do you need help with: AC repair, heating repair, or a tune-up?"
+            q_text = (
+                f"I'd love to help with that! At {settings.business_company_name}, "
+                "we specialize in AC repair, heating repair, and full-system tune-ups. "
+                "Which service can we take care of for you?"
+            )
         elif next_field == "phone":
-            q_text = "What's the best callback phone number for the technician to reach you?"
+            q_text = (
+                "I can certainly get one of our licensed technicians out to help you! "
+                "What's the best callback phone number for the technician to reach you?"
+            )
         elif next_field == "date":
-            q_text = "What day works best for your appointment?"
+            q_text = (
+                "We'll have a fully stocked service truck ready for you. "
+                "What day works best for your appointment?"
+            )
         else:
-            q_text = "What time would you prefer?"
+            q_text = (
+                "We can easily fit you into our schedule. "
+                "What time would you prefer?"
+            )
 
         await asyncio.to_thread(
             update_call_slots,
@@ -1330,7 +1343,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 "settings": settings,
                 "model": settings.llm_model,
                 "messages": messages,
-                "temperature": 0.1,
+                "temperature": 0.65,
                 "max_tokens": settings.llm_max_tokens,
                 "stop": ["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                 "stream": True,
@@ -1454,7 +1467,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     settings=settings,
                     model=settings.llm_model,
                     messages=messages,
-                    temperature=0.1,
+                    temperature=0.65,
                     max_tokens=settings.llm_max_tokens,
                     stop=["\nuser:", "\nUser:", "\ncaller:", "\nCaller:"],
                     stream=True,

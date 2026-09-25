@@ -22,12 +22,12 @@ export interface TestCase {
 export const HVAC_TEST_CASES: TestCase[] = [
   {
     id: 1,
-    description: "Contractions expansion: I'm, don't, can't",
+    description: "Natural contractions preservation: I'm, won't, don't",
     input: "I'm calling because my heater won't turn on and I don't know what to do.",
     assertions: (res) => {
-      if (!res.includes("I am")) throw new Error(`Expected 'I am' in: ${res}`);
-      if (!res.includes("will not")) throw new Error(`Expected 'will not' in: ${res}`);
-      if (!res.includes("do not")) throw new Error(`Expected 'do not' in: ${res}`);
+      if (!res.includes("I'm")) throw new Error(`Expected 'I\'m' in: ${res}`);
+      if (!res.includes("won't")) throw new Error(`Expected 'won\'t' in: ${res}`);
+      if (!res.includes("don't")) throw new Error(`Expected 'don\'t' in: ${res}`);
     },
   },
   {
@@ -194,13 +194,30 @@ export const HVAC_TEST_CASES: TestCase[] = [
     description: "Complex combined conversational receptionist sentence",
     input: "You're all set! We've scheduled your A/C tune-up on September 3rd at 9:00 AM. Our tech will call 555-987-6543 beforehand.",
     assertions: (res) => {
-      if (!res.includes("You are all set!")) throw new Error(`Expected 'You are all set!' in: ${res}`);
-      if (!res.includes("We have scheduled")) throw new Error(`Expected 'We have scheduled' in: ${res}`);
+      if (!res.includes("You're all set!")) throw new Error(`Expected 'You\'re all set!' in: ${res}`);
+      if (!res.includes("We've scheduled")) throw new Error(`Expected 'We\'ve scheduled' in: ${res}`);
       if (!res.includes("air conditioning")) throw new Error(`Expected 'air conditioning' in: ${res}`);
       if (!res.includes("September third")) throw new Error(`Expected 'September third' in: ${res}`);
       if (!res.includes("9 AM")) throw new Error(`Expected '9 AM' in: ${res}`);
       if (!res.includes("technician")) throw new Error(`Expected 'technician' in: ${res}`);
       if (!res.includes("5 5 5, 9 8 7, 6 5 4 3")) throw new Error(`Expected formatted phone in: ${res}`);
+    },
+  },
+  {
+    id: 21,
+    description: "Cardinal numbers spoken conversion (6 -> six, 2 -> two)",
+    input: "We have an opening at 6 tomorrow or we can send 2 technicians.",
+    assertions: (res) => {
+      if (!res.includes("at six")) throw new Error(`Expected 'at six' in: ${res}`);
+      if (!res.includes("send two technicians")) throw new Error(`Expected 'send two technicians' in: ${res}`);
+    },
+  },
+  {
+    id: 22,
+    description: "Dotted acronym H.V.A.C. normalized to H-V-A-C",
+    input: "We specialize in H.V.A.C. installations and repairs.",
+    assertions: (res) => {
+      if (!res.includes("H-V-A-C")) throw new Error(`Expected 'H-V-A-C' in: ${res}`);
     },
   },
 ];
