@@ -328,15 +328,15 @@ export class BrowserSpeechRecognition {
     const isApple = engine === "webkit" || /iPhone|iPad|iPod|Macintosh/i.test(ua);
 
     if (isApple) {
-      // iOS / macOS: 250ms min floor, < -50 dBFS threshold, 500ms max timeout
+      // iOS / macOS: 250ms min floor, < -50 dBFS threshold, 500ms max timeout (VoiceProcessingIO hardware AEC active)
       return { minFloorMs: 250, maxTimeoutMs: 500, targetDb: -50 };
     }
     if (platform === "mobile" || /Android/i.test(ua)) {
-      // Android Mobile: 250ms min floor, < -55 dBFS threshold, 600ms max timeout
-      return { minFloorMs: 250, maxTimeoutMs: 600, targetDb: -55 };
+      // Android Mobile: 500ms min floor (180ms HAL + 250ms room reverb + safety), < -55 dBFS threshold, 750ms max timeout
+      return { minFloorMs: 500, maxTimeoutMs: 750, targetDb: -55 };
     }
-    // Windows Desktop: 250ms min floor, < -55 dBFS threshold, 600ms max timeout
-    return { minFloorMs: 250, maxTimeoutMs: 600, targetDb: -55 };
+    // Windows Desktop: 450ms min floor (100ms HAL + 250ms room reverb + safety), < -55 dBFS threshold, 700ms max timeout
+    return { minFloorMs: 450, maxTimeoutMs: 700, targetDb: -55 };
   }
 
   public getAcousticCooldownMs(): number {
@@ -366,12 +366,12 @@ export class BrowserSpeechRecognition {
     const candWords = clean.split(/\s+/).filter(Boolean);
     if (candWords.length === 0) return false;
 
-    // Never consider genuine service or temporal terms as prompt-tail echo
-    const hasServiceTerm = /\b(ac|air|conditioning|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter|service|hvac|inspection|boiler)\b/i.test(clean);
-    const hasDateTimeTerm = /\b(tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|asap|earliest|\d+)\b/i.test(clean);
-    if (candWords.length <= 6 && (hasServiceTerm || hasDateTimeTerm)) {
-      return false;
-    }
+    // Filter out common stop words to examine content words
+    const STOP_WORDS = new Set([
+      "the", "a", "an", "and", "or", "to", "in", "at", "for", "with", "is", "it", "that", "this", "my", "you", "of", "on", "your"
+    ]);
+    const contentWords = candWords.filter((w) => !STOP_WORDS.has(w));
+    const wordsToMatch = contentWords.length > 0 ? contentWords : candWords;
 
     // Inspect the 2 most recent assistant utterances (clause + full sentence)
     const recent = this.recentAssistantUtterances.slice(-2);
@@ -382,22 +382,20 @@ export class BrowserSpeechRecognition {
       // Exact substring of the utterance
       if (utterance.includes(clean)) return true;
 
-      // The tail is the last 60% of words (or up to the last 14 words)
-      const tailCount = Math.max(Math.ceil(uWords.length * 0.6), Math.min(uWords.length, 14));
-      const tailWords = uWords.slice(-tailCount);
-      const tailText = tailWords.join(" ");
+      // The tail is the last 65% of words (or up to the last 16 words)
+      const tailCount = Math.max(Math.ceil(uWords.length * 0.65), Math.min(uWords.length, 16));
+      const tailWords = new Set(uWords.slice(-tailCount));
 
-      if (tailText.includes(clean)) return true;
-
-      // If candidate is 1-2 words and all appear in the utterance
-      if (candWords.length <= 2 && candWords.every((w) => uWords.includes(w))) {
+      // If ALL words in candidate appear in the tail of this assistant utterance
+      if (wordsToMatch.every((w) => tailWords.has(w))) {
         return true;
       }
 
-      // If candidate has >= 3 words and >= 66% appear in the utterance
+      // If candidate has >= 3 words and >= 75% appear in the utterance
       if (candWords.length >= 3) {
-        const matchCount = candWords.filter((w) => uWords.includes(w)).length;
-        if (matchCount / candWords.length >= 0.66) {
+        const uSet = new Set(uWords);
+        const matchCount = candWords.filter((w) => uSet.has(w)).length;
+        if (matchCount / candWords.length >= 0.75) {
           return true;
         }
       }
@@ -421,6 +419,19 @@ export class BrowserSpeechRecognition {
       clean.startsWith("tap confirm") ||
       clean.startsWith("confirm booking") ||
       clean.startsWith("our technician will");
+
+    // Early Acoustic Bleed Discrimination:
+    // Any transcript arriving within 650ms of microphone activation or 750ms of assistant speech end
+    // that matches words in the assistant prompt tail is physically an acoustic reflection, not human speech.
+    const elapsedSinceSessionStart = this.sessionStartTime > 0 ? Date.now() - this.sessionStartTime : 9999;
+    const elapsedSinceAgentEnd = this.lastAgentSpeechEndTime > 0 ? Date.now() - this.lastAgentSpeechEndTime : 9999;
+    const isEarlyAcousticWindow = elapsedSinceSessionStart < 650 || elapsedSinceAgentEnd < 750;
+
+    if (isEarlyAcousticWindow && this.isTailOfRecentAssistantSpeech(clean)) {
+      this.echoSuppressionCount++;
+      console.warn("[EchoGuard] Suppressed prompt-tail echo during early acoustic bleed window:", transcript);
+      return true;
+    }
 
     // 0a. Caller providing phone digits is NEVER an echo of Sarah's callback question
     const rawDigits = transcript.replace(/\D/g, "");
@@ -447,6 +458,8 @@ export class BrowserSpeechRecognition {
     // the caller naturally responds with those exact words ("ac repair", "tune up", "tomorrow at 10 AM", "furnace maintenance").
     // These must NEVER be suppressed as acoustic echo, provided they don't contain assistant signature prompts or lead-in phrases.
     const isAssistantPromptFragment =
+      clean === "cooling" ||
+      clean === "heating" ||
       clean === "cooling today" ||
       clean === "heating today" ||
       clean === "heating or cooling" ||
@@ -458,10 +471,13 @@ export class BrowserSpeechRecognition {
       clean === "callback phone";
 
     if (rawWords.length <= 6 && !isAssistantLeadIn && !isAssistantPromptFragment) {
-      const hasServiceTerm = /\b(ac|air|conditioning|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter|service|hvac|inspection|boiler)\b/i.test(clean);
-      const hasDateTimeTerm = /\b(tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|asap|earliest|\d+)\b/i.test(clean);
-      if (hasServiceTerm || hasDateTimeTerm) {
-        return false;
+      const isEarlyEcho = isEarlyAcousticWindow && this.isTailOfRecentAssistantSpeech(clean);
+      if (!isEarlyEcho) {
+        const hasServiceTerm = /\b(ac|air|conditioning|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter|service|hvac|inspection|boiler)\b/i.test(clean);
+        const hasDateTimeTerm = /\b(tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|asap|earliest|\d+)\b/i.test(clean);
+        if (hasServiceTerm || hasDateTimeTerm) {
+          return false;
+        }
       }
     }
 

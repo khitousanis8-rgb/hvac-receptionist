@@ -554,6 +554,28 @@ async function runGatingAndLatencyStressTests() {
     assert(isEcho("tomorrow at 10 AM") === false, "3.4 'tomorrow at 10 AM' is ACCEPTED as genuine caller choice");
     assert(isEcho("Friday at 2 PM") === false, "3.4 'Friday at 2 PM' is ACCEPTED as genuine caller choice");
   }
+
+  // 3.5 Early Prompt-Tail Acoustic Bleed Discrimination (< 650ms) vs. Genuine Caller Response (>= 700ms)
+  {
+    const speech = new BrowserSpeechRecognition();
+    const isEcho = (text: string) => (speech as any).isAcousticEcho(text);
+    speech.registerAssistantSpeech("Do you need heating or cooling today, or AC repair?");
+
+    // Scenario A: Early acoustic bleed arriving within 200ms of session start (< 650ms)
+    (speech as any).sessionStartTime = Date.now() - 200;
+    (speech as any).lastAgentSpeechEndTime = Date.now() - 250;
+    assert(isEcho("ac repair") === true, "3.5 Early 'ac repair' bleed arriving within 200ms is SUPPRESSED as echo");
+    assert(isEcho("heating repair") === true, "3.5 Early 'heating repair' bleed within 200ms is SUPPRESSED as echo");
+    assert(isEcho("cooling") === true, "3.5 Early 'cooling' bleed within 200ms is SUPPRESSED as echo");
+    assert(isEcho("heating") === true, "3.5 Early 'heating' bleed within 200ms is SUPPRESSED as echo");
+
+    // Scenario B: Genuine caller speaking after human cognitive reaction time (850ms > 650ms)
+    (speech as any).sessionStartTime = Date.now() - 850;
+    (speech as any).lastAgentSpeechEndTime = Date.now() - 900;
+    assert(isEcho("ac repair") === false, "3.5 Caller 'ac repair' after human reaction time is ACCEPTED");
+    assert(isEcho("heating repair") === false, "3.5 Caller 'heating repair' after human reaction time is ACCEPTED");
+    assert(isEcho("cooling") === false, "3.5 Caller 'cooling' after human reaction time is ACCEPTED");
+  }
 }
 
 async function runAecHalfDuplexEpochCalibrationTests() {
@@ -655,9 +677,9 @@ async function runAecHalfDuplexEpochCalibrationTests() {
       writable: true,
     });
     const androidConfig = speech.getDynamicAcousticCooldownMs();
-    assert(androidConfig.minFloorMs === 250, "4.3a Android minFloorMs is 250ms");
+    assert(androidConfig.minFloorMs === 500, "4.3a Android minFloorMs is 500ms");
     assert(androidConfig.targetDb === -55, "4.3a Android targetDb is -55 dBFS");
-    assert(androidConfig.maxTimeoutMs === 600, "4.3a Android maxTimeoutMs is 600ms");
+    assert(androidConfig.maxTimeoutMs === 750, "4.3a Android maxTimeoutMs is 750ms");
 
     // 4.3b: Windows Desktop
     Object.defineProperty(globalThis, "navigator", {
@@ -668,9 +690,9 @@ async function runAecHalfDuplexEpochCalibrationTests() {
       writable: true,
     });
     const windowsConfig = speech.getDynamicAcousticCooldownMs();
-    assert(windowsConfig.minFloorMs === 250, "4.3b Windows minFloorMs is 250ms");
+    assert(windowsConfig.minFloorMs === 450, "4.3b Windows minFloorMs is 450ms");
     assert(windowsConfig.targetDb === -55, "4.3b Windows targetDb is -55 dBFS");
-    assert(windowsConfig.maxTimeoutMs === 600, "4.3b Windows maxTimeoutMs is 600ms");
+    assert(windowsConfig.maxTimeoutMs === 700, "4.3b Windows maxTimeoutMs is 700ms");
 
     // 4.3c: iOS / macOS (Apple WebKit)
     Object.defineProperty(globalThis, "navigator", {

@@ -198,7 +198,7 @@ export class NeuralAudioPlayer {
       : 0;
     const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
     const isWindows = typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent);
-    const platformMinHalMs = isAndroid ? 60 : (isWindows ? 40 : 0);
+    const platformMinHalMs = isAndroid ? 180 : (isWindows ? 100 : 0);
     return Math.max(measuredMs, platformMinHalMs);
   }
 
