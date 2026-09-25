@@ -41,10 +41,10 @@ export const HVAC_TEST_CASES: TestCase[] = [
   },
   {
     id: 3,
-    description: "HVAC abbreviation expansion to H-V-A-C",
+    description: "HVAC abbreviation expansion to H-vac",
     input: "Apex HVAC offers 24/7 heating and emergency support.",
     assertions: (res) => {
-      if (!res.includes("H-V-A-C")) throw new Error(`Expected 'H-V-A-C' in: ${res}`);
+      if (!res.includes("H-vac")) throw new Error(`Expected 'H-vac' in: ${res}`);
     },
   },
   {
@@ -214,10 +214,10 @@ export const HVAC_TEST_CASES: TestCase[] = [
   },
   {
     id: 22,
-    description: "Dotted acronym H.V.A.C. normalized to H-V-A-C",
+    description: "Dotted acronym H.V.A.C. normalized to H-vac",
     input: "We specialize in H.V.A.C. installations and repairs.",
     assertions: (res) => {
-      if (!res.includes("H-V-A-C")) throw new Error(`Expected 'H-V-A-C' in: ${res}`);
+      if (!res.includes("H-vac")) throw new Error(`Expected 'H-vac' in: ${res}`);
     },
   },
 ];

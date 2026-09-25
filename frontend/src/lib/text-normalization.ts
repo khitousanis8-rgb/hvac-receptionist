@@ -195,8 +195,8 @@ export function normalizeSpokenText(text: string): string {
   out = out.replace(/\bA\/C\b/gi, "air conditioning");
   out = out.replace(/\bAC\b/g, "air conditioning");
 
-  // HVAC / H.V.A.C. -> H-V-A-C
-  out = out.replace(/\bH[.-]?V[.-]?A[.-]?C(?:\.|\b)/gi, "H-V-A-C");
+  // HVAC / H.V.A.C. -> H-vac (single industry word pronunciation)
+  out = out.replace(/\bH[.-]?V[.-]?A[.-]?C(?:\.|\b)/gi, "H-vac");
 
   // BTU / BTUs -> B-T-Us
   out = out.replace(/\bBTUs\b/g, "B-T-Us");

@@ -1264,23 +1264,21 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         next_field = missing[0]
         if next_field == "service":
             q_text = (
-                f"I'd love to help with that! At {settings.business_company_name}, "
-                "we specialize in AC repair, heating repair, and full-system tune-ups. "
-                "Which service can we take care of for you?"
+                f"I can certainly help you with that! At {settings.business_company_name}, "
+                "we handle AC repair, heating repair, and system tune-ups. "
+                "Which service do you need help with?"
             )
         elif next_field == "phone":
             q_text = (
-                "I can certainly get one of our licensed technicians out to help you! "
+                "I can certainly help arrange that for you! "
                 "What's the best callback phone number for the technician to reach you?"
             )
         elif next_field == "date":
             q_text = (
-                "We'll have a fully stocked service truck ready for you. "
                 "What day works best for your appointment?"
             )
         else:
             q_text = (
-                "We can easily fit you into our schedule. "
                 "What time would you prefer?"
             )
 
