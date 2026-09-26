@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     # Rate limiter backend: "memory" (per-process, original behavior) or
     # "database" (durable sliding windows backed by the rate_limit_events table).
     rate_limit_backend: Annotated[str, Field(pattern="^(memory|database)$")] = "memory"
+    require_screen_tap_confirmation: bool = False
 
     @field_validator("database_url", mode="after")
     @classmethod

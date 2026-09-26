@@ -281,3 +281,142 @@ def cancel_appointment(session: Session, appointment_id: int) -> bool:
     appointment.status = "cancelled"
     session.flush()
     return True
+
+
+def find_nearest_available_slots(
+    session: Session,
+    settings: Settings,
+    target_datetime: datetime,
+    count: int = 2,
+) -> list[datetime]:
+    """Find the next available appointment slots starting from target_datetime."""
+    tz = ZoneInfo(settings.business_timezone)
+    now_tz = datetime.now(tz)
+    start_dt = (
+        target_datetime.astimezone(tz)
+        if target_datetime.tzinfo
+        else target_datetime.replace(tzinfo=tz)
+    )
+    if start_dt < now_tz:
+        start_dt = now_tz
+
+    # Round up to next whole hour
+    if start_dt.minute != 0 or start_dt.second != 0 or start_dt.microsecond != 0:
+        start_dt = start_dt.replace(
+            minute=0, second=0, microsecond=0
+        ) + timedelta(hours=1)
+
+    available_slots: list[datetime] = []
+    # Search forward in 1-hour increments up to 7 days (168 hours)
+    current_dt = start_dt
+    for _ in range(168):
+        current_utc = current_dt.astimezone(UTC)
+        if current_utc >= datetime.now(UTC) and is_within_business_hours(current_dt, settings):
+            if not has_conflict(session, current_utc):
+                available_slots.append(current_dt)
+                if len(available_slots) >= count:
+                    break
+        current_dt += timedelta(hours=1)
+
+    return available_slots
+
+
+def format_available_slot_for_speech(dt: datetime, settings: Settings) -> str:
+    """Format a datetime nicely for speech, e.g. 'today at 3:00 PM' or 'tomorrow at 10:00 AM'."""
+    tz = ZoneInfo(settings.business_timezone)
+    local_dt = dt.astimezone(tz) if dt.tzinfo else dt.replace(tzinfo=tz)
+    now_local = datetime.now(tz)
+
+    time_str = local_dt.strftime("%I:%M %p").lstrip("0")
+    if local_dt.date() == now_local.date():
+        return f"today at {time_str}"
+    if local_dt.date() == (now_local + timedelta(days=1)).date():
+        return f"tomorrow at {time_str}"
+    weekday = local_dt.strftime("%A")
+    return f"{weekday} at {time_str}"
+
+
+def lookup_customer_appointment(session: Session, phone_number: str) -> Appointment | None:
+    """Find the earliest upcoming active appointment for a customer by phone number."""
+    now = datetime.now(UTC)
+    normalized = normalize_phone_number(phone_number)
+    nanp = normalize_nanp_phone(phone_number)
+    phone_filter = (Customer.phone_number == phone_number)
+    if normalized:
+        phone_filter = phone_filter | (Customer.phone_number == normalized)
+    if nanp:
+        phone_filter = phone_filter | (Customer.phone_number == nanp)
+
+    return (
+        session.query(Appointment)
+        .join(Customer)
+        .filter(
+            phone_filter,
+            Appointment.scheduled_for >= now,
+            Appointment.status.in_(BOOKABLE_STATUSES),
+        )
+        .order_by(Appointment.scheduled_for.asc())
+        .first()
+    )
+
+
+def reschedule_appointment_by_phone(
+    session: Session,
+    settings: Settings,
+    phone_number: str,
+    new_when: datetime,
+) -> tuple[Appointment | None, str]:
+    """Reschedule an active appointment for a customer to a new valid slot."""
+    appointment = lookup_customer_appointment(session, phone_number)
+    if appointment is None:
+        return None, "No active appointment was found under that phone number."
+
+    if new_when.tzinfo is None:
+        new_when = new_when.replace(tzinfo=UTC)
+    if new_when < datetime.now(UTC):
+        return None, "That time is in the past. Please choose a future time."
+    if not is_within_business_hours(new_when, settings):
+        return None, (
+            "That time is outside business hours. Please choose a time during opening hours."
+        )
+
+    slot_end = new_when + timedelta(minutes=SLOT_MINUTES)
+    earliest_overlap = new_when - timedelta(minutes=SLOT_MINUTES)
+    conflict = (
+        session.query(Appointment)
+        .filter(
+            Appointment.id != appointment.id,
+            Appointment.status.in_(BOOKABLE_STATUSES),
+            Appointment.scheduled_for < slot_end,
+            Appointment.scheduled_for > earliest_overlap,
+        )
+        .first()
+    )
+    if conflict is not None:
+        return None, "That slot is already taken. Please choose another time."
+
+    appointment.scheduled_for = new_when
+    try:
+        with session.begin_nested():
+            session.flush()
+    except IntegrityError:
+        return None, "That slot was just taken. Please choose another time."
+
+    tz = ZoneInfo(settings.business_timezone)
+    local_time = new_when.astimezone(tz).strftime("%I:%M %p").lstrip("0")
+    date_str = new_when.astimezone(tz).strftime("%A, %B %d")
+    return appointment, f"Rescheduled for {date_str} at {local_time}."
+
+
+def cancel_appointment_by_phone(
+    session: Session,
+    phone_number: str,
+) -> tuple[Appointment | None, str]:
+    """Cancel an active appointment for a customer by phone number."""
+    appointment = lookup_customer_appointment(session, phone_number)
+    if appointment is None:
+        return None, "No active appointment was found under that phone number."
+
+    appointment.status = "cancelled"
+    session.flush()
+    return appointment, "Your appointment has been cancelled."

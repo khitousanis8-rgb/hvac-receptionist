@@ -9,7 +9,12 @@ from livekit.agents import RunContext, function_tool
 
 from app.config import Settings, get_settings
 from app.db import init_db, new_session
-from app.scheduling import book_appointment, parse_local_datetime
+from app.scheduling import (
+    book_appointment,
+    cancel_appointment_by_phone,
+    parse_local_datetime,
+    reschedule_appointment_by_phone,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -88,7 +93,56 @@ async def book_appointment_tool(
         return message
 
 
+@function_tool
+async def reschedule_appointment_tool(
+    context: RunContext[None],
+    phone_number: str,
+    date: str,
+    time: str,
+) -> str:
+    """Reschedule an existing appointment to a new date and time.
+
+    Args:
+        phone_number: The caller's callback phone number.
+        date: New appointment date in YYYY-MM-DD or relative format.
+        time: New appointment start time in HH:MM (24h) local business time.
+        context: Injected run context.
+    """
+    settings = get_settings()
+    when = _parse_local_datetime(settings, date, time)
+    if when is None:
+        return "I could not understand that date or time. Please repeat it."
+
+    with new_session() as session:
+        _appointment, message = reschedule_appointment_by_phone(
+            session,
+            settings,
+            phone_number=phone_number,
+            new_when=when,
+        )
+        return message
+
+
+@function_tool
+async def cancel_appointment_tool(
+    context: RunContext[None],
+    phone_number: str,
+) -> str:
+    """Cancel an existing upcoming appointment.
+
+    Args:
+        phone_number: The caller's callback phone number.
+        context: Injected run context.
+    """
+    with new_session() as session:
+        _appointment, message = cancel_appointment_by_phone(
+            session,
+            phone_number=phone_number,
+        )
+        return message
+
+
 def build_receptionist_tools(settings: Settings) -> list[Any]:
     """Return the function tools registered on the receptionist agent."""
     init_db()
-    return [book_appointment_tool]
+    return [book_appointment_tool, reschedule_appointment_tool, cancel_appointment_tool]

@@ -256,6 +256,7 @@ def test_chat_stream_executes_tool_and_updates_slots() -> None:
     settings = Settings(
         LLM_API_KEY="test-key",
         BUSINESS_OPENING_HOURS='{"monday":"08:00-18:00","tuesday":"08:00-18:00","wednesday":"08:00-18:00","thursday":"08:00-18:00","friday":"08:00-18:00","saturday":"08:00-18:00","sunday":"08:00-18:00"}',
+        require_screen_tap_confirmation=True,
         _env_file=None,
     )
     app = create_app(settings)
@@ -757,6 +758,7 @@ def test_sse_repeating_confirmation_does_not_create_second_appointment() -> None
     settings = Settings(
         LLM_API_KEY="test-key",
         BUSINESS_OPENING_HOURS='{"monday":"08:00-18:00","tuesday":"08:00-18:00","wednesday":"08:00-18:00","thursday":"08:00-18:00","friday":"08:00-18:00","saturday":"08:00-18:00","sunday":"08:00-18:00"}',
+        require_screen_tap_confirmation=True,
         _env_file=None,
     )
     app = create_app(settings)
@@ -814,6 +816,7 @@ def test_sse_revised_time_requires_new_recap() -> None:
     settings = Settings(
         LLM_API_KEY="test-key",
         BUSINESS_OPENING_HOURS='{"monday":"08:00-18:00","tuesday":"08:00-18:00","wednesday":"08:00-18:00","thursday":"08:00-18:00","friday":"08:00-18:00","saturday":"08:00-18:00","sunday":"08:00-18:00"}',
+        require_screen_tap_confirmation=True,
         _env_file=None,
     )
     app = create_app(settings)
@@ -1566,6 +1569,7 @@ def test_spoken_yes_during_recap_prompts_tap_and_freezes_authority() -> None:
             '"thursday":"08:00-18:00","friday":"08:00-18:00","saturday":"08:00-18:00",'
             '"sunday":"08:00-18:00"}'
         ),
+        require_screen_tap_confirmation=True,
         _env_file=None,
     )
     app = create_app(settings)
@@ -1880,6 +1884,125 @@ def test_chat_stream_drops_distorted_echo_without_llm() -> None:
     # Must be silent no-op (event: done with info_only, no delta events)
     assert 'event: done\ndata: {"outcome": "info_only"}' in res.text
     assert "event: delta" not in res.text
+
+
+def test_voice_booking_validation_flow_without_screen_tap() -> None:
+    """Verify 100% voice booking: spoken 'yes' validates and creates appointment in DB."""
+    from uuid import uuid4
+
+    settings = Settings(
+        LLM_API_KEY="test-key",
+        BUSINESS_OPENING_HOURS=(
+            '{"monday":"08:00-18:00","tuesday":"08:00-18:00","wednesday":"08:00-18:00",'
+            '"thursday":"08:00-18:00","friday":"08:00-18:00","saturday":"08:00-18:00",'
+            '"sunday":"08:00-18:00"}'
+        ),
+        require_screen_tap_confirmation=False,
+        _env_file=None,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"voice-booking-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+    future_date = (datetime.now() + timedelta(days=20)).strftime("%Y-%m-%d")
+    phone = "5559876543"
+
+    # Turn 1: Caller provides service and date/time
+    res1 = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, f"I want AC repair on {future_date} at 10am"),
+    )
+    assert res1.status_code == 200
+
+    # Turn 2: Caller provides phone number -> Triggers recap
+    res2 = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, f"My phone is {phone}"),
+    )
+    assert res2.status_code == 200
+    assert "Just to confirm" in res2.text or "Shall I go ahead" in res2.text
+
+    # Turn 3: Caller gives spoken confirmation -> System validates and books appointment!
+    res3 = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "Yes please, go ahead"),
+    )
+    assert res3.status_code == 200
+    assert "You're all set" in res3.text
+    assert "appointment_booked" in res3.text
+    assert 'event: done\ndata: {"outcome": "booked"' in res3.text
+
+    # Verify appointment was genuinely committed to the database
+    with new_session() as session:
+        appt = session.query(Appointment).filter(Appointment.status == "booked").first()
+        assert appt is not None
+        assert appt.service == "AC repair"
+
+    # Turn 4: Idempotent confirmation says caller is already all set
+    res4 = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "Thank you, that sounds great!"),
+    )
+    assert res4.status_code == 200
+    assert "already all set" in res4.text
+    assert 'outcome": "booked"' in res4.text
+
+
+def test_voice_booking_conflict_proactively_offers_alternatives() -> None:
+    """Verify that when a slot conflicts, Sarah offers the nearest available alternative times."""
+    from uuid import uuid4
+
+    settings = Settings(
+        LLM_API_KEY="test-key",
+        BUSINESS_OPENING_HOURS=(
+            '{"monday":"08:00-18:00","tuesday":"08:00-18:00","wednesday":"08:00-18:00",'
+            '"thursday":"08:00-18:00","friday":"08:00-18:00","saturday":"08:00-18:00",'
+            '"sunday":"08:00-18:00"}'
+        ),
+        require_screen_tap_confirmation=False,
+        _env_file=None,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+
+    from app.scheduling import (
+        book_appointment,
+    )
+    from app.scheduling import (
+        parse_local_datetime as _parse_local_datetime,
+    )
+
+    future_date = (datetime.now() + timedelta(days=21)).strftime("%Y-%m-%d")
+    phone1 = "5551112222"
+    phone2 = "5553334444"
+
+    # Book slot 1 at 10:00 AM
+    parsed_dt = _parse_local_datetime(settings, future_date, "10:00 AM")
+    assert parsed_dt is not None
+    with new_session() as session:
+        book_appointment(
+            session, settings, phone_number=phone1, service="AC repair", when=parsed_dt
+        )
+
+    # Second caller tries to book the exact same 10:00 AM slot
+    room2 = f"conflict-test-{uuid4().hex[:8]}"
+    call_id2 = _start_browser_call(room2)
+    payload_msg = (
+        f"I want AC repair on {future_date} at 10:00 AM, my phone is {phone2}"
+    )
+    res = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room2, call_id2, payload_msg),
+    )
+    assert res.status_code == 200
+    assert "already booked" in res.text.lower()
+    # Verifies proactive slot alternative suggestion:
+    assert (
+        ("I can get you in" in res.text)
+        or ("I have an opening" in res.text)
+        or ("11:00 AM" in res.text)
+    )
 
 
 

@@ -59,6 +59,7 @@ from app.chat.schemas import (
 from app.chat.slot_extraction import _extract_slots_from_text
 from app.config import Settings, get_settings
 from app.db import (
+    Appointment,
     CallRecord,
     ConfirmationTicket,
     create_confirmation_ticket,
@@ -69,9 +70,13 @@ from app.db import (
 )
 from app.scheduling import (
     book_appointment,
+    cancel_appointment_by_phone,
+    find_nearest_available_slots,
+    format_available_slot_for_speech,
     has_conflict,
     is_within_business_hours,
     parse_local_datetime,
+    reschedule_appointment_by_phone,
 )
 from app.security import check_booking_rate_limit, check_chat_rate_limit, get_client_ip
 
@@ -247,6 +252,16 @@ def _is_echo_of_assistant(
         "confirmed", "absolutely", "definitely", "correct",
     }
     if clean_msg in affirmative_phrases:
+        return False
+
+    # Shield 2B: Caller Objections and Inquiries (never echo)
+    objection_phrases = {
+        "i have no number", "no number", "no phone", "don't have a number",
+        "do not have a number", "why do you need my number", "why do you need that",
+        "why do you ask", "why are you asking", "i don't have a phone",
+        "don't have a phone",
+    }
+    if any(phrase in clean_msg for phrase in objection_phrases):
         return False
 
     # Combined assistant scaffolding check: if message contains assistant question/prompt
@@ -530,6 +545,31 @@ def _execute_tool(
                     )
                 )
                 session.flush()
+            return message
+
+    elif name == "reschedule_appointment_tool":
+        phone_number = str(args.get("phone_number", "")).strip()
+        date_str = str(args.get("date", "")).strip()
+        time_str = str(args.get("time", "")).strip()
+        when = _parse_local_datetime(settings, date_str, time_str)
+        if when is None:
+            return "I could not understand that date or time. Please provide a clear date and time."
+        with new_session() as session:
+            _appt, message = reschedule_appointment_by_phone(
+                session,
+                settings,
+                phone_number=phone_number,
+                new_when=when,
+            )
+            return message
+
+    elif name == "cancel_appointment_tool":
+        phone_number = str(args.get("phone_number", "")).strip()
+        with new_session() as session:
+            _appt, message = cancel_appointment_by_phone(
+                session,
+                phone_number=phone_number,
+            )
             return message
 
     return f"Unknown tool: {name}"
@@ -921,6 +961,150 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         current_fp = booking_confirmation_fingerprint(slots)
         if expected_fp == current_fp:
             if is_explicit_booking_confirmation(req.message):
+                if not getattr(settings, "require_screen_tap_confirmation", False):
+                    # Pure voice validation & booking without screen interaction
+                    d_val = slots.get("date")
+                    t_val = slots.get("time")
+                    parsed_dt = (
+                        _parse_local_datetime(settings, str(d_val), str(t_val))
+                        if d_val and t_val
+                        else None
+                    )
+                    service_val = str(
+                        slots.get("service")
+                        or (slots.get("verified") or {}).get("service")
+                        or "HVAC Service"
+                    )
+                    phone_val = str(
+                        slots.get("phone")
+                        or (slots.get("verified") or {}).get("phone")
+                        or ""
+                    )
+                    name_val = str(slots.get("name") or "") or None
+                    notes_val = str(slots.get("notes") or "") or None
+
+                    if parsed_dt is not None:
+                        booking_dt: datetime = parsed_dt
+
+                        def _do_voice_booking() -> tuple[Appointment | None, str]:
+                            with new_session() as s:
+                                return book_appointment(
+                                    s,
+                                    settings,
+                                    phone_number=phone_val,
+                                    service=service_val,
+                                    when=booking_dt,
+                                    name=name_val,
+                                    notes=notes_val,
+                                )
+
+                        appointment, book_msg = await asyncio.to_thread(_do_voice_booking)
+                        if appointment is not None:
+                            tz = ZoneInfo(settings.business_timezone)
+                            appt_local = appointment.scheduled_for.astimezone(tz)
+                            local_time = appt_local.strftime("%I:%M %p").lstrip("0")
+                            date_str = appt_local.strftime("%A, %B %d")
+                            first_name = name_val.split()[0] if name_val else ""
+                            name_part = f", {first_name}" if first_name else ""
+                            phone_part = (
+                                f" Our technician will call {phone_val} "
+                                "fifteen minutes before arriving."
+                                if phone_val
+                                else ""
+                            )
+                            spoken_confirm = (
+                                f"You're all set{name_part}! "
+                                f"I've booked your {appointment.service} "
+                                f"for {date_str} at {local_time}.{phone_part} "
+                                "Is there anything else I can help you with today?"
+                            )
+                            await asyncio.to_thread(
+                                record_call_turn, active_call_id, "assistant", spoken_confirm
+                            )
+                            await asyncio.to_thread(update_call_outcome, active_call_id, "booked")
+                            await asyncio.to_thread(
+                                update_call_slots,
+                                active_call_id,
+                                {
+                                    "confirmed": True,
+                                    "confirmation_requested": False,
+                                    "confirmation_fingerprint": None,
+                                    "active_ticket_id": None,
+                                },
+                            )
+
+                            booked_payload = {
+                                "appointment_id": appointment.id,
+                                "service": appointment.service,
+                                "scheduled_for": appointment.scheduled_for.isoformat(),
+                                "phone_number": phone_val,
+                                "name": name_val,
+                            }
+                            done_payload = {
+                                "outcome": "booked",
+                                "appointment_id": appointment.id,
+                            }
+
+                            delta_json = json.dumps({"text": spoken_confirm})
+                            booked_json = json.dumps(booked_payload)
+                            done_json = json.dumps(done_payload)
+
+                            async def booked_gen() -> AsyncIterator[str]:
+                                yield f"event: delta\ndata: {delta_json}\n\n"
+                                yield f"event: appointment_booked\ndata: {booked_json}\n\n"
+                                yield f"event: done\ndata: {done_json}\n\n"
+
+                            return StreamingResponse(
+                                booked_gen(),
+                                media_type="text/event-stream",
+                                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                            )
+                        else:
+                            # Conflict or outside business hours: suggest nearest open slots
+                            def _get_alternatives() -> list[datetime]:
+                                with new_session() as s:
+                                    return find_nearest_available_slots(
+                                        s, settings, booking_dt, count=2
+                                    )
+
+                            alt_slots = await asyncio.to_thread(_get_alternatives)
+                            if alt_slots:
+                                alt_strs = [
+                                    format_available_slot_for_speech(sl, settings)
+                                    for sl in alt_slots
+                                ]
+                                if len(alt_strs) >= 2:
+                                    fail_msg = (
+                                        f"That {t_val} slot is no longer available. "
+                                        f"I can get you scheduled for {alt_strs[0]} or "
+                                        f"{alt_strs[1]}—would either of those work?"
+                                    )
+                                else:
+                                    fail_msg = (
+                                        f"That {t_val} slot is no longer available. "
+                                        f"I have an opening {alt_strs[0]}—would that work for you?"
+                                    )
+                            else:
+                                fail_msg = f"{book_msg} What other day and time works best for you?"
+
+                            await asyncio.to_thread(
+                                record_call_turn, active_call_id, "assistant", fail_msg
+                            )
+
+                            fail_delta = json.dumps({"text": fail_msg})
+                            fail_done = json.dumps({"outcome": "info_only"})
+
+                            async def fail_gen() -> AsyncIterator[str]:
+                                yield f"event: delta\ndata: {fail_delta}\n\n"
+                                yield f"event: done\ndata: {fail_done}\n\n"
+
+                            return StreamingResponse(
+                                fail_gen(),
+                                media_type="text/event-stream",
+                                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                            )
+
+                # Legacy screen-tap guidance
                 guidance = (
                     "I have those details ready! "
                     "Please tap Confirm Booking on your screen to complete your appointment."
@@ -1166,10 +1350,34 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 return has_conflict(s, parsed_dt)
 
         if await asyncio.to_thread(_is_slot_conflicted):
-            msg = (
-                "That appointment time is already booked. "
-                "Could you please choose another time that works for you?"
-            )
+            def _find_conflict_alts() -> list[datetime]:
+                with new_session() as s:
+                    return find_nearest_available_slots(s, settings, parsed_dt, count=2)
+
+            alt_slots = await asyncio.to_thread(_find_conflict_alts)
+            tz = ZoneInfo(settings.business_timezone)
+            time_display = parsed_dt.astimezone(tz).strftime("%I:%M %p").lstrip("0")
+            if alt_slots:
+                alt_texts = [
+                    format_available_slot_for_speech(sl, settings)
+                    for sl in alt_slots
+                ]
+                if len(alt_texts) >= 2:
+                    msg = (
+                        f"That {time_display} slot is already booked. "
+                        f"I can get you in {alt_texts[0]} or "
+                        f"{alt_texts[1]}—would either of those work?"
+                    )
+                else:
+                    msg = (
+                        f"That {time_display} slot is already booked. "
+                        f"I have an opening {alt_texts[0]}—would that work for you?"
+                    )
+            else:
+                msg = (
+                    "That appointment time is already booked. "
+                    "Could you please choose another time that works for you?"
+                )
             await asyncio.to_thread(
                 update_call_slots,
                 active_call_id,

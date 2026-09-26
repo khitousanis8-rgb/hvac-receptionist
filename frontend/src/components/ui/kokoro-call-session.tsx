@@ -284,6 +284,11 @@ export function KokoroCallSession({
                 } else if (currentEvent === "confirmation_ticket") {
                   setConfirmationTicket(data);
                   setConfirmationError(null);
+                } else if (currentEvent === "appointment_booked") {
+                  if (data.appointment_id) {
+                    setConfirmedBookingId(data.appointment_id);
+                  }
+                  setConfirmationError(null);
                 } else if (currentEvent === "tool_call") {
                   setActiveTool(data.name || "Checking dispatch");
                 } else if (currentEvent === "delta" && data.text) {
@@ -318,6 +323,9 @@ export function KokoroCallSession({
                 } else if (currentEvent === "done") {
                   if (data.outcome === "booked") {
                     callOutcomeRef.current = "booked";
+                    if (data.appointment_id) {
+                      setConfirmedBookingId(data.appointment_id);
+                    }
                   } else if (callOutcomeRef.current !== "booked" && data.outcome) {
                     callOutcomeRef.current = data.outcome;
                   }
@@ -775,8 +783,8 @@ export function KokoroCallSession({
                   </>
                 )}
               </button>
-              <p className="text-[10px] text-[#71717a] text-center">
-                Tap to confirm. Voice response alone does not finalize the booking.
+              <p className="text-[11px] text-[#4b5563] text-center font-medium">
+                Say &quot;Yes&quot; or &quot;Go ahead&quot; to lock in this appointment, or tap to confirm.
               </p>
             </div>
           )}
