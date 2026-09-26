@@ -160,6 +160,7 @@ def test_acceptance_scenario_2_accidental_spoken_yes_refusal(db: Any) -> None:
     ticket remains pending for intentional browser tap.
     """
     settings = _create_test_settings()
+    settings.require_screen_tap_confirmation = True
     app = create_app(settings)
     client = TestClient(app)
 

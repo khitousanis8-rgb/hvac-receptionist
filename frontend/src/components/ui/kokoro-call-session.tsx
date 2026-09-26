@@ -316,6 +316,9 @@ export function KokoroCallSession({
                       speechRecRef.current?.registerAssistantSpeech(split.sentence);
                       const spoken = normalizeSpokenText(split.sentence);
                       if (spoken.trim()) {
+                        if (spoken.trim() !== split.sentence.trim()) {
+                          speechRecRef.current?.registerAssistantSpeech(spoken.trim());
+                        }
                         neuralVoice.speakSentence(spoken);
                       }
                     }
@@ -347,6 +350,9 @@ export function KokoroCallSession({
             speechRecRef.current?.registerAssistantSpeech(sentenceBuffer.trim());
             const spoken = normalizeSpokenText(sentenceBuffer.trim());
             if (spoken.trim()) {
+              if (spoken.trim() !== sentenceBuffer.trim()) {
+                speechRecRef.current?.registerAssistantSpeech(spoken.trim());
+              }
               neuralVoice.speakSentence(spoken);
             }
           }
@@ -357,6 +363,10 @@ export function KokoroCallSession({
         setIsAgentThinking(false);
         if (accumulatedAssistantReply.trim()) {
           speechRecRef.current?.registerAssistantSpeech(accumulatedAssistantReply.trim());
+          const spokenFull = normalizeSpokenText(accumulatedAssistantReply.trim());
+          if (spokenFull.trim() && spokenFull.trim() !== accumulatedAssistantReply.trim()) {
+            speechRecRef.current?.registerAssistantSpeech(spokenFull.trim());
+          }
           transcriptHistoryRef.current = [
             ...transcriptHistoryRef.current,
             { role: "assistant", content: accumulatedAssistantReply.trim() },

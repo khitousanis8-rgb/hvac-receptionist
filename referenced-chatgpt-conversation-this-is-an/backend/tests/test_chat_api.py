@@ -2005,6 +2005,96 @@ def test_voice_booking_conflict_proactively_offers_alternatives() -> None:
     )
 
 
+def test_r1_echo_isolation_preserves_objections_times_and_confirmations() -> None:
+    """R1: Verify _is_echo_of_assistant never drops objections, times with o'clock/digits, or 'lock it in'."""
+    from uuid import uuid4
+
+    from app.chat_api import ChatMessage, _is_echo_of_assistant
+    from app.db import record_call_turn
+
+    # 1. Caller objections to phone number prompt
+    history_phone = [
+        ChatMessage(
+            role="assistant",
+            content="What is the best callback phone number for our technician to reach you?",
+        )
+    ]
+    objection_inputs = [
+        "I don't have a phone number",
+        "i don't have a phone number",
+        "I dont have a phone number",
+        "no phone number",
+        "dont have a phone number",
+        "don't have a phone number",
+        "I don't have a phone",
+        "dont have a phone",
+        "no phone",
+        "no number",
+        "I have no number",
+        "why do you need my number",
+        "why do you ask",
+        "why are you asking",
+    ]
+    for obj in objection_inputs:
+        assert _is_echo_of_assistant(obj, history_phone) is False, f"Failed for objection: {obj}"
+
+    # 2. Temporal expressions with o'clock, raw digits, clock, asap, earliest
+    history_times = [
+        ChatMessage(
+            role="assistant",
+            content="We have openings tomorrow at 10 AM or Friday at 2 PM for our technician to visit.",
+        )
+    ]
+    time_inputs = [
+        "at 5 o'clock",
+        "5 o'clock",
+        "tomorrow at 5 o'clock",
+        "at 10 o'clock",
+        "tomorrow at 10 AM",
+        "at 5",
+        "tomorrow at 5",
+        "at 5pm",
+        "asap",
+        "earliest",
+        "earliest possible",
+    ]
+    for tm in time_inputs:
+        assert _is_echo_of_assistant(tm, history_times) is False, f"Failed for temporal: {tm}"
+
+    # 3. Affirmations including 'lock it in', 'lock that in', 'lock it in please'
+    history_recap = [
+        ChatMessage(
+            role="assistant",
+            content="Just to confirm, that's AC repair for tomorrow at 10:00 AM. Would you like me to book it?",
+        )
+    ]
+    affirmation_inputs = [
+        "lock it in",
+        "lock that in",
+        "lock it in please",
+        "sounds great",
+        "that works for me",
+        "yes please",
+        "yes thank you",
+    ]
+    for aff in affirmation_inputs:
+        assert _is_echo_of_assistant(aff, history_recap) is False, f"Failed for affirmation: {aff}"
+
+    # 4. Verify DB turn-record call_id path behaves identically
+    room = f"r1-echo-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+    record_call_turn(
+        call_id,
+        "assistant",
+        "What is the best callback phone number for our technician to reach you?",
+    )
+    assert _is_echo_of_assistant("I don't have a phone number", call_id=call_id) is False
+    assert _is_echo_of_assistant("no phone number", call_id=call_id) is False
+    assert _is_echo_of_assistant("at 5 o'clock", call_id=call_id) is False
+    assert _is_echo_of_assistant("lock it in", call_id=call_id) is False
+
+
+
 
 
 

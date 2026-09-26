@@ -334,3 +334,69 @@ Integrity mode: development
 - [ ] Frontend production bundle build succeeds with 0 errors (`npm run build`).
 - [ ] Runtime database `hvac_receptionist.db` is 100% untouched by test runs.
 
+## 2026-09-26T13:13:36Z
+
+# Teamwork Project Prompt — Draft
+
+> Status: Launched
+> Goal: Craft prompt → get user approval → delegate to teamwork_preview
+> Requested team: Multi-Agent Voice Receptionist Engineering & Verification Team (Windows & iOS)
+
+Conduct an exhaustive multi-agent review, edge-case gap audit, and verified implementation across Windows and iOS environments for the autonomous voice AI receptionist (Sarah). Resolve critical platform nuances, enforce atomic voice booking validation via tools before call completion, deliver a humanized sales-representative conversational tone, preserve acoustic echo isolation without dropping genuine caller dialogue, and guarantee correct spoken pronunciation for acronyms and numbers.
+
+Working directory: c:/Users/TL/Documents/Codex/2026-08-27
+Integrity mode: development
+
+## Requirements
+
+### R1. Platform-Specific Audio Lifecycle & Stream Isolation Audit (Windows & iOS)
+- Review and harden client-side audio pipelines specifically for Windows and iOS browsers:
+  1. **iOS (Safari / WebKit)**: Audit `AudioContext` suspension and resumption policies (page backgrounding, lock screen, user gesture unlock), hardware `VoiceProcessingIO` interaction, and speech recognition interruption recovery.
+  2. **Windows (Chromium / Edge / Firefox)**: Audit `WASAPI` audio capture, `AnalyserNode` loudspeaker silence decay thresholds (`minFloorMs = 450ms`, `targetDb = -55 dBFS`), and half-duplex track gating (`MediaStreamTrack.enabled = false`) during assistant turn playback.
+  3. **Zero False Drops**: Guarantee that legitimate caller speech (e.g., short service names like "AC repair", objection phrases like "I don't have a phone number", dates/times like "tomorrow at 10 AM", numbers, and confirmations) is never dropped by client `EchoGuard` or backend `_is_echo_of_assistant`.
+
+### R2. Voice Booking Lifecycle & Atomic Tool Validation
+- Audit and enforce appointment lifecycle tool calling:
+  1. **Mandatory Tool Validation**: Appointments MUST be validated and committed to the database via scheduling tools (`book_appointment`, `reschedule_appointment_tool`, `cancel_appointment_tool`) before concluding any customer call.
+  2. **100% Voice Autonomy**: Callers can confirm, reschedule, or cancel bookings purely via voice (e.g. "Yes", "Go ahead", "Lock it in") with zero screen-tap dependencies.
+  3. **Proactive Conflict Recovery**: If a requested slot is unavailable, the assistant dynamically looks up nearest available slots and offers proactive alternatives.
+  4. **State Integrity**: Maintain coherent booking status across Server-Sent Events (SSE) and frontend state transitions.
+
+### R3. Conversational Humanization, Sales-Representative Tone, & Pronunciation Guardrails
+- Elevate conversational flow and speech normalization:
+  1. **Persuasive & Empathetic Tone**: Sarah's tone of voice must reflect a consultative, warm HVAC sales representative rather than a rigid robot or a scripted questionnaire.
+  2. **Spelling & Acronym Normalization**: Preprocess text before Kokoro TTS so acronyms like "HVAC" are pronounced letter-by-letter as "H-V-A-C" (or phonetically "ay-ch-vak"), avoiding slurring or robotic spelling.
+  3. **Natural Numbers & Times**: Format all dates, times, and numeric quantities into natural spoken prose (e.g., "six in the evening" rather than raw digits like "6").
+
+### R4. Automated Challenger Test Suite & Regression Verification
+- Formulate automated tests targeting platform-specific edge cases:
+  1. Frontend unit and integration tests verifying half-duplex gating, WebAudio unlock lifecycles, and SSE booking updates.
+  2. Backend pytest suites verifying atomic tool validation, proactive slot proposals, and echo rejection resilience.
+  3. Full verification gates: `npm test` (all 171+ frontend tests pass), backend test suite passes, `ruff check` (0 errors), strict `mypy` (0 errors), architecture boundary enforcement (`check_architecture.py`), and production build (`npm run build`).
+  4. Runtime database isolation: `hvac_receptionist.db` must remain strictly untouched and isolated from test execution.
+
+## Acceptance Criteria
+
+### Platform Audio Integrity (Windows & iOS)
+- [ ] iOS Safari audio playback and recognition lifecycles resume cleanly after backgrounding, interruption, or device lock with zero audio freezes.
+- [ ] Windows Chromium/Edge audio playback prevents loudspeaker feedback loops while maintaining low latency (<400ms after speech ends).
+- [ ] Genuine caller responses (service requests, phone digits, objection phrases, confirmations) are 100% preserved and never dropped as echo.
+
+### Voice Booking & Tool Validation
+- [ ] No booking call concludes without appointment confirmation committed by the backend tool.
+- [ ] Spoken confirmation ("Yes", "Go ahead") commits appointments without requiring any screen interaction.
+- [ ] Proactive alternatives are voiced whenever a scheduling conflict occurs.
+
+### Tone, Naturalness & Pronunciation
+- [ ] Spoken responses exhibit natural sales-representative tone without mechanical or robotic phrasing.
+- [ ] Acronyms ("HVAC") and numbers ("6", appointment times) are spoken naturally by Kokoro TTS without pronunciation artifacts.
+
+### Quality, Architecture & Production Integrity
+- [ ] 100% of frontend tests pass (`npm test`).
+- [ ] 100% of backend tests pass (`pytest`).
+- [ ] Strict mypy passes with 0 errors (`python -m mypy --strict app`).
+- [ ] Ruff checks pass with 0 errors (`python -m ruff check .`).
+- [ ] Architecture checks pass with 0 violations (`python tools/verification/check_architecture.py`).
+- [ ] Production build succeeds (`npm run build`).
+- [ ] Runtime database `hvac_receptionist.db` remains 100% untouched.
+

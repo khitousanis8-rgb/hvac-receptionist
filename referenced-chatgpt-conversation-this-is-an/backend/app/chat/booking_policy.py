@@ -121,6 +121,15 @@ def is_explicit_booking_confirmation(text: str) -> bool:
         "yeah that works",
         "yes sounds good",
         "yeah sounds good",
+        "lock it in",
+        "lock that in",
+        "lock it in please",
+        "lets do it",
+        "let us do it",
+        "go for it",
+        "schedule it",
+        "please schedule it",
+        "yes schedule it",
     }
     return normalized in accepted_phrases
 

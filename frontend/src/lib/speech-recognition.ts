@@ -435,25 +435,43 @@ export class BrowserSpeechRecognition {
 
     // 0a. Caller providing phone digits is NEVER an echo of Sarah's callback question
     const rawDigits = transcript.replace(/\D/g, "");
-    if (rawDigits.length >= 7 && !isAssistantLeadIn) {
+    const SPOKEN_DIGIT_WORDS = new Set([
+      "zero", "oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"
+    ]);
+    const spokenDigitCount = rawWords.filter((w) => SPOKEN_DIGIT_WORDS.has(w)).length;
+    if ((rawDigits.length >= 7 || spokenDigitCount >= 7) && !isAssistantLeadIn) {
       return false;
     }
 
-    // 0b. Explicit caller booking confirmations, conversational greetings, and common affirmative answers are NEVER echo
+    // 0b. Caller objections and inquiries (never echo)
+    const CALLER_OBJECTIONS = new Set([
+      "i don t have a phone number", "i dont have a phone number", "i don t have a number",
+      "dont have a phone number", "don t have a phone number", "no phone number", "no number", "no phone",
+      "don t have a number", "dont have a number", "i have no number", "do not have a number",
+      "why do you need my number", "why do you need that", "why do you ask",
+      "why are you asking", "i don t have a phone", "i dont have a phone", "dont have a phone", "don t have a phone"
+    ]);
+    if (CALLER_OBJECTIONS.has(clean) || Array.from(CALLER_OBJECTIONS).some((obj) => clean.includes(obj))) {
+      return false;
+    }
+
+    // 0c. Explicit caller booking confirmations, conversational greetings, and common affirmative answers are NEVER echo
     const GENUINE_CONFIRMATIONS = new Set([
       "hello", "hi", "hey", "hi there", "hello there", "good morning", "good afternoon", "good evening",
       "morning", "afternoon", "evening",
       "yes", "yeah", "yep", "sure", "ok", "okay", "go ahead",
       "yes please", "yes go ahead", "yes please go ahead", "yeah go ahead",
       "sure go ahead", "yes book it", "yes book that", "go ahead please",
-      "please book it", "please book that", "that works", "sounds good",
-      "correct", "perfect", "absolutely", "no", "nope", "cancel",
+      "please book it", "please book that", "that works", "that works for me", "sounds good", "sounds great",
+      "that sounds good", "that sounds great", "yes thank you", "yes thanks",
+      "lock it in", "lock that in", "lock it in please",
+      "correct", "perfect", "absolutely", "definitely", "please do", "confirm", "confirmed", "no", "nope", "cancel",
     ]);
     if (GENUINE_CONFIRMATIONS.has(clean)) {
       return false;
     }
 
-    // 0c. Whitelist short (<= 6 words) genuine service selections and date/time phrases.
+    // 0d. Whitelist short (<= 6 words) genuine service selections and date/time phrases.
     // When the assistant offers choices ("...heating or AC repair?", "...furnace tune up?", "...openings tomorrow at 10 AM?"),
     // the caller naturally responds with those exact words ("ac repair", "tune up", "tomorrow at 10 AM", "furnace maintenance").
     // These must NEVER be suppressed as acoustic echo, provided they don't contain assistant signature prompts or lead-in phrases.

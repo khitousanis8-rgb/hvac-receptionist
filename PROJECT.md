@@ -1,164 +1,92 @@
-# Project: HVAC AI Receptionist Safe Voice Action Plan (Phases 0 through 6)
+# Project: HVAC Voice AI Receptionist — Round 7 Engineering & Verification
 
 ## Architecture
-- **Target Platforms**: Android Mobile Browsers (Android Chrome 120+, Samsung Internet), iOS Safari, and Desktop Chrome/Firefox.
-- **Backend Architecture**:
-  - FastAPI application in `referenced-chatgpt-conversation-this-is-an/backend`.
-  - Dialect-aware SQLAlchemy engine supporting PostgreSQL (production) and SQLite (test/dev) with connection pooling and fail-closed production checks.
-  - Partial unique index `uq_appointments_booked_scheduled_for` on `Appointment` (`status = 'booked'`) for slot reuse parity.
-  - Server-owned conversation authority via `CallTurn` ORM model; client-supplied history ignored.
-  - Separation of observed speech extraction (`candidates`) from verified fields (`verified`). Deterministic validation requiring canonical service, 10-digit NANP phone, exact future date, exact AM/PM time before recap.
-  - Single-use, short-lived (300s) `ConfirmationTicket` bound to `call_id` and `booking_fingerprint`. Atomic SQL consumption before booking execution. Voice-only ("yes") booking strictly disabled.
-  - Constrained LLM dialogue intents; server-rendered templates for hours, services, policies, and emergency guidance.
-  - Edge rate limiting: tokens (15/min), chat (30/min), TTS (30/min), transcribe (30/min), and booking confirmation (5/min).
-  - Server-owned utterance hashes and timestamps (last 15s) for acoustic echo matching.
-- **Frontend Architecture**:
-  - React + Vite application in `frontend/`.
-  - `KokoroCallSession`: Single voice path (Kokoro TTS + Web Speech / MediaRecorder fallback).
-  - Browser Confirmation Review Card: Renders service, normalized phone, date, and time upon receiving `confirmation_ticket` event. Intentional "Confirm Booking" tap button (>=44x44px, min 48px) with double-click guard (`isConfirming`) and idempotent replay handling.
-  - Voice loop: Half-duplex gating (`track.enabled = false` during TTS) with 1,100ms acoustic cooldown.
-  - Mobile continuity: `visibilitychange: hidden` initiates 45s grace period; returning resumes `AudioContext` and speech recognition without terminating the call.
-  - Text normalization: Spoken token protection before clause splitting prevents fragmentation of time expressions (`10:30 AM`), phone numbers, and currencies.
+- **Target Environments**: Windows (Chromium / Edge / Firefox) and iOS (Safari / WebKit mobile).
+- **Core Components**:
+  - **Backend** (`referenced-chatgpt-conversation-this-is-an/backend`):
+    - FastAPI voice receptionist application with SSE streaming (`/v1/calls/chat`).
+    - Deterministic booking state machine with atomic tool validation (`book_appointment`, `reschedule_appointment_tool`, `cancel_appointment_tool`).
+    - Proactive conflict recovery via `find_nearest_available_slots` across all conflict, closed-day, and off-hour scenarios.
+    - Consultative, empathetic HVAC sales-representative persona prompts and few-shot dialogues in `agent/prompts.py`.
+    - Multi-tiered acoustic echo detection (`_is_echo_of_assistant`) with zero false-drop shields for objections, dates/times, phone digits, and voice confirmations.
+    - Verified call finalization ensuring `outcome = "booked"` is committed to the database.
+  - **Frontend** (`frontend/`):
+    - React + Vite voice application with Kokoro TTS audio player (`NeuralAudioPlayer`).
+    - WebAudio unlock lifecycle for iOS Safari with synchronous user-gesture activation and suspension/interruption recovery.
+    - Hardware-isolated half-duplex gating (`MediaStreamTrack.enabled = false`) during speech playback with monotonic turn epoch tracking.
+    - Real-time `AnalyserNode` loudspeaker silence decay verification (`minFloorMs = 450ms`, `targetDb = -55 dBFS`, 4 frames $< -60\text{ dBFS}$) for Windows WASAPI capture.
+    - Text normalization preprocessor converting acronyms ("HVAC" -> "H-V-A-C"), dates, and times into natural spoken prose.
+    - Dual utterance registration in EchoGuard ensuring token synchronization with physical acoustic output.
 
 ## Feature Inventory
 | # | Feature | Description | Milestone | Source |
 |---|---------|-------------|-----------|--------|
-| 1 | R1.1 Freeze Voice-Only Booking | Remove speech-only confirmation (`book_appointment_tool` on "yes"); prompt caller to tap review card. | M1 | Survey Backend |
-| 2 | R1.2 Disable Anonymous Lookup | Remove `check_my_appointments` from LLM tool exposure; return neutral spoken refusal policy. | M1 | Survey Backend |
-| 3 | R1.3 Lock LiveKit Worker Flag | Keep `ENABLE_LIVEKIT_WORKER=false` so browser Kokoro remains the single active voice path. | M1 | Survey Backend |
-| 4 | R7.1 TTS POST Stream Endpoint | Add `@router.post("/stream")` in `tts_stream.py` with `Cache-Control: private, no-store, must-revalidate` (fixing test failure and ruff/mypy errors). | M1 | Survey Durability |
-| 5 | R7.2 Engine & Dialect Configuration | Dialect-aware engine configuration in `config.py` and `db.py` (fail-closed, SQLite check_same_thread, Postgres pool). | M1 | Survey Durability |
-| 6 | R7.3 Partial Unique Index Parity | Ensure `uq_appointments_booked_scheduled_for` on `Appointment` functions across PostgreSQL and SQLite. | M1 | Survey Durability |
-| 7 | R7.4 Booking Rate Limiter | Add `check_booking_rate_limit` (5 req/min per IP) in `security.py` to prevent booking abuse. | M1 | Survey Durability |
-| 8 | R2.1 CallTurn Schema & Migration | Define `CallTurn` ORM model (`call_id`, `turn_index`, `role`, `content`, `created_at`) with idempotent table/index creation in `init_db()`. | M2 | Survey Backend |
-| 9 | R2.2 Server-Owned History Context | Build prompt messages exclusively from server-persisted `CallTurn` records (bounded recent turn window). Ignore client assistant history. | M2 | Survey Backend |
-| 10 | R2.3 Oversized History Rejection | Reject oversized history payloads at Pydantic request boundary with HTTP 422 before reaching LLM. | M2 | Survey Backend |
-| 11 | R3.1 Candidate vs Verified Slot Separation | Split `session_slots` into `candidates` and `verified` fields. Treat all speech extractions as candidate only. | M2 | Survey Backend |
-| 12 | R3.2 Strict Slot Validation | Require canonical service name, 10-digit NANP phone, exact future date, exact AM/PM time before recap. | M2 | Survey Backend |
-| 13 | R3.3 Ambiguous Time Clarification | Do not auto-guess PM for "tomorrow at three"; flag `clarification_needed = "time_am_pm"`. | M2 | Survey Backend |
-| 14 | R3.4 Negation Handling | Handle negated utterances ("not AC, heating") so negated services are excluded from verified slots. | M2 | Survey Backend |
-| 15 | R4.1 ConfirmationTicket Schema | Define `ConfirmationTicket` ORM model in `db.py` with status (`pending`, `consumed`, `expired`, `cancelled`), 300s TTL, and fingerprint. | M3 | Survey Backend |
-| 16 | R4.2 Ticket Issuance on Recap | Mint short-lived single-use ticket on deterministic recap and emit `event: confirmation_ticket` SSE frame. | M3 | Survey Backend |
-| 17 | R4.3 Atomic Ticket Consumption Endpoint | Implement `POST /v1/calls/confirm-booking` (and alias `/v1/calls/confirm`) with atomic SQL consumption and scheduler execution. | M3 | Survey Backend |
-| 18 | R4.4 Replay & Double-Tap Idempotency | Return existing booking details on duplicate confirmation request without creating duplicate bookings. | M3 | Survey Backend |
-| 19 | R5.1 Restrict LLM Dialogue Intents | Remove booking and lookup tools from chat LLM exposure; constrain model to allowlisted dialogue intents. | M3 | Survey Backend |
-| 20 | R5.2 Server-Rendered Fact Templates | Render hours, services, pricing, availability, and emergency guidance strictly from server templates and config data. | M3 | Survey Backend |
-| 21 | R4.5 Frontend Review Card UI | Render Review Card in `kokoro-call-session.tsx` displaying service, normalized phone, date, and time upon receiving confirmation ticket. | M4 | Survey Frontend |
-| 22 | R4.6 Intentional Confirm Button | Add "Confirm Booking" tap button with `min-h-[48px]`, >=44x44px touch target, and double-click guard (`isConfirming`). | M4 | Survey Frontend |
-| 23 | R2.4 Client History Stripping | Strip `history` from client chat payload in `kokoro-call-session.tsx`; send only new caller message and credentials. | M4 | Survey Frontend |
-| 24 | R6.1 Half-Duplex Audio & Cooldown | Maintain half-duplex audio during Kokoro TTS playback with physical track muting and 1,100ms acoustic cooldown. | M4 | Survey Frontend |
-| 25 | R6.2 Spoken Token Protection | Ensure time expressions (`10:30 AM`), phone numbers, and abbreviations survive clause splitting intact. | M4 | Survey Frontend |
-| 26 | R6.3 Mobile Background Continuity | Maintain 45s grace period on `visibilitychange: hidden`; re-arm speech recognition and resume AudioContext on `visible`. | M4 | Survey Frontend |
-| 27 | R6.4 Server Utterance Echo Matching | Use server-owned assistant utterance hashes and timestamps (last 15s) for acoustic echo detection. | M4 | Survey Backend |
-| 28 | Acceptance Test: Echoed Confirmation | Test: Server receives assistant-like "yes" after TTS -> no ticket consumption, no appointment. | M5 | Acceptance Criteria |
-| 29 | Acceptance Test: Accidental Spoken Yes | Test: Caller says "yes" before tapping review card -> no appointment; UI remains available. | M5 | Acceptance Criteria |
-| 30 | Acceptance Test: Confirmation Replay | Test: Confirmation request sent twice -> one transaction succeeds; exactly one booking exists. | M5 | Acceptance Criteria |
-| 31 | Acceptance Test: Phone Lookup Refusal | Test: Caller gives another person's phone number for lookup -> no appointment details disclosed. | M5 | Acceptance Criteria |
-| 32 | Acceptance Test: Ambiguous Time | Test: Caller says "tomorrow at three" -> clarify AM/PM; no recap ticket. | M5 | Acceptance Criteria |
-| 33 | Acceptance Test: Negated Service | Test: Caller says "not AC, heating" -> heating is candidate; AC never becomes verified. | M5 | Acceptance Criteria |
-| 34 | Acceptance Test: Forged History | Test: Browser posts fabricated assistant turn -> ignored; server turns used. | M5 | Acceptance Criteria |
-| 35 | Acceptance Test: Oversized History | Test: Oversized history payload -> rejected with HTTP 422 before reaching LLM. | M5 | Acceptance Criteria |
-| 36 | Acceptance Test: Mobile Interruption | Test: Phone locks or app briefly backgrounds -> call resumes; no premature end. | M5 | Acceptance Criteria |
-| 37 | Acceptance Test: Time Token Intact | Test: Time expressions ("10:30 AM") survive TTS chunking intact. | M5 | Acceptance Criteria |
-| 38 | Acceptance Test: Mobile Review Card | Test: Booking confirmation UI renders correctly and is tappable on mobile viewports. | M5 | Acceptance Criteria |
-| 39 | Acceptance Test: Durability Restart | Test: Confirmed booking created, production restarts -> call log and appointment remain available. | M5 | Acceptance Criteria |
+| 1 | R1.1 Backend Objection Apostrophe Fix | Fix `chat_api.py:258` apostrophe stripping so objection phrases like "I don't have a phone number" are preserved. | M1 | Survey Explorer 1 |
+| 2 | R1.2 Backend Temporal Tokenization Fix | Fix `chat_api.py:301` whitespace split so "o clock", digits, and time indicators are preserved. | M1 | Survey Explorer 1 |
+| 3 | R1.3 Frontend EchoGuard Objection Shield | Add caller objection phrase shield to `isAcousticEcho` in `speech-recognition.ts`. | M1 | Survey Explorer 1 |
+| 4 | R1.4 Frontend Spoken Digit Word Counter | Add spoken digit word counter (`SPOKEN_DIGIT_WORDS`) to `speech-recognition.ts` so words like "five five five..." are never dropped. | M1 | Survey Explorer 1 |
+| 5 | R1.5 Windows WASAPI Silence Decay & iOS Gating | Enforce `minFloorMs = 450ms`, `targetDb = -55 dBFS` on Windows and `minFloorMs = 250ms`, `targetDb = -50 dBFS` on iOS. | M1 | Survey Explorer 1 |
+| 6 | R1.6 Confirmation Lexicon in Echo Shields | Add "lock it in" and affirmative variants to `affirmative_phrases` and `GENUINE_CONFIRMATIONS`. | M1 | Survey Explorer 1 |
+| 7 | R3.1 Consultative Sales Prompt & Few-Shots | Update `agent/prompts.py` to remove anti-sales bans and establish a warm, consultative sales representative persona with few-shot dialogues. | M2 | Survey Explorer 3 |
+| 8 | R3.2 Backend Deterministic Dialogue Humanization | Humanize canned prompts in `chat_api.py` (replace "quick yes or no" with consultative closing, humanize missing slot questions). | M2 | Survey Explorer 3 |
+| 9 | R3.3 Backend Natural Spoken Slot & Hours Formatting | Update `scheduling.py` (`format_available_slot_for_speech`) and `intent.py` (`format_opening_hours_speech`) to format times as natural spoken prose. | M2 | Survey Explorer 3 |
+| 10 | R3.4 Kokoro TTS Acronym Pronunciation ("H-V-A-C") | Normalize "HVAC" to letter-by-letter "H-V-A-C" and expand domain acronyms in `text-normalization.ts`. | M2 | Survey Explorer 3 |
+| 11 | R3.5 Natural Spoken Times & Ordinal Dates | Format times ("six in the evening") and dates ("October twelfth") as natural spoken prose in `text-normalization.ts`. | M2 | Survey Explorer 3 |
+| 12 | R3.6 Echo Guard Utterance Token Synchronization | Register both raw and normalized spoken text in `speechRecRef` in `kokoro-call-session.tsx` to eliminate echo token desynchronization. | M2 | Survey Explorer 3 |
+| 13 | R2.1 100% Voice Autonomy ("Lock it in") | Expand `is_explicit_booking_confirmation` in `booking_policy.py` to accept "lock it in", "let's do it", and variants with zero screen interaction. | M3 | Survey Explorer 2 |
+| 14 | R2.2 Atomic Tool Validation & Ticket Ledger Sync | In Case A voice booking, execute `book_appointment_tool`, atomically mark `ConfirmationTicket` as consumed, and emit `event: tool_call`. | M3 | Survey Explorer 2 |
+| 15 | R2.3 Proactive Conflict & Off-Hours Slot Recovery | Proactively suggest nearest available slots when a requested slot is booked, outside hours, or on a closed day. | M3 | Survey Explorer 2 |
+| 16 | R2.4 Voice Reschedule & Cancellation Flow | Route reschedule and cancellation voice requests cleanly to `reschedule_appointment_tool` and `cancel_appointment_tool`. | M3 | Survey Explorer 2 |
+| 17 | R2.5 Verified Call Finalization | Verify database appointment commitment before finalizing call record with `outcome = "booked"`. | M3 | Survey Explorer 2 |
+| 18 | R4.1 Frontend Test Suite Integration | Integrate adversarial challenger suites into `run-tests.mjs`, verifying 171+ frontend tests pass via `npm test`. | M4 | Survey All |
+| 19 | R4.2 Backend Unit & Tone Test Suite | Add `test_tone_and_normalization.py` and scheduling unit tests verifying 100% backend test pass rate via `pytest`. | M4 | Survey All |
+| 20 | R4.3 Production Verification Release Gate | Enforce 0 ruff errors, 0 strict mypy errors, 0 AST architecture violations, clean `npm run build`, and 100% database isolation. | M4 | Survey All |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| 1 | Baseline Hygiene, Authority Freeze & R7 Durability | Features 1-7 (Excise speech booking, disable lookup, lock LiveKit, POST /stream endpoint, engine/dialect config, partial unique index, booking rate limit) | none | DONE |
-| 2 | Server-Owned Conversation Authority & Slot Separation | Features 8-14 (CallTurn schema & migration, server turn context, oversized payload rejection, candidate vs verified slots, strict validation, ambiguous time clarification, negation handling) | M1 | IN_PROGRESS |
-| 3 | Confirmation Ticket Architecture & Constrained Model Output | Features 15-20 (ConfirmationTicket schema & migration, ticket issuance on recap, atomic consumption endpoint, replay idempotency, dialogue intent constraints, server templates) | M2 | PLANNED |
-| 4 | Frontend Voice UI, Review Card Tap & Recoverable Loop | Features 21-27 (Review Card UI, Intentional confirm button, client history stripping, half-duplex TTS, spoken token protection, mobile lifecycle continuity, server utterance echo matching) | M3 | PLANNED |
-| 5 | E2E Acceptance Verification, Regression Gates & Release Audit | Features 28-39 (All 12 acceptance test suites across pytest and frontend, 100% pass on 257+ backend tests, 7 frontend suites, pyright 0 errors, ruff check, npm run build) | M4 | PLANNED |
+| 1 | Platform Audio Lifecycle & Acoustic Echo Isolation (R1) | Features 1-6 (Apostrophe fix, temporal split fix, objection shield, spoken digits shield, WASAPI/iOS decay parameters, confirmation echo shields) | none | IN_PROGRESS |
+| 2 | Conversational Humanization, Sales Tone & Pronunciation (R3) | Features 7-12 (Consultative sales prompt, few-shots, dialogue humanization, H-V-A-C pronunciation, spoken times/dates, EchoGuard sync) | M1 | PLANNED |
+| 3 | Voice Booking Lifecycle & Atomic Tool Validation (R2) | Features 13-17 (100% voice autonomy, ticket ledger sync, proactive conflict/off-hours recovery, voice reschedule/cancel, verified finalization) | M2 | PLANNED |
+| 4 | Automated Challenger Test Suite & Release Verification (R4) | Features 18-20 (Frontend 171+ tests, backend pytest, ruff, mypy, architecture check, production build, zero DB contamination) | M3 | PLANNED |
 
 ## Interface Contracts
-### 1. Confirmation Ticket SSE Event (`event: confirmation_ticket`)
+### 1. Booking Tool Execution SSE Frame (`event: tool_call`)
 ```json
 {
-  "ticket_id": "tkt_a1b2c3d4e5f6",
-  "service": "Heating Repair",
-  "phone": "5551234567",
-  "date": "2026-09-18",
-  "time": "02:00 PM",
-  "fingerprint": "9f8e7d6c5b4a",
-  "expires_in_seconds": 300
+  "name": "book_appointment_tool",
+  "arguments": {
+    "service": "AC Repair",
+    "phone": "5551234567",
+    "date": "2026-09-28",
+    "time": "10:00 AM"
+  },
+  "result": "Appointment booked successfully for tomorrow at 10:00 AM."
 }
 ```
 
-### 2. Confirm Booking Endpoint (`POST /v1/calls/confirm-booking` and alias `POST /v1/calls/confirm`)
-**Request**:
-```json
-{
-  "call_id": "call_123456",
-  "call_secret": "sec_789abc",
-  "ticket_id": "tkt_a1b2c3d4e5f6",
-  "fingerprint": "9f8e7d6c5b4a"
-}
-```
-**Response (Success)**:
-```json
-{
-  "status": "confirmed",
-  "booking_id": "apt_123",
-  "service": "Heating Repair",
-  "phone": "5551234567",
-  "date": "2026-09-18",
-  "time": "02:00 PM",
-  "confirmation_message": "Your heating repair is confirmed for tomorrow at 2:00 PM."
-}
-```
-**Response (Duplicate / Replay - Idempotent)**:
-```json
-{
-  "status": "already_confirmed",
-  "booking_id": "apt_123",
-  "service": "Heating Repair",
-  "phone": "5551234567",
-  "date": "2026-09-18",
-  "time": "02:00 PM",
-  "confirmation_message": "Your heating repair is confirmed for tomorrow at 2:00 PM."
-}
-```
-**Response (Expired or Invalid Ticket)**:
-HTTP 400 Bad Request: `{"detail": "Confirmation ticket expired or invalid. Please confirm your details to generate a new ticket."}`
+### 2. Spoken Text Normalization Contract (`normalizeSpokenText`)
+- Input: Raw text clause from LLM or template (e.g., `"Apex HVAC is open until 6:00 PM on October 12."`)
+- Output: Normalized spoken prose (e.g., `"Apex H-V-A-C is open until six in the evening on October twelfth."`)
+- Guarantee: Reversible token mapping; normalized string is simultaneously registered in `speechRecRef` for echo matching.
 
-### 3. Server-Owned Chat Endpoint (`POST /v1/calls/chat`)
-**Request**:
-```json
-{
-  "session_id": "sess_123",
-  "message": "I need help with my heater",
-  "call_id": "call_123456",
-  "call_secret": "sec_789abc",
-  "client_telemetry": { ... }
-}
-```
-*(Note: `history` field is deprecated and ignored by server).*
-
-### 4. Spoken Voice Stream (`POST /v1/voice/stream`)
-**Request**:
-```json
-{
-  "text": "Hello, I can help you book a service visit.",
-  "voice": "af_sarah"
-}
-```
-**Response**:
-`audio/mpeg` (or `audio/wav`), Header: `Cache-Control: private, no-store, must-revalidate`.
+### 3. Voice Booking Confirmation Policy (`is_explicit_booking_confirmation`)
+- Affirmative set includes: `"yes"`, `"yeah"`, `"yep"`, `"go ahead"`, `"please book it"`, `"sure"`, `"sounds good"`, `"lock it in"`, `"lock that in"`, `"lock it in please"`, `"let's do it"`, `"lets do it"`, `"schedule it"`, `"go for it"`.
+- Strict rejection: Negations (`no`, `not`, `cancel`, `wait`), date/time indicators (`tomorrow`, `monday`, `at 10`), and raw digits.
 
 ## Code Layout
-- Backend: `c:\Users\TL\Documents\Codex\2026-08-27\referenced-chatgpt-conversation-this-is-an\backend`
-  - `app/config.py`: Database URL normalization, production validation, proxy settings.
-  - `app/db.py`: ORM models (`Customer`, `CallRecord`, `Appointment`, `CallTurn`, `ConfirmationTicket`), `get_engine()`, `init_db()`.
-  - `app/security.py`: IP extraction, rate limiters (`check_token_rate_limit`, `check_chat_rate_limit`, `check_booking_rate_limit`).
-  - `app/chat_api.py`: Chat endpoints, candidate/verified slots, recap ticket issuance, confirm-booking route, dialogue intents.
-  - `app/tts_stream.py`: GET/POST `/v1/voice/stream` with private cache headers.
-  - `app/scheduling.py`: Scheduling engine, slot validation, appointment creation.
-  - `tests/`: 257+ pytest tests with runtime DB isolation.
-- Frontend: `c:\Users\TL\Documents\Codex\2026-08-27\frontend`
-  - `src/components/ui/kokoro-call-session.tsx`: Call session, Review Card UI, Confirm Booking button, half-duplex audio, mobile grace period.
-  - `src/lib/speech-recognition.ts`: Speech recognition, track muting during TTS, acoustic cooldown.
-  - `src/lib/neural-audio-player.ts`: Web Audio player, touch unlock, turn state callback.
-  - `src/lib/text-normalization.ts`: Spoken token protection, clause splitting.
-  - `src/lib/run-tests.mjs`: Test runner executing 7 test suites.
+- Backend: `referenced-chatgpt-conversation-this-is-an/backend`
+  - `app/agent/prompts.py`: Consultative sales persona guidelines and few-shot dialogues.
+  - `app/agent/tools.py`: Tool definitions for scheduling and calendar operations.
+  - `app/chat_api.py`: Voice chat endpoint, echo rejection shields, Case A tool execution, Case B slot handling.
+  - `app/chat/booking_policy.py`: Explicit booking confirmation phrases, confirmation text templates.
+  - `app/chat/intent.py`: Dialogue intent classification, opening hours speech formatting.
+  - `app/scheduling.py`: Booking transactions, `find_nearest_available_slots`, `format_available_slot_for_speech`.
+  - `app/call_tracking.py`: Verified call finalization in `end_browser_call`.
+  - `tests/`: Isolated pytest test suites.
+- Frontend: `frontend`
+  - `src/lib/speech-recognition.ts`: Platform detection, half-duplex gating, EchoGuard shields, decay thresholds.
+  - `src/lib/neural-audio-player.ts`: Web Audio unlock, WASAPI latency calibration, AnalyserNode silence decay.
+  - `src/lib/text-normalization.ts`: Pronunciation normalization (H-V-A-C, numbers, dates, times).
+  - `src/components/ui/kokoro-call-session.tsx`: Call session management, SSE event dispatch, EchoGuard dual registration.
+  - `src/lib/run-tests.mjs`: Test runner executing all frontend test suites.

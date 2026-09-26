@@ -532,37 +532,37 @@ const matrixTestCases = [
   {
     name: "4.1 Android Mobile (Chrome on Samsung S24)",
     ua: "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.88 Mobile Safari/537.36",
-    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
+    expected: { minFloorMs: 500, targetDb: -55, maxTimeoutMs: 750 },
   },
   {
     name: "4.2 Android Mobile (Samsung Internet Browser)",
     ua: "Mozilla/5.0 (Linux; Android 13; SAMSUNG SM-A536B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/23.0 Chrome/115.0.0.0 Mobile Safari/537.36",
-    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
+    expected: { minFloorMs: 500, targetDb: -55, maxTimeoutMs: 750 },
   },
   {
     name: "4.3 Android Mobile (Pixel 8 Pro Chrome)",
     ua: "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
+    expected: { minFloorMs: 500, targetDb: -55, maxTimeoutMs: 750 },
   },
   {
     name: "4.4 Android Tablet (Linux Android UA)",
     ua: "Mozilla/5.0 (Linux; Android 14; SM-X910) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
+    expected: { minFloorMs: 500, targetDb: -55, maxTimeoutMs: 750 },
   },
   {
     name: "4.5 Windows Desktop (Windows 11 Chrome x64)",
     ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
+    expected: { minFloorMs: 450, targetDb: -55, maxTimeoutMs: 700 },
   },
   {
     name: "4.6 Windows Desktop (Windows 11 Edge x64)",
     ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0",
-    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
+    expected: { minFloorMs: 450, targetDb: -55, maxTimeoutMs: 700 },
   },
   {
     name: "4.7 Windows Desktop (Firefox x64)",
     ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
-    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
+    expected: { minFloorMs: 450, targetDb: -55, maxTimeoutMs: 700 },
   },
   {
     name: "4.8 iOS Mobile (iPhone 15 Pro Safari)",
@@ -587,7 +587,7 @@ const matrixTestCases = [
   {
     name: "4.12 Desktop Fallback (Linux x86_64 Chrome)",
     ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    expected: { minFloorMs: 250, targetDb: -55, maxTimeoutMs: 600 },
+    expected: { minFloorMs: 450, targetDb: -55, maxTimeoutMs: 700 },
   },
 ];
 
@@ -606,6 +606,59 @@ for (const tc of matrixTestCases) {
     assert.equal(config.maxTimeoutMs, tc.expected.maxTimeoutMs, `${tc.name} maxTimeoutMs mismatch`);
   });
 }
+
+// ============================================================================
+// CHALLENGE 5: R1 Audio Lifecycle & Acoustic Echo Isolation Shields
+// ============================================================================
+console.log("\n--- 5. R1 Acoustic Echo Isolation Shields & Zero False Drops ---");
+
+runTest("5.1 Spoken digit words are preserved and never classified as echo", () => {
+  const speech = new BrowserSpeechRecognition();
+  speech.registerAssistantSpeech("What is the best callback phone number for our technician to reach you?");
+  const isEcho = (text: string) => (speech as any).isAcousticEcho(text);
+
+  assert.equal(isEcho("five five five one two three four"), false, "Spoken digit words are not echo");
+  assert.equal(isEcho("my number is five five five zero one nine nine"), false, "Spoken digits with prefix are not echo");
+  assert.equal(isEcho("one eight zero zero five five five zero one two three"), false, "Toll-free spoken digits are not echo");
+});
+
+runTest("5.2 Caller objections are preserved and never classified as echo", () => {
+  const speech = new BrowserSpeechRecognition();
+  speech.registerAssistantSpeech("What is the best callback phone number for our technician to reach you?");
+  const isEcho = (text: string) => (speech as any).isAcousticEcho(text);
+
+  assert.equal(isEcho("i don't have a phone number"), false, "Objection 'i don't have a phone number' is not echo");
+  assert.equal(isEcho("no phone number"), false, "Objection 'no phone number' is not echo");
+  assert.equal(isEcho("dont have a phone number"), false, "Objection 'dont have a phone number' is not echo");
+  assert.equal(isEcho("i don't have a phone"), false, "Objection 'i don't have a phone' is not echo");
+  assert.equal(isEcho("why do you need my number"), false, "Inquiry 'why do you need my number' is not echo");
+  assert.equal(isEcho("no number"), false, "Objection 'no number' is not echo");
+  assert.equal(isEcho("no phone"), false, "Objection 'no phone' is not echo");
+});
+
+runTest("5.3 Genuine affirmations including 'lock it in' are preserved", () => {
+  const speech = new BrowserSpeechRecognition();
+  speech.registerAssistantSpeech("I have you down for AC repair tomorrow at 10 AM. Would you like me to book it?");
+  const isEcho = (text: string) => (speech as any).isAcousticEcho(text);
+
+  assert.equal(isEcho("lock it in"), false, "Affirmation 'lock it in' is not echo");
+  assert.equal(isEcho("lock that in"), false, "Affirmation 'lock that in' is not echo");
+  assert.equal(isEcho("lock it in please"), false, "Affirmation 'lock it in please' is not echo");
+  assert.equal(isEcho("sounds great"), false, "Affirmation 'sounds great' is not echo");
+  assert.equal(isEcho("that sounds good"), false, "Affirmation 'that sounds good' is not echo");
+  assert.equal(isEcho("that works for me"), false, "Affirmation 'that works for me' is not echo");
+  assert.equal(isEcho("yes thank you"), false, "Affirmation 'yes thank you' is not echo");
+});
+
+runTest("5.4 True assistant signature echo is still properly suppressed", () => {
+  const speech = new BrowserSpeechRecognition();
+  speech.registerAssistantSpeech("Thank you for calling Apex Air. What is the best callback phone number for our technician to reach you?");
+  const isEcho = (text: string) => (speech as any).isAcousticEcho(text);
+
+  assert.equal(isEcho("thank you for calling"), true, "Signature assistant phrase is suppressed");
+  assert.equal(isEcho("what is the best callback phone number"), true, "Assistant prompt phrase is suppressed");
+  assert.equal(isEcho("our technician will see you then"), true, "Assistant confirmation phrase is suppressed");
+});
 
 console.log("\n================================================================================");
 console.log(`ALL ADVERSARIAL STRESS CHALLENGES PASSED: ${passedTests} / ${totalTests} (100%)`);

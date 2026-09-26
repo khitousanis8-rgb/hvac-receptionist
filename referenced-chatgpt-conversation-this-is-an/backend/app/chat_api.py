@@ -250,16 +250,22 @@ def _is_echo_of_assistant(
         "yes thank you", "yes thanks", "that works", "that works for me",
         "that sounds good", "that sounds great", "please do", "confirm",
         "confirmed", "absolutely", "definitely", "correct",
+        "lock it in", "lock that in", "lock it in please",
     }
     if clean_msg in affirmative_phrases:
         return False
 
     # Shield 2B: Caller Objections and Inquiries (never echo)
     objection_phrases = {
-        "i have no number", "no number", "no phone", "don't have a number",
-        "do not have a number", "why do you need my number", "why do you need that",
-        "why do you ask", "why are you asking", "i don't have a phone",
-        "don't have a phone",
+        "i have no number", "have no number", "no number", "no phone", "no phone number",
+        "don t have a number", "dont have a number", "do not have a number",
+        "i don t have a number", "i dont have a number",
+        "don t have a phone number", "dont have a phone number",
+        "i don t have a phone number", "i dont have a phone number",
+        "why do you need my number", "why do you need that",
+        "why do you ask", "why are you asking",
+        "i don t have a phone", "i dont have a phone",
+        "don t have a phone", "dont have a phone", "do not have a phone",
     }
     if any(phrase in clean_msg for phrase in objection_phrases):
         return False
@@ -301,9 +307,13 @@ def _is_echo_of_assistant(
     temporal_expressions = {
         "today", "tomorrow", "yesterday", "monday", "tuesday", "wednesday",
         "thursday", "friday", "saturday", "sunday", "morning", "afternoon",
-        "evening", "am", "pm", "noon", "o clock", "oclock", "asap", "earliest",
+        "evening", "am", "pm", "noon", "oclock", "clock", "asap", "earliest",
     }
-    has_temporal_expr = any(te in clean_msg.split() for te in temporal_expressions)
+    has_temporal_expr = (
+        any(te in clean_msg.split() for te in temporal_expressions)
+        or "o clock" in clean_msg
+        or bool(re.search(r"\b\d+\b", clean_msg))
+    )
     if len(msg_tokens) <= 5 and has_temporal_expr and not has_scaffolding:
         return False
 
@@ -1022,6 +1032,19 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                                 record_call_turn, active_call_id, "assistant", spoken_confirm
                             )
                             await asyncio.to_thread(update_call_outcome, active_call_id, "booked")
+                            active_ticket_id = slots.get("active_ticket_id")
+                            if active_ticket_id:
+                                def _consume_active_ticket() -> None:
+                                    with new_session() as s:
+                                        t = get_confirmation_ticket(s, str(active_ticket_id))
+                                        if t and t.status == "pending":
+                                            t.status = "consumed"
+                                            t.consumed_at = datetime.now(UTC)
+                                            t.appointment_id = appointment.id
+                                            s.flush()
+
+                                await asyncio.to_thread(_consume_active_ticket)
+
                             await asyncio.to_thread(
                                 update_call_slots,
                                 active_call_id,
@@ -1032,6 +1055,20 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                                     "active_ticket_id": None,
                                 },
                             )
+
+                            tool_call_payload = {
+                                "name": "book_appointment_tool",
+                                "arguments": {
+                                    "service": appointment.service,
+                                    "phone_number": phone_val,
+                                    "date": appt_local.strftime("%Y-%m-%d"),
+                                    "time": local_time,
+                                    "name": name_val,
+                                    "notes": notes_val,
+                                },
+                                "result": book_msg,
+                            }
+                            tool_call_json = json.dumps(tool_call_payload)
 
                             booked_payload = {
                                 "appointment_id": appointment.id,
@@ -1050,6 +1087,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                             done_json = json.dumps(done_payload)
 
                             async def booked_gen() -> AsyncIterator[str]:
+                                yield f"event: tool_call\ndata: {tool_call_json}\n\n"
                                 yield f"event: delta\ndata: {delta_json}\n\n"
                                 yield f"event: appointment_booked\ndata: {booked_json}\n\n"
                                 yield f"event: done\ndata: {done_json}\n\n"
@@ -1225,8 +1263,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
             if not _is_general_question(req.message):
                 clarif_msg = (
-                    "I just need a quick yes or no. Would you like me to go ahead "
-                    "and book that appointment for you?"
+                    "Shall I go ahead and lock that appointment in for you?"
                 )
                 await asyncio.to_thread(record_call_turn, active_call_id, "assistant", clarif_msg)
 
@@ -1483,11 +1520,12 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             )
         elif next_field == "date":
             q_text = (
-                "What day works best for your appointment?"
+                "I'd be glad to arrange that for you! "
+                "What day works best for our technician to stop by?"
             )
         else:
             q_text = (
-                "What time would you prefer?"
+                "Sounds great! What time of day would you prefer—morning or afternoon?"
             )
 
         await asyncio.to_thread(

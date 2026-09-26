@@ -26,6 +26,7 @@ const suites = [
   { name: "Audio Turn Ownership", path: "audio-turn-ownership.test.mjs", stripTypes: true },
   { name: "Audio Context Unlock & Stress", path: "stress-audio-challenger.mjs", stripTypes: false },
   { name: "Speech Recognition Challenge", path: "speech-recognition.challenge.test.ts", stripTypes: true },
+  { name: "Empirical Audio & Stream Stress", path: "../__tests__/empirical-frontend-audio-stress.test.ts", stripTypes: true },
 ];
 
 for (const suite of suites) {
