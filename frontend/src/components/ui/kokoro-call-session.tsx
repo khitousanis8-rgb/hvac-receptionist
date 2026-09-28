@@ -1131,7 +1131,7 @@ export function KokoroCallSession({
 
             <div className="space-y-0.5">
               <div className="text-[13px] font-semibold text-[#0a0a0a]">
-                {companyName ? `${companyName} Assistant` : "HVAC Voice Assistant"}
+                {companyName ? `${companyName} Assistant` : "Blueridge Voice Assistant"}
               </div>
               <div className="text-[11px] text-[#71717a]">
                 Jenny Neural Voice · Direct Calendar Booking

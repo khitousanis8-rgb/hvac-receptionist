@@ -1490,7 +1490,7 @@ function Logo({
   onNavigate: () => void;
   companyName?: string;
 }) {
-  const displayName = companyName || "HVAC Receptionist";
+  const displayName = companyName || "Blueridge Comfort Systems";
   const initials = getInitials(companyName);
   return (
     <a

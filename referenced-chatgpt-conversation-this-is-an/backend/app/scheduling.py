@@ -24,6 +24,8 @@ def _parse_hhmm(value: str) -> dt_time:
 
 def is_within_business_hours(when: datetime, settings: Settings) -> bool:
     """Check a timezone-aware datetime against the configured opening hours."""
+    if not settings.business_opening_hours:
+        return True
     local = when.astimezone(ZoneInfo(settings.business_timezone))
     day_name = local.strftime("%A").lower()
     window = settings.business_opening_hours.get(day_name, "closed")
@@ -127,15 +129,38 @@ def book_appointment(
     """Book a single slot atomically, enforcing business hours and uniqueness."""
     if settings.business_services:
         if isinstance(settings.business_services, str):
-            approved_services = [s.strip().lower() for s in settings.business_services.split(",")]
+            approved_services = [s.strip() for s in settings.business_services.split(",")]
         else:
-            approved_services = [s.strip().lower() for s in settings.business_services]
-        if service.strip().lower() not in approved_services:
+            approved_services = [s.strip() for s in settings.business_services]
+        normalized_requested = service.strip().lower()
+        matched_service: str | None = None
+        for approved in approved_services:
+            clean_app = approved.lower()
+            if (
+                normalized_requested == clean_app
+                or normalized_requested in clean_app
+                or clean_app in normalized_requested
+            ):
+                matched_service = approved
+                break
+        if not matched_service:
+            stop_words = {
+                "and", "&", "or", "the", "a", "an", "for", "in", "of", "services", "service"
+            }
+            req_words = {w for w in normalized_requested.split() if w not in stop_words}
+            for approved in approved_services:
+                clean_app = approved.lower()
+                app_words = {w for w in clean_app.split() if w not in stop_words}
+                if req_words and req_words.issubset(app_words):
+                    matched_service = approved
+                    break
+        if not matched_service:
             services_str = ", ".join(approved_services)
             return (
                 None,
                 f"'{service}' is not on our approved services list ({services_str}).",
             )
+        service = matched_service
     if when.tzinfo is None:
         when = when.replace(tzinfo=UTC)
     if when < datetime.now(UTC):

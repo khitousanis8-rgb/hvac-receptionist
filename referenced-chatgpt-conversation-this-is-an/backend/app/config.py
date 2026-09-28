@@ -47,13 +47,23 @@ class Settings(BaseSettings):
     admin_api_key: SecretStr | None = None
     trusted_proxies: str = ""
 
-    business_company_name: Annotated[str, Field(min_length=1)] = "Example HVAC"
-    business_phone: Annotated[str, Field(min_length=1)] = "+15555550100"
-    business_address: Annotated[str, Field(min_length=1)] = "123 Example Street"
+    business_company_name: Annotated[str, Field(min_length=1)] = "Blueridge Comfort Systems"
+    business_phone: Annotated[str, Field(min_length=1)] = "+15553278400"
+    business_address: Annotated[str, Field(min_length=1)] = (
+        "247 Ridgeway Boulevard, Suite 110, King of Prussia, PA 19406"
+    )
     business_timezone: Annotated[str, Field(min_length=1)] = "America/New_York"
-    business_emergency_phone: Annotated[str, Field(min_length=1)] = "+15555550199"
+    business_emergency_phone: Annotated[str, Field(min_length=1)] = "+15553278411"
     business_opening_hours: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
-    business_services: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    business_services: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "AC repair",
+            "Heating repair",
+            "Furnace repair",
+            "Commercial HVAC",
+            "Emergency service",
+        ]
+    )
 
     livekit_url: str | None = None
     livekit_api_key: SecretStr | None = None

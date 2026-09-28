@@ -65,6 +65,8 @@ def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
         "thanks for calling",
         "example hvac",
         "apex hvac",
+        "blueridge comfort",
+        "blueridge comfort systems",
         "my name is sarah",
         "this is sarah",
         "how can i help with your heating or cooling today",

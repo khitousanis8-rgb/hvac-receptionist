@@ -632,6 +632,7 @@ def test_speech_affirmations_during_recap_never_book_and_never_call_tools() -> N
     settings = Settings(
         BUSINESS_COMPANY_NAME="Apex Climate Control",
         BUSINESS_SERVICES="AC repair,Furnace tuneup",
+        require_screen_tap_confirmation=True,
         _env_file=None,
     )
     app = create_app(settings)

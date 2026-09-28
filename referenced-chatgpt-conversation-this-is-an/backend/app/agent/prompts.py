@@ -38,7 +38,7 @@ VERIFIED CALLER MEMORY:
                 if d in hours
             )
     else:
-        hours_summary = "Monday-Friday: 08:00-18:00, Saturday: 08:00-18:00, Sunday: Closed"
+        hours_summary = "Monday-Friday: 07:00-17:00, Weekends: Closed"
 
     return f"""
 You are Sarah, the voice receptionist and customer specialist for {settings.business_company_name}.

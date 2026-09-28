@@ -117,7 +117,7 @@ export const MobileSidebar = ({
       >
         <div className="flex items-center gap-2">
           <span className="font-semibold text-[13px] tracking-tight text-[#0a0a0a]">
-            HVAC Receptionist
+            Blueridge Comfort Systems
           </span>
         </div>
         <button

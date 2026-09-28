@@ -602,13 +602,13 @@ BOOKING_TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "phone_number": {
                         "type": "string",
-                        "description": "The caller's callback phone number, e.g. +15555550100",
+                        "description": "The caller's callback phone number, e.g. +15553278400",
                     },
                     "service": {
                         "type": "string",
                         "description": (
-                            "The requested HVAC service (e.g. AC repair, Heating repair, "
-                            "HVAC tune-up)"
+                            "The requested HVAC service (e.g. AC repair and installation, "
+                            "Heating and furnace repair, Commercial HVAC, Emergency service)"
                         ),
                     },
                     "date": {
@@ -980,10 +980,15 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                         if d_val and t_val
                         else None
                     )
+                    default_svc = (
+                        settings.business_services[0]
+                        if settings.business_services
+                        else "General service"
+                    )
                     service_val = str(
                         slots.get("service")
                         or (slots.get("verified") or {}).get("service")
-                        or "HVAC Service"
+                        or default_svc
                     )
                     phone_val = str(
                         slots.get("phone")
@@ -992,6 +997,20 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     )
                     name_val = str(slots.get("name") or "") or None
                     notes_val = str(slots.get("notes") or "") or None
+
+                    # Fuzzy-match the service against approved list (same
+                    # logic as _execute_tool / book_appointment_tool).
+                    if settings.business_services:
+                        norm_svc = service_val.strip().lower()
+                        for approved in settings.business_services:
+                            clean_app = approved.strip().lower()
+                            if (
+                                norm_svc == clean_app
+                                or norm_svc in clean_app
+                                or clean_app in norm_svc
+                            ):
+                                service_val = approved.strip()
+                                break
 
                     if parsed_dt is not None:
                         booking_dt: datetime = parsed_dt
@@ -1174,10 +1193,15 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     )
                     if parsed_dt is not None:
                         target_dt = parsed_dt
+                        default_svc = (
+                            settings.business_services[0]
+                            if settings.business_services
+                            else "General service"
+                        )
                         verified_service = str(
                             slots.get("service")
                             or (slots.get("verified") or {}).get("service")
-                            or "HVAC Service"
+                            or default_svc
                         )
                         verified_phone = str(
                             slots.get("phone")
@@ -1349,7 +1373,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         if settings.business_opening_hours and not is_within_business_hours(parsed_dt, settings):
             day_name = parsed_dt.strftime("%A").lower()
             day_window = settings.business_opening_hours.get(day_name, "closed")
-            if day_window == "closed" or not day_window:
+            if not day_window or day_window.lower() == "closed":
                 msg = (
                     f"We are closed on {day_name.title()}. "
                     f"What other day would work best for your appointment?"
@@ -1436,7 +1460,11 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         verified_service = str(
             slots.get("service")
             or (slots.get("verified") or {}).get("service")
-            or "HVAC Service"
+            or (
+                settings.business_services[0]
+                if settings.business_services
+                else "General service"
+            )
         )
         verified_phone = str(
             slots.get("phone")
