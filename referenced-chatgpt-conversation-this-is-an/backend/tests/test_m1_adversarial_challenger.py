@@ -240,10 +240,10 @@ def test_partial_unique_index_timezone_equivalent_timestamps_collide(db) -> None
         BUSINESS_SERVICES="furnace tune-up,ac repair",
         _env_file=None,
     )
-    # 2:00 PM EDT (UTC-4) on Friday Oct 2, 2026 is 18:00:00 UTC
+    # 2:00 PM EDT (UTC-4) on Friday Oct 1, 2027 is 18:00:00 UTC
     ny_tz = ZoneInfo("America/New_York")
-    time_ny = datetime(2026, 10, 2, 14, 0, tzinfo=ny_tz)
-    time_utc = datetime(2026, 10, 2, 18, 0, tzinfo=UTC)
+    time_ny = datetime(2027, 10, 1, 14, 0, tzinfo=ny_tz)
+    time_utc = datetime(2027, 10, 1, 18, 0, tzinfo=UTC)
 
     with new_session() as session:
         appt1, _ = book_appointment(

@@ -20,6 +20,7 @@ __all__ = [
     "_is_assistant_echo",
     "_is_booking_flow_active",
     "_is_closing_or_polite_remark",
+    "_is_farewell",
     "_is_general_question",
     "_is_hours_query",
     "_is_lookup_query",
@@ -293,3 +294,188 @@ def _is_closing_or_polite_remark(text: str) -> bool:
     ):
         return True
     return False
+
+
+# Unambiguous terminal sign-offs that may end a call.
+#
+# Deliberately NARROWER than `_is_closing_or_polite_remark`: bare "no", "thanks",
+# "okay" and mid-conversation filler are conversational acknowledgements, not
+# farewells, and must never terminate a call. Only explicit goodbyes and clear
+# closures appear here.
+_FAREWELL_PHRASES = frozenset(
+    {
+        "bye",
+        "bye bye",
+        "byebye",
+        "bye now",
+        "goodbye",
+        "good bye",
+        "goodnight",
+        "good night",
+        "see ya",
+        "see you",
+        "see you later",
+        "see you then",
+        "talk to you later",
+        "talk soon",
+        "speak soon",
+        "have a good day",
+        "have a great day",
+        "have a good one",
+        "have a great one",
+        "take care",
+        "take care now",
+        "thanks bye",
+        "thank you bye",
+        "ok bye",
+        "okay bye",
+        "alright bye",
+        "thats all",
+        "that is all",
+        "thats it",
+        "that is it",
+        "nothing else",
+        "no thats all",
+        "no that is all",
+        "no thats it",
+        "no that is it",
+        "im good",
+        "i am good",
+        "we re good",
+        "were good",
+        "we are good",
+        "im all set",
+        "i am all set",
+        "we re all set",
+        "were all set",
+        "we are all set",
+    }
+)
+
+# Bare acknowledgements and negations: conversational, never terminal.
+# Without this guard a lone "no" would be stripped to nothing and mistaken
+# for a sign-off.
+_NON_FAREWELL_UTTERANCES = frozenset(
+    {
+        "no",
+        "nope",
+        "yes",
+        "yeah",
+        "yep",
+        "ok",
+        "okay",
+        "alright",
+        "sure",
+        "correct",
+        "right",
+        "got it",
+        "thanks",
+        "thank you",
+        "please",
+    }
+)
+
+# Low-information words removed before deciding whether anything substantive
+# is left in the utterance.
+_FAREWELL_FILLER = frozenset(
+    {
+        "ok",
+        "okay",
+        "alright",
+        "well",
+        "so",
+        "and",
+        "then",
+        "yes",
+        "yeah",
+        "yep",
+        "please",
+        "now",
+        "thank",
+        "thanks",
+        "you",
+        "your",
+        "yours",
+        "im",
+        "i",
+        "am",
+        "we",
+        "re",
+        "are",
+        "is",
+        "the",
+        "a",
+        "an",
+        "for",
+        "to",
+        "of",
+        "all",
+        "set",
+        "good",
+        "great",
+        "too",
+    }
+)
+
+# If any of these appear, the caller is still mid-thought: never end the call.
+_FAREWELL_BLOCKERS = (
+    "wait",
+    "hold on",
+    "hang on",
+    "one more",
+    "one sec",
+    "actually",
+    "not yet",
+    "dont hang",
+    "don t hang",
+    "before you go",
+    "quick question",
+    "i have a question",
+    "another thing",
+)
+
+
+def _is_farewell(text: str) -> bool:
+    """Detect an unambiguous terminal sign-off that should end the call.
+
+    Returns True only when the utterance is a goodbye ("bye", "talk to you
+    later", "take care") or a clear closure ("that's all", "nothing else",
+    "we're good") with no substantive content left over.
+
+    This is deliberately narrower than `_is_closing_or_polite_remark`, which
+    also treats bare "no"/"thanks" as closings. Conservative by design: failing
+    to end a call is far safer than hanging up on a caller mid-thought, so
+    questions, hold-on markers ("wait", "one more thing", "before you go"), and
+    utterances that add a new request ("bye, I also need a tune up") never match.
+    """
+    if "?" in text:
+        return False
+    cleaned = "".join(c for c in text.lower() if c.isalnum() or c.isspace())
+    cleaned = " ".join(cleaned.split())
+    if not cleaned:
+        return False
+    if cleaned in _NON_FAREWELL_UTTERANCES:
+        return False
+
+    for blocker in _FAREWELL_BLOCKERS:
+        if blocker in cleaned:
+            return False
+
+    # Remove every farewell phrase, longest first, then inspect what remains.
+    matched_farewell = False
+    stripped = f" {cleaned} "
+    for phrase in sorted(_FAREWELL_PHRASES, key=len, reverse=True):
+        target = f" {phrase} "
+        if target in stripped:
+            matched_farewell = True
+            stripped = stripped.replace(target, " ")
+    if not matched_farewell:
+        return False
+    stripped = " ".join(stripped.split())
+
+    remaining = [
+        word
+        for word in stripped.split()
+        if len(word) > 2 and word not in _FAREWELL_FILLER
+    ]
+    return not remaining

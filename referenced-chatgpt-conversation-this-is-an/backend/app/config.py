@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     # "database" (durable sliding windows backed by the rate_limit_events table).
     rate_limit_backend: Annotated[str, Field(pattern="^(memory|database)$")] = "memory"
     require_screen_tap_confirmation: bool = False
+    # When True, an explicit caller farewell ("bye", "that's all", "we're good")
+    # ends the call instead of repeating the booking recap. Set to False to keep
+    # every call open until the caller hangs up.
+    auto_end_call_after_booking: bool = True
 
     @field_validator("database_url", mode="after")
     @classmethod

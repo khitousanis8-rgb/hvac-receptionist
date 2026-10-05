@@ -42,6 +42,7 @@ from app.chat.intent import (
     _is_assistant_echo,
     _is_booking_flow_active,
     _is_closing_or_polite_remark,
+    _is_farewell,
     _is_general_question,
     _is_hours_query,
     _is_lookup_query,
@@ -802,6 +803,67 @@ async def _create_stream_completion(
         raise last_error
 
 
+FAREWELL_SIGNOFF = "Take care, goodbye!"
+
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+async def _silent_end_generator_response() -> StreamingResponse:
+    """No-op response for turns arriving after the assistant already signed off."""
+
+    async def quiet_generator() -> AsyncIterator[str]:
+        yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
+
+    return StreamingResponse(
+        quiet_generator(), media_type="text/event-stream", headers=_SSE_HEADERS
+    )
+
+
+async def _farewell_response(
+    active_call_id: int, message: str, outcome: str
+) -> StreamingResponse:
+    """Speak a short sign-off, then tell the client to end the call.
+
+    Emits `event: call_ended` so the browser finishes the spoken line and settles
+    into a persistent "Call ended" state instead of tearing down mid-sentence.
+    """
+    await asyncio.to_thread(record_call_turn, active_call_id, "assistant", message)
+    await asyncio.to_thread(
+        update_call_slots,
+        active_call_id,
+        {"ended_by": "assistant", "call_ended": True},
+    )
+    ended = json.dumps({"reason": "assistant_farewell", "outcome": outcome})
+    delta = json.dumps({"text": message})
+    done = json.dumps({"outcome": outcome})
+
+    async def gen() -> AsyncIterator[str]:
+        yield f"event: delta\ndata: {delta}\n\n"
+        yield f"event: call_ended\ndata: {ended}\n\n"
+        yield f"event: done\ndata: {done}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+def _should_end_call(settings: Settings, slots: dict[str, Any], message: str) -> bool:
+    """Decide whether this turn should end the call with a sign-off.
+
+    Carve-outs are checked before the goodbye test so a caller is never hung up
+    on mid-thought, mid-question, or mid-emergency.
+    """
+    if not settings.auto_end_call_after_booking:
+        return False
+    if slots.get("call_ended"):
+        return False
+    if _is_safety_emergency(message):
+        return False
+    if _is_general_question(message):
+        return False
+    if _is_booking_flow_active(slots, message) and not slots.get("confirmed"):
+        return False
+    return _is_farewell(message)
+
+
 @router.post("/chat")
 async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     """Stream assistant response tokens via Server-Sent Events (SSE) with tool execution."""
@@ -916,8 +978,21 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         if phone := new_slots.get("phone"):
             await asyncio.to_thread(update_call_phone, active_call_id, str(phone))
 
-    # 2. Idempotent check for calls already successfully booked
+    # 2. Turns arriving after the assistant signed off are swallowed silently.
+    if slots.get("call_ended"):
+        return await _silent_end_generator_response()
+
+    # 3. Idempotent check for calls already successfully booked
     if slots.get("confirmed"):
+        # An explicit farewell ends the call; anything else uses the recap below.
+        if _should_end_call(settings, slots, req.message):
+            return await _farewell_response(active_call_id, FAREWELL_SIGNOFF, "booked")
+
+        if slots.get("confirmed_recap_spoken"):
+            # Recap already delivered once: never loop it back at a caller who is
+            # trying to wrap up. Stay silent instead.
+            return await _silent_end_generator_response()
+
         if (
             _is_closing_or_polite_remark(req.message)
             or is_explicit_booking_confirmation(req.message)
@@ -927,6 +1002,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 "Our technician will see you then. Thanks for calling and have a great day!"
             )
             await asyncio.to_thread(record_call_turn, active_call_id, "assistant", msg)
+            await asyncio.to_thread(
+                update_call_slots, active_call_id, {"confirmed_recap_spoken": True}
+            )
 
             async def already_confirmed_generator() -> AsyncIterator[str]:
                 yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
@@ -938,7 +1016,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
-    # 3. Deterministic Booking State Machine Routing
+    # 4. Farewell on non-booking calls (hours / general enquiries) too.
+    if _should_end_call(settings, slots, req.message):
+        return await _farewell_response(active_call_id, FAREWELL_SIGNOFF, "info_only")
+
     has_active_recap = bool(
         slots.get("confirmation_requested") and slots.get("confirmation_fingerprint")
     )

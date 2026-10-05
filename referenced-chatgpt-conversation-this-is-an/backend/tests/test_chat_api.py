@@ -2094,6 +2094,116 @@ def test_r1_echo_isolation_preserves_objections_times_and_confirmations() -> Non
     assert _is_echo_of_assistant("lock it in", call_id=call_id) is False
 
 
+def test_is_farewell_classification() -> None:
+    """Verify _is_farewell accurately identifies true sign-offs and ignores non-farewells."""
+    from app.chat.intent import _is_farewell
+
+    # Explicit farewells should return True
+    farewells = [
+        "bye",
+        "goodbye",
+        "bye bye",
+        "see you later",
+        "take care",
+        "thanks bye",
+        "thank you bye",
+        "have a great day",
+        "that's all",
+        "nothing else",
+        "we're good",
+        "I'm all set",
+        "alright, take care now",
+    ]
+    for phrase in farewells:
+        assert _is_farewell(phrase) is True, f"Expected farewell for: {phrase}"
+
+    # Non-farewells, affirmations, and filler must return False
+    non_farewells = [
+        "yes",
+        "yes please",
+        "no",
+        "okay",
+        "sure",
+        "thank you",
+        "thanks so much",
+        "sounds great",
+        "tomorrow at 10 AM",
+        "I need AC repair",
+        "do you have appointments?",
+        "wait, before you go",
+        "hold on one second",
+        "one more quick question",
+        "bye, but can you also check my heating?",
+    ]
+    for phrase in non_farewells:
+        assert _is_farewell(phrase) is False, f"Did not expect farewell for: {phrase}"
+
+
+def test_auto_end_call_on_farewell_after_booking() -> None:
+    """Verify that an explicit farewell on a confirmed call ends the session gracefully."""
+    from uuid import uuid4
+
+    from app.call_tracking import get_call_slots, update_call_slots
+
+    settings = Settings(auto_end_call_after_booking=True, _env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"farewell-test-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+    update_call_slots(call_id, {"confirmed": True})
+
+    # Caller says goodbye
+    res = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "That's all, thank you bye!"),
+    )
+    assert res.status_code == 200
+    assert "Take care, goodbye!" in res.text
+    assert 'event: call_ended\ndata: {"reason": "assistant_farewell", "outcome": "booked"}' in res.text
+    assert 'event: done\ndata: {"outcome": "booked"}' in res.text
+
+    slots = get_call_slots(call_id)
+    assert slots.get("call_ended") is True
+    assert slots.get("ended_by") == "assistant"
+
+    # Subsequent turns after call ended return quiet done response
+    res_followup = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "Hello?"),
+    )
+    assert res_followup.status_code == 200
+    assert 'event: done\ndata: {"outcome": "info_only"}' in res_followup.text
+    assert "Take care" not in res_followup.text
+
+
+def test_auto_end_call_disabled_setting() -> None:
+    """Verify that when auto_end_call_after_booking=False, farewell does not end call."""
+    from uuid import uuid4
+
+    from app.call_tracking import get_call_slots, update_call_slots
+
+    settings = Settings(auto_end_call_after_booking=False, _env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"farewell-disabled-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+    update_call_slots(call_id, {"confirmed": True})
+
+    res = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload(room, call_id, "Thanks bye"),
+    )
+    assert res.status_code == 200
+    assert "already all set" in res.text
+    assert "call_ended" not in res.text
+
+    slots = get_call_slots(call_id)
+    assert slots.get("call_ended") is not True
+
+
+
 
 
 
