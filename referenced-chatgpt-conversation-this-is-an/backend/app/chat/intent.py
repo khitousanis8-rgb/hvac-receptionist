@@ -239,8 +239,9 @@ def _is_general_question(text: str) -> bool:
     """Detect if caller is asking a general question or objection rather than booking."""
     lower = text.lower().strip()
 
-    # Scheduling and dispatch requests phrased politely as questions ("can someone come out", "could you schedule")
-    # are booking requests, NOT general inquiries.
+    # Scheduling and dispatch requests phrased politely as questions
+    # (e.g. "can someone come out", "could you schedule") are booking requests,
+    # NOT general inquiries.
     booking_actions = (
         "come out", "come by", "come over", "come to", "come", "send someone",
         "send a technician", "book", "schedule", "appointment", "take a look",
