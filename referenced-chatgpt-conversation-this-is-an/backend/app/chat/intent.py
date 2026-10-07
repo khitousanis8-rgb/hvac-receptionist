@@ -238,6 +238,22 @@ def format_opening_hours_speech(settings: Settings) -> str:
 def _is_general_question(text: str) -> bool:
     """Detect if caller is asking a general question or objection rather than booking."""
     lower = text.lower().strip()
+
+    # Scheduling and dispatch requests phrased politely as questions ("can someone come out", "could you schedule")
+    # are booking requests, NOT general inquiries.
+    booking_actions = (
+        "come out", "come by", "come over", "come to", "come", "send someone",
+        "send a technician", "book", "schedule", "appointment", "take a look",
+        "check my", "fix my", "service my", "repair my", "look at my",
+    )
+    if any(ba in lower for ba in booking_actions):
+        info_keywords = (
+            "how much", "cost", "price", "pricing", "rate", "rates",
+            "what hours", "when are you open", "what brand", "licensed", "insured",
+        )
+        if not any(ik in lower for ik in info_keywords):
+            return False
+
     if "?" in lower:
         return True
     question_starters = (

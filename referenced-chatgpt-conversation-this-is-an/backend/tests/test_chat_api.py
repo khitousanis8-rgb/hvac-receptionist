@@ -2243,4 +2243,47 @@ def test_air_conditioner_slot_extraction() -> None:
         assert slots.get("service") == "AC repair", f"Failed to extract AC repair from {phrase!r}"
 
 
+def test_polite_booking_requests_not_general_questions() -> None:
+    """Verify that booking dispatch requests phrased with polite question words are not blocked as general questions."""
+    from app.chat.intent import _is_general_question
 
+    booking_requests = [
+        "Can someone come out tomorrow at 2:00 PM? My name is John Miller and my phone number is 610-555-0144.",
+        "Can you schedule me for AC repair tomorrow at 2 PM?",
+        "Could someone come out on October 15 at 2:00 PM?",
+        "Can you send a technician tomorrow at 10 AM?",
+        "Can someone look at my AC tomorrow?",
+    ]
+    for text in booking_requests:
+        assert _is_general_question(text) is False, f"Expected {text!r} to NOT be general question"
+
+    general_questions = [
+        "How much does AC repair cost?",
+        "What are your hours?",
+        "What brands do you service?",
+        "Are you licensed and insured?",
+        "Do you service Carrier units?",
+        "Why do you need my phone number?",
+    ]
+    for text in general_questions:
+        assert _is_general_question(text) is True, f"Expected {text!r} to be general question"
+
+
+def test_calendar_month_date_extraction_and_parsing() -> None:
+    """Verify that month-and-day expressions are extracted and parsed into future dates."""
+    from app.chat.slot_extraction import _extract_slots_from_text
+    from app.config import get_settings
+    from app.scheduling import parse_local_datetime
+
+    slots1 = _extract_slots_from_text("Can someone come on October 15 at 2 PM?", {})
+    assert slots1.get("date") == "october 15"
+
+    slots2 = _extract_slots_from_text("I need service on Nov 3rd at 10 AM", {})
+    assert slots2.get("date") == "nov 3rd"
+
+    settings = get_settings()
+    parsed1 = parse_local_datetime(settings, "october 15", "2:00 PM")
+    assert parsed1 is not None
+    assert parsed1.month == 10
+    assert parsed1.day == 15
+    assert parsed1.hour == 14

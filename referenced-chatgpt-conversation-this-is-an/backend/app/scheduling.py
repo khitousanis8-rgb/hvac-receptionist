@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from datetime import time as dt_time
 from zoneinfo import ZoneInfo
@@ -285,7 +286,30 @@ def parse_local_datetime(settings: Settings, date_str: str, time_str: str) -> da
                 days_ahead += 7
             target_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
         else:
-            target_date = clean_date
+            month_match = re.match(
+                r"^(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?$",
+                clean_date,
+            )
+            if month_match:
+                m_str, d_str = month_match.groups()
+                month_map = {
+                    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+                    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+                    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+                    "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+                }
+                m_num = month_map.get(m_str, 1)
+                d_num = int(d_str)
+                year = now.year
+                try:
+                    cand_date = datetime(year, m_num, d_num, tzinfo=tz)
+                    if cand_date.date() < now.date():
+                        year += 1
+                    target_date = f"{year:04d}-{m_num:02d}-{d_num:02d}"
+                except ValueError:
+                    target_date = clean_date
+            else:
+                target_date = clean_date
 
     # Try direct ISO parsing first
     try:

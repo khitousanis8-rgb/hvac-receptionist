@@ -156,7 +156,8 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
     date_match = re.search(
         r"\b(\d{4}-\d{2}-\d{2}|today|tomorrow|next\s+"
         r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
-        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        r"(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+\d{1,2}(?:st|nd|rd|th)?)\b",
         lower,
     )
     if date_match:
