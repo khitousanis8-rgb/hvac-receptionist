@@ -49,6 +49,9 @@ def is_explicit_booking_confirmation(text: str) -> bool:
     Rejects messages containing a negation, a new time/date, or additional booking details.
     Does not use substring matching.
     """
+    if "?" in text:
+        return False
+
     cleaned = re.sub(r"[^\w\s]", " ", text.lower())
     normalized = " ".join(cleaned.split())
     if not normalized:
@@ -56,7 +59,7 @@ def is_explicit_booking_confirmation(text: str) -> bool:
 
     negations = {
         "no", "not", "dont", "don't", "cancel", "stop", "wait", "change",
-        "instead", "different", "nevermind", "decline", "neither",
+        "instead", "different", "nevermind", "decline", "neither", "but",
     }
     words = set(normalized.split())
     if words & negations:
@@ -68,6 +71,13 @@ def is_explicit_booking_confirmation(text: str) -> bool:
         "afternoon", "evening", "next", "o'clock", "oclock", "week", "noon",
     }
     if words & date_time_indicators:
+        return False
+
+    inquiry_words = {
+        "want", "need", "can", "could", "would", "what", "how", "why", "where",
+        "when", "who", "maybe", "might", "think", "wondering", "if", "prefer",
+    }
+    if words & inquiry_words:
         return False
 
     if re.search(r"\d", normalized):
@@ -131,7 +141,28 @@ def is_explicit_booking_confirmation(text: str) -> bool:
         "please schedule it",
         "yes schedule it",
     }
-    return normalized in accepted_phrases
+    if normalized in accepted_phrases:
+        return True
+
+    # Affirmation anchors and vocabulary for natural composed affirmations
+    anchors = {
+        "yes", "yeah", "yep", "sure", "ok", "okay", "alright",
+        "book", "lock", "schedule", "confirm", "sounds", "sound", "perfect",
+        "correct", "works", "absolutely", "definitely", "go ahead",
+    }
+    if not any(a in normalized for a in anchors):
+        return False
+
+    affirmation_vocab = {
+        "yes", "yeah", "yep", "sure", "ok", "okay", "alright",
+        "please", "pls", "thank", "thanks", "you",
+        "go", "ahead", "book", "it", "that", "this",
+        "lock", "in", "schedule", "confirm", "do", "lets", "let", "us",
+        "sounds", "sound", "good", "great", "perfect", "fine", "awesome", "wonderful",
+        "works", "work", "for", "me", "correct", "right", "absolutely", "definitely",
+        "and", "to", "thing", "is", "thats", "all", "set",
+    }
+    return all(w in affirmation_vocab for w in normalized.split())
 
 
 def booking_confirmation_fingerprint(slots: dict[str, Any]) -> str:

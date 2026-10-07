@@ -2202,11 +2202,45 @@ def test_auto_end_call_disabled_setting() -> None:
     slots = get_call_slots(call_id)
     assert slots.get("call_ended") is not True
 
+def test_natural_speech_booking_affirmations() -> None:
+    """Verify that varied natural speech affirmations are accepted as explicit confirmations."""
+    from app.chat.booking_policy import is_explicit_booking_confirmation
+
+    natural_positives = [
+        "Yes, please go ahead and book it.",
+        "Yes please go ahead and book it",
+        "Yes, book it please",
+        "Yes, please schedule that",
+        "Yes please do that",
+        "Yeah please book it",
+        "Yes please, lock it in",
+        "That sounds good, please book it",
+        "Yes, go ahead and lock it in",
+        "Go ahead and book it please",
+        "Yes that works, go ahead",
+        "Yes, that sounds great, please book it",
+        "Sounds good, go ahead",
+        "Yes please, thank you",
+        "Yes absolutely",
+        "Sure, go ahead and book it",
+        "Yes please, confirm it",
+    ]
+    for phrase in natural_positives:
+        assert is_explicit_booking_confirmation(phrase) is True, f"Failed for {phrase!r}"
 
 
+def test_air_conditioner_slot_extraction() -> None:
+    """Verify that 'air conditioner' and 'air conditioning' phrases extract AC repair."""
+    from app.chat.slot_extraction import _extract_slots_from_text
 
-
-
+    for phrase in [
+        "My air conditioner is blowing warm air",
+        "Can you fix my air conditioner?",
+        "Our air conditioning stopped working",
+        "I need someone to inspect our air conditioner",
+    ]:
+        slots = _extract_slots_from_text(phrase, {})
+        assert slots.get("service") == "AC repair", f"Failed to extract AC repair from {phrase!r}"
 
 
 

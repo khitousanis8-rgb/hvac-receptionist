@@ -155,6 +155,14 @@ def book_appointment(
                     matched_service = approved
                     break
         if not matched_service:
+            tune_words = {"tune-up", "tuneup", "tune up", "maintenance", "inspection"}
+            if any(tw in normalized_requested for tw in tune_words):
+                for approved in approved_services:
+                    low_app = approved.lower()
+                    if "repair" in low_app or "furnace" in low_app or "ac" in low_app:
+                        matched_service = approved
+                        break
+        if not matched_service:
             services_str = ", ".join(approved_services)
             return (
                 None,

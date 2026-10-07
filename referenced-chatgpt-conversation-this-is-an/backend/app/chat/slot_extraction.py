@@ -99,8 +99,8 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
     # 3. Service extraction with Negation Detection
     ac_neg_pat = (
         r"\b(?:not|no|never|dont\s+need|don't\s+need|dont\s+want|don't\s+want|"
-        r"instead\s+of|rather\s+than|other\s+than)\s+(?:an?\s+)?(?:a/?c|air\s*condition(?:ing)?)\b|"
-        r"\b(?:a/?c|air\s*condition(?:ing)?)\s+(?:cancelled|is\s+not\s+what\s+i\s+need)\b"
+        r"instead\s+of|rather\s+than|other\s+than)\s+(?:an?\s+)?(?:a/?c|air\s*condition(?:er|ing)?)\b|"
+        r"\b(?:a/?c|air\s*condition(?:er|ing)?)\s+(?:cancelled|is\s+not\s+what\s+i\s+need)\b"
     )
     heating_neg_pat = (
         r"\b(?:not|no|never|dont\s+need|don't\s+need|dont\s+want|don't\s+want|"
@@ -130,7 +130,7 @@ def _extract_slots_from_text(text: str, current_slots: dict[str, Any]) -> dict[s
             verified["service"] = None
 
     aff_matches: list[str] = []
-    if re.search(r"\b(a/?c|air\s*condition(?:ing)?|cooling|not\s+cooling)\b", lower):
+    if re.search(r"\b(a/?c|air\s*condition(?:er|ing)?|cooling|not\s+cooling)\b", lower):
         if "AC repair" not in this_turn_negated:
             aff_matches.append("AC repair")
     if re.search(r"\b(furnace|heating|heater|boiler|heat\s*pump)\b", lower):
