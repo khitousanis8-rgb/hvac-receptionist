@@ -113,24 +113,25 @@ def test_endpoints_query_limit_validation() -> None:
         assert res4.status_code == 422
 
 
-def test_private_routes_auth_contract() -> None:
-    # 503 when admin key not set
+def test_dashboard_routes_open_access_contract() -> None:
+    # 200 when admin key not configured
     with TestClient(create_app(Settings(_env_file=None))) as client:
         res = client.get("/v1/calls")
-        assert res.status_code == 503
-        assert "not configured" in res.json()["detail"]
+        assert res.status_code == 200
+        assert "items" in res.json()
 
-    # 401 when admin key set but missing or invalid
+    # 200 when admin key set, with or without headers
     settings = Settings(ADMIN_API_KEY="secret-123", _env_file=None)
     with TestClient(create_app(settings)) as client:
         res1 = client.get("/v1/calls")
-        assert res1.status_code == 401
+        assert res1.status_code == 200
 
-        res2 = client.get("/v1/calls", headers={"X-Admin-Key": "wrong-key"})
-        assert res2.status_code == 401
+        res2 = client.get("/v1/calls", headers={"X-Admin-Key": "any-key"})
+        assert res2.status_code == 200
 
         res3 = client.get("/v1/calls", headers={"Authorization": "Bearer secret-123"})
         assert res3.status_code == 200
+
 
 
 def test_calls_pagination_and_iso_timestamp_z(tmp_path) -> None:
@@ -258,18 +259,14 @@ def test_appointments_pagination_and_iso_timestamp_z(tmp_path) -> None:
         reset_engine()
 
 
-def test_require_admin_bearer_case_insensitive() -> None:
-    settings = Settings(ADMIN_API_KEY="my-secret-key", _env_file=None)
-    with TestClient(create_app(settings)) as client:
-        res = client.get("/v1/calls", headers={"Authorization": "bearer my-secret-key"})
-        assert res.status_code == 200
+def test_require_admin_helper_is_open_passthrough() -> None:
+    from fastapi import Request
 
+    from app.auth import require_admin
 
-def test_require_admin_empty_key_fails_closed() -> None:
-    settings = Settings(ADMIN_API_KEY="", _env_file=None)
-    with TestClient(create_app(settings)) as client:
-        res = client.get("/v1/calls", headers={"Authorization": "Bearer "})
-        assert res.status_code == 503
+    mock_request = Request({"type": "http", "headers": []})
+    assert require_admin(mock_request) is None
+
 
 
 def test_transcribe_rate_limiting() -> None:

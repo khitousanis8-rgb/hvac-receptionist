@@ -79,7 +79,10 @@ def test_appointments_endpoint_includes_customer(tmp_path) -> None:
     reset_engine()
 
 
-def test_private_routes_reject_missing_or_invalid_admin_key(tmp_path) -> None:
+def test_dashboard_routes_openly_accessible_without_admin_key(tmp_path) -> None:
     with _client(tmp_path) as client:
-        assert client.get("/v1/calls").status_code == 401
-        assert client.get("/v1/calls", headers={"X-Admin-Key": "wrong"}).status_code == 401
+        assert client.get("/v1/calls").status_code == 200
+        assert client.get("/v1/appointments").status_code == 200
+        assert client.get("/dashboard").status_code == 200
+        assert client.get("/v1/calls", headers={"X-Admin-Key": "any-or-none"}).status_code == 200
+

@@ -11,13 +11,12 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 import structlog
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 
 from app.agent.dispatch import CredentialsMissingError, DispatchError, create_room_and_token
-from app.auth import require_admin
 from app.call_tracking import (
     ClientTelemetry,
     apply_client_telemetry,
@@ -175,7 +174,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "services": runtime_settings.business_services,
         }
 
-    @app.get("/v1/calls", tags=["dashboard"], dependencies=[Depends(require_admin)])
+    @app.get("/v1/calls", tags=["dashboard"])
     async def list_calls(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
@@ -245,7 +244,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         return await asyncio.to_thread(_query_calls)
 
-    @app.get("/v1/appointments", tags=["dashboard"], dependencies=[Depends(require_admin)])
+    @app.get("/v1/appointments", tags=["dashboard"])
     async def list_appointments(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
@@ -285,7 +284,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.delete(
         "/v1/appointments/{appointment_id}",
         tags=["dashboard"],
-        dependencies=[Depends(require_admin)],
     )
     async def cancel_appointment_endpoint(
         appointment_id: int,

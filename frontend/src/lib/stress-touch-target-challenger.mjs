@@ -8,7 +8,6 @@
  *    - Live Call End/Retry/Cancel/Log buttons (live-call-page.tsx)
  *    - Kokoro Session Tap to Interrupt button (kokoro-call-session.tsx:806)
  *    - Kokoro Session Mute & End Call buttons (kokoro-call-session.tsx:836, 860)
- *    - Admin unlock button (App.tsx:1366)
  *    - Emergency call button (App.tsx:1375)
  *    - Call Back button (App.tsx:593)
  *    - Mobile Agenda View buttons (mobile-agenda-view.tsx)
@@ -124,12 +123,6 @@ test("kokoro-call-session.tsx: Confirm Booking review card button has min-h-[48p
   const confirmMatch = kokoroTsx.match(/data-testid="confirm-booking-button"[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/);
   assert(confirmMatch, "Confirm Booking button not found in kokoro-call-session.tsx");
   assert(confirmMatch[1].includes("min-h-[48px]"), `Confirm Booking button missing min-h-[48px], found: ${confirmMatch[1]}`);
-});
-
-test("App.tsx: Admin Unlock button has min-h-[44px]", () => {
-  const unlockMatch = appTsx.match(/onClick=\{updateAdminKey\}[\s\S]*?className="([^"]*)"/);
-  assert(unlockMatch, "Admin unlock button not found in App.tsx");
-  assert(unlockMatch[1].includes("min-h-[44px]"), `Admin unlock missing min-h-[44px], found: ${unlockMatch[1]}`);
 });
 
 test("App.tsx: Emergency Call button has min-h-[44px]", () => {

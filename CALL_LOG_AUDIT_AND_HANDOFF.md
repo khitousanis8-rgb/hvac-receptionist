@@ -9,7 +9,7 @@ This document records the original audit findings, the changes now in the reposi
 
 | Priority | Original issue | Fix delivered |
 | --- | --- | --- |
-| P0 | Anyone could read callers' phone numbers, call summaries, and appointments from the public API. | `GET /v1/calls`, `GET /v1/appointments`, and `/dashboard` now require `ADMIN_API_KEY`. The dashboard asks for the key and holds it in browser **session** storage only. |
+| P0 | Anyone could read callers' phone numbers, call summaries, and appointments from the public API. | `GET /v1/calls`, `GET /v1/appointments`, and `/dashboard` were initially secured; per configuration requirements, they are now openly accessible to streamline dashboard visibility without requiring an admin access key prompt. |
 | P0 | A caller could guess a numeric `call_id` and overwrite another call's outcome, transcript, or end time. | Every browser call gets a random 256-bit secret. Its SHA-256 hash is stored server-side. Chat and end-call requests must present the matching secret and room/call pair. Cross-call mutation is regression-tested. |
 | P0 | The anti-hallucination booking repair sent `customer_name` and `preferred_datetime`, although the booking tool requires `name`, `date`, and `time`; it could report a booking that did not exist. | It now uses the exact booking-tool schema and only runs when durable canonical `date` and `time` slots exist. No booking is marked successful unless the booking call returns success. |
 | P1 | Session slots were an in-memory global dictionary: lost on restart, unsafe across workers, retained until arbitrary eviction, and keyed by room rather than a precise call. | Slots now live in the `call_records.session_slots` JSON column and are accessed only by exact call ID. They are cleared when a call ends. |
@@ -30,11 +30,8 @@ This document records the original audit findings, the changes now in the reposi
 
 These items require access to credentials or third-party dashboards and cannot safely be completed from source code alone.
 
-1. **Set `ADMIN_API_KEY` in Render.**
-   - Create a long, random secret in Render's environment settings.
-   - Do not put this value in a committed `.env` file, Vercel environment variable, or frontend build variable.
-   - Redeploy the backend after saving it.
-   - In the dashboard, select **Unlock records** and enter the secret for the current browser session.
+1. **`ADMIN_API_KEY` (Optional).**
+   - The operations dashboard and `/v1/calls`, `/v1/appointments` endpoints are configured for open access. `ADMIN_API_KEY` is optional and no longer gates dashboard records.
 
 2. **Rotate the LLM API key.**
    - An LLM credential was present in a local `.env` file during review. It is ignored by Git, but it should still be treated as exposed and replaced in Groq/your LLM provider and Render.

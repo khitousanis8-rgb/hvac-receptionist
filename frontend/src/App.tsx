@@ -97,7 +97,7 @@ interface ApiState<T> {
   updatedAt: Date | null;
 }
 
-function useApi<T>(path: string, refreshMs = 10000, adminKey?: string | null): ApiState<T> {
+function useApi<T>(path: string, refreshMs = 10000): ApiState<T> {
   const [state, setState] = useState<ApiState<T>>({
     data: [],
     total: 0,
@@ -110,9 +110,7 @@ function useApi<T>(path: string, refreshMs = 10000, adminKey?: string | null): A
   useEffect(() => {
     let alive = true;
     const load = () =>
-      fetch(apiUrl(path), {
-        headers: adminKey ? { "X-Admin-Key": adminKey } : undefined,
-      })
+      fetch(apiUrl(path))
         .then((r) => {
           if (!r.ok) throw new Error(String(r.status));
           return r.json();
@@ -150,7 +148,7 @@ function useApi<T>(path: string, refreshMs = 10000, adminKey?: string | null): A
       alive = false;
       clearInterval(timer);
     };
-  }, [path, refreshMs, adminKey]);
+  }, [path, refreshMs]);
   return state;
 }
 
@@ -1201,16 +1199,19 @@ function DashboardPage({
 }
 
 export default function App() {
-  const [adminKey, setAdminKey] = useState<string | null>(() =>
-    typeof window === "undefined" ? null : window.sessionStorage.getItem("hvac-admin-key")
-  );
-  const calls = useApi<CallRecord>("/v1/calls?limit=200", 10000, adminKey);
-  const appointments = useApi<Appointment>("/v1/appointments", 10000, adminKey);
+  const calls = useApi<CallRecord>("/v1/calls?limit=200", 10000);
+  const appointments = useApi<Appointment>("/v1/appointments", 10000);
   const online = useHealth();
   const config = useConfig();
   const [page, setPage] = useState<Page>("dashboard");
   const [open, setOpen] = useState(false);
   const [isInCall, setIsInCall] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem("hvac-admin-key");
+    }
+  }, []);
 
   const updatedAt =
     calls.updatedAt && appointments.updatedAt
@@ -1220,23 +1221,6 @@ export default function App() {
       : calls.updatedAt ?? appointments.updatedAt;
   const loading = !calls.loaded || !appointments.loaded;
   const apiError = calls.error || appointments.error;
-  const adminAccessNeeded = calls.status === 401 || appointments.status === 401;
-
-  const updateAdminKey = () => {
-    const promptMessage = adminKey
-      ? "Enter a new dashboard access key, or leave blank and click OK to lock/clear:"
-      : "Enter the private dashboard access key:";
-    const entered = window.prompt(promptMessage);
-    if (entered === null) return;
-    const trimmed = entered.trim();
-    if (!trimmed) {
-      window.sessionStorage.removeItem("hvac-admin-key");
-      setAdminKey(null);
-    } else {
-      window.sessionStorage.setItem("hvac-admin-key", trimmed);
-      setAdminKey(trimmed);
-    }
-  };
 
   const links: {
     page: Page;
@@ -1360,13 +1344,6 @@ export default function App() {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={updateAdminKey}
-          className="md:hidden rounded-full border border-[#e7e7e7] bg-white min-h-[44px] px-3.5 py-1.5 text-[10px] font-semibold text-[#4e505b]"
-        >
-          {adminKey ? "Records" : "Unlock"}
-        </button>
 
         {/* Quick Emergency Call Button */}
         {config?.emergency_phone && (
@@ -1396,13 +1373,6 @@ export default function App() {
               </p>
             </div>
             <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={updateAdminKey}
-                className="rounded-lg border border-[#e7e7e7] bg-white px-3 py-1.5 text-[11px] font-semibold text-[#4e505b] hover:bg-[#fafafa]"
-              >
-                {adminKey ? "Admin access set" : "Unlock records"}
-              </button>
               <div className="flex items-center gap-2 text-[11px] text-[#71717a] px-3 py-1 rounded-lg border border-[#e7e7e7] bg-[#fafafa]">
                 <span
                   className={cn(
@@ -1431,9 +1401,7 @@ export default function App() {
 
           {apiError && (
             <div className="mb-4 rounded-xl border border-[#fde68a] bg-[#fffbeb] px-4 py-2.5 text-[12px] text-[#b45309] shadow-xs">
-              {adminAccessNeeded
-                ? "Customer records are private. Select “Unlock records” and enter the server-configured access key."
-                : "Connecting to backend API… If the server was idle, it takes ~30–50s to wake up. Retrying automatically."}
+              Connecting to backend API… If the server was idle, it takes ~30–50s to wake up. Retrying automatically.
             </div>
           )}
 
