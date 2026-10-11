@@ -326,14 +326,17 @@ export function findClauseSplit(
     if (!trimmed) continue;
 
     if (punct === "." || punct === "?" || punct === "!") {
-      // Complete sentence terminal: dispatch immediately
-      if (isFirstPhrase && trimmed.length < 8) continue;
+      // Complete sentence terminal: dispatch immediately for phrases with trimmed.length >= 2
+      if (trimmed.length < 2) continue;
       return { sentence: trimmed + punct, rest: buffer.slice(m.index + 1) };
     }
 
     // Breath group / clause boundaries (comma, colon, semicolon, newline)
-    if (isFirstPhrase ? trimmed.length >= 8 : trimmed.length >= 25 || buffer.length > 80) {
-      return { sentence: trimmed, rest: buffer.slice(m.index + 1) };
+    // Dispatch opening conversational clauses with trimmed.length >= 2, and intermediate clauses >= 12 chars
+    const minClauseLength = isFirstPhrase ? 2 : 12;
+    if (trimmed.length >= minClauseLength || buffer.length > 80) {
+      const cadencePunct = punct === "\n" ? "" : punct;
+      return { sentence: trimmed + cadencePunct, rest: buffer.slice(m.index + 1) };
     }
   }
   return null;

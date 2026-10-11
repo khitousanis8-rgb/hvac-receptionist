@@ -72,6 +72,7 @@ from app.db import (
 from app.scheduling import (
     book_appointment,
     cancel_appointment_by_phone,
+    check_slot_availability,
     find_nearest_available_slots,
     format_available_slot_for_speech,
     has_conflict,
@@ -85,6 +86,7 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/v1/calls", tags=["calls"])
 
 _client: AsyncOpenAI | None = None
+_active_chat_tasks: dict[int, asyncio.Task[Any]] = {}
 
 
 def _get_client(settings: Settings) -> AsyncOpenAI:
@@ -533,29 +535,80 @@ def _execute_tool(
             )
             if appointment is not None and call_id is not None:
                 ledger_now = datetime.now(UTC)
-                session.add(
-                    ConfirmationTicket(
-                        ticket_id=f"tool_{uuid4().hex[:16]}",
-                        call_id=str(call_id),
-                        service=service,
-                        phone=phone_number,
-                        scheduled_for=when,
-                        fingerprint=booking_confirmation_fingerprint(
-                            {
-                                "phone": phone_number,
-                                "service": service,
-                                "date": date_str,
-                                "time": time_str,
-                            }
-                        ),
-                        status="consumed",
-                        created_at=ledger_now,
-                        expires_at=ledger_now,
-                        consumed_at=ledger_now,
-                        appointment_id=appointment.id,
+                pending_tickets = (
+                    session.query(ConfirmationTicket)
+                    .filter(
+                        ConfirmationTicket.call_id == str(call_id),
+                        ConfirmationTicket.status == "pending",
                     )
+                    .all()
                 )
+                if pending_tickets:
+                    for pt in pending_tickets:
+                        pt.status = "consumed"
+                        pt.consumed_at = ledger_now
+                        pt.appointment_id = appointment.id
+                else:
+                    session.add(
+                        ConfirmationTicket(
+                            ticket_id=f"tool_{uuid4().hex[:16]}",
+                            call_id=str(call_id),
+                            service=service,
+                            phone=phone_number,
+                            scheduled_for=when,
+                            fingerprint=booking_confirmation_fingerprint(
+                                {
+                                    "phone": phone_number,
+                                    "service": service,
+                                    "date": date_str,
+                                    "time": time_str,
+                                }
+                            ),
+                            status="consumed",
+                            created_at=ledger_now,
+                            expires_at=ledger_now,
+                            consumed_at=ledger_now,
+                            appointment_id=appointment.id,
+                        )
+                    )
                 session.flush()
+            return message
+
+    elif name == "check_availability":
+        date_str = str(args.get("date", "")).strip()
+        raw_time = args.get("time")
+        check_time: str | None = str(raw_time).strip() if raw_time is not None else None
+        if check_time and check_time.lower() in ("none", "null", ""):
+            check_time = None
+        raw_service = args.get("service")
+        check_service: str | None = (
+            str(raw_service).strip() if raw_service is not None else None
+        )
+        if check_service and check_service.lower() in ("none", "null", ""):
+            check_service = None
+
+        with new_session() as session:
+            is_avail, message, alternatives = check_slot_availability(
+                session,
+                settings,
+                date_str=date_str,
+                time_str=check_time,
+                service=check_service,
+            )
+            if is_avail:
+                if alternatives:
+                    alt_strs = [
+                        format_available_slot_for_speech(sl, settings) for sl in alternatives
+                    ]
+                    return f"{message} Available times include: {', '.join(alt_strs)}."
+                return message
+            if alternatives:
+                alt_strs = [
+                    format_available_slot_for_speech(sl, settings) for sl in alternatives[:2]
+                ]
+                if len(alt_strs) == 1:
+                    return f"{message} Nearest available opening is {alt_strs[0]}."
+                return f"{message} Nearest available openings are {alt_strs[0]} and {alt_strs[1]}."
             return message
 
     elif name == "reschedule_appointment_tool":
@@ -598,6 +651,7 @@ BOOKING_TOOLS: list[dict[str, Any]] = [
                 "Call this tool when the caller provides their phone number, "
                 "service, date, and time."
             ),
+            "strict": True,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -621,15 +675,92 @@ BOOKING_TOOLS: list[dict[str, Any]] = [
                         "description": "Appointment start time (e.g. 09:00 AM, 02:00 PM)",
                     },
                     "name": {
-                        "type": "string",
+                        "type": ["string", "null"],
                         "description": "The caller's name, if provided",
                     },
                     "notes": {
-                        "type": "string",
+                        "type": ["string", "null"],
                         "description": "Optional details or symptoms about the HVAC problem",
                     },
                 },
-                "required": ["phone_number", "service", "date", "time"],
+                "required": ["phone_number", "service", "date", "time", "name", "notes"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_availability",
+            "description": (
+                "Check if an appointment slot is available for service, "
+                "or find nearest available openings."
+            ),
+            "strict": True,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {
+                        "type": "string",
+                        "description": "Appointment date to check (e.g. YYYY-MM-DD, tomorrow)",
+                    },
+                    "time": {
+                        "type": ["string", "null"],
+                        "description": "Appointment start time to check (e.g. 09:00 AM, 02:00 PM)",
+                    },
+                    "service": {
+                        "type": ["string", "null"],
+                        "description": "Optional requested HVAC service",
+                    },
+                },
+                "required": ["date", "time", "service"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reschedule_appointment_tool",
+            "description": "Reschedule an existing appointment to a new date and time.",
+            "strict": True,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "phone_number": {
+                        "type": "string",
+                        "description": "The caller's callback phone number.",
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "New appointment date in YYYY-MM-DD or relative format.",
+                    },
+                    "time": {
+                        "type": "string",
+                        "description": "New appointment start time in HH:MM or 12h format.",
+                    },
+                },
+                "required": ["phone_number", "date", "time"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_appointment_tool",
+            "description": "Cancel an existing upcoming appointment.",
+            "strict": True,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "phone_number": {
+                        "type": "string",
+                        "description": "The caller's callback phone number.",
+                    },
+                },
+                "required": ["phone_number"],
+                "additionalProperties": False,
             },
         },
     },
@@ -807,6 +938,112 @@ FAREWELL_SIGNOFF = "Take care, goodbye!"
 
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
+_TITLES = {"dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st"}
+_MONTHS = {
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+}
+_ABBREVIATIONS = {
+    "mr", "mrs", "ms", "dr", "st", "vs", "etc", "no",
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    "approx", "dept", "est", "fig",
+}
+
+
+def _split_into_clause_chunks(text: str) -> list[str]:
+    """Split pre-scripted deterministic response into speakable clause chunks.
+
+    Splits on punctuation boundaries (.?!,:;\n) to allow immediate client-side
+    prefetch and audio streaming playback (<400ms TTFB), while preserving:
+    - Colons between digits (e.g., 10:30)
+    - Commas between digits (e.g., 1,500)
+    - Common abbreviations and decimals
+    - Meridiem indicators (e.g., a.m., p.m.)
+    - Exact character reconstruction: ''.join(chunks) == text
+    """
+    if not text:
+        return []
+    pattern = re.compile(r"([.?!,:;\n])(\s*)")
+    chunks: list[str] = []
+    last_idx = 0
+    for m in pattern.finditer(text):
+        punct = m.group(1)
+        punct_idx = m.start(1)
+        end_idx = m.end()
+        candidate = text[last_idx:punct_idx].strip()
+        if not candidate:
+            continue
+        char_before = text[punct_idx - 1] if punct_idx > 0 else ""
+        char_after = text[punct_idx + 1] if punct_idx + 1 < len(text) else ""
+
+        if punct == ":" and char_before.isdigit() and char_after.isdigit():
+            continue
+        if punct == "," and char_before.isdigit() and char_after.isdigit():
+            continue
+
+        if punct == ".":
+            # Consecutive dots (ellipsis ...)
+            if char_before == "." or char_after == ".":
+                continue
+            # Number / decimal (e.g. 2.0.1, 10.5)
+            if char_before.isdigit() and (char_after.isdigit() or char_after == ""):
+                continue
+            # Internal period in dotted abbreviations (e.g. first dot of a.m., p.m., e.g., i.e.)
+            if char_before.isalpha() and re.match(r"^[a-zA-Z]\.", text[punct_idx + 1:]):
+                continue
+
+            last_word = candidate.split()[-1].lower() if candidate.split() else ""
+            clean_word = last_word.rstrip(".")
+
+            # Honorific titles (Dr., Mr., etc.) are followed by capitalized surnames; never split
+            if clean_word in _TITLES:
+                continue
+
+            # Month abbreviations (Jan., Feb., etc.) are followed by dates; never split
+            if clean_word in _MONTHS:
+                continue
+
+            # Multi-dot abbreviations (e.g., i.e.) and abbreviations (vs.) never end a clause
+            if clean_word in {"e.g", "i.e", "vs", "approx", "dept", "est", "fig"}:
+                continue
+
+            # Meridiem indicators (a.m., p.m.): do not split unless followed by an uppercase letter
+            if clean_word in {"a.m", "p.m"}:
+                rest_after = text[punct_idx + 1:].lstrip()
+                if (
+                    not rest_after
+                    or rest_after[0].islower()
+                    or rest_after[0] in ",;:?!-—"
+                    or rest_after[0].isdigit()
+                ):
+                    continue
+
+            # Other abbreviations (etc., no.)
+            if clean_word in _ABBREVIATIONS or re.match(r"^[a-z](\.[a-z])+$", clean_word):
+                rest_after = text[punct_idx + 1:].lstrip()
+                if not rest_after or rest_after[0].islower() or rest_after[0] in ",;:?!-—":
+                    continue
+
+        rest_after = text[punct_idx + 1:].lstrip()
+        if re.match(r"^(?:am|pm|a\.m\.|p\.m\.)\b", rest_after, re.I):
+            continue
+
+        chunk = text[last_idx:end_idx]
+        chunks.append(chunk)
+        last_idx = end_idx
+
+    if last_idx < len(text):
+        remainder = text[last_idx:]
+        if remainder:
+            chunks.append(remainder)
+    return chunks if chunks else [text]
+
+
+async def _stream_text_deltas(text: str) -> AsyncIterator[str]:
+    """Yield SSE delta events for each clause chunk of a deterministic response."""
+    for chunk in _split_into_clause_chunks(text):
+        yield f"event: delta\ndata: {json.dumps({'text': chunk})}\n\n"
+        await asyncio.sleep(0)
+
 
 async def _silent_end_generator_response() -> StreamingResponse:
     """No-op response for turns arriving after the assistant already signed off."""
@@ -886,7 +1123,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
         async def greeting_generator() -> AsyncIterator[str]:
             yield f"event: call_started\ndata: {json.dumps({'call_id': call_id})}\n\n"
-            yield f"event: delta\ndata: {json.dumps({'text': greeting_text})}\n\n"
+            async for delta_event in _stream_text_deltas(greeting_text):
+                yield delta_event
             yield (
                 f"event: done\ndata: "
                 f"{json.dumps({'outcome': 'info_only', 'call_id': call_id})}\n\n"
@@ -906,6 +1144,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             detail="This call session is invalid or has already ended.",
         )
     active_call_id: int = req.call_id
+    if prior_task := _active_chat_tasks.pop(active_call_id, None):
+        if not prior_task.done():
+            logger.info("cancelling_prior_chat_task_for_barge_in", call_id=active_call_id)
+            prior_task.cancel()
     if req.client_telemetry is not None:
         await asyncio.to_thread(apply_client_telemetry, active_call_id, req.client_telemetry)
 
@@ -937,7 +1179,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         await asyncio.to_thread(record_call_turn, active_call_id, "assistant", emergency_text)
 
         async def emergency_generator() -> AsyncIterator[str]:
-            yield f"event: delta\ndata: {json.dumps({'text': emergency_text})}\n\n"
+            async for delta_event in _stream_text_deltas(emergency_text):
+                yield delta_event
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
         return StreamingResponse(
@@ -1007,7 +1250,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             )
 
             async def already_confirmed_generator() -> AsyncIterator[str]:
-                yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
+                async for delta_event in _stream_text_deltas(msg):
+                    yield delta_event
                 yield f"event: done\ndata: {json.dumps({'outcome': 'booked'})}\n\n"
 
             return StreamingResponse(
@@ -1037,7 +1281,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         await asyncio.to_thread(record_call_turn, active_call_id, "assistant", hours_speech)
 
         async def hours_generator() -> AsyncIterator[str]:
-            yield f"event: delta\ndata: {json.dumps({'text': hours_speech})}\n\n"
+            async for delta_event in _stream_text_deltas(hours_speech):
+                yield delta_event
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
         return StreamingResponse(
@@ -1182,13 +1427,13 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                                 "appointment_id": appointment.id,
                             }
 
-                            delta_json = json.dumps({"text": spoken_confirm})
                             booked_json = json.dumps(booked_payload)
                             done_json = json.dumps(done_payload)
 
                             async def booked_gen() -> AsyncIterator[str]:
                                 yield f"event: tool_call\ndata: {tool_call_json}\n\n"
-                                yield f"event: delta\ndata: {delta_json}\n\n"
+                                async for delta_event in _stream_text_deltas(spoken_confirm):
+                                    yield delta_event
                                 yield f"event: appointment_booked\ndata: {booked_json}\n\n"
                                 yield f"event: done\ndata: {done_json}\n\n"
 
@@ -1229,11 +1474,11 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                                 record_call_turn, active_call_id, "assistant", fail_msg
                             )
 
-                            fail_delta = json.dumps({"text": fail_msg})
                             fail_done = json.dumps({"outcome": "info_only"})
 
                             async def fail_gen() -> AsyncIterator[str]:
-                                yield f"event: delta\ndata: {fail_delta}\n\n"
+                                async for delta_event in _stream_text_deltas(fail_msg):
+                                    yield delta_event
                                 yield f"event: done\ndata: {fail_done}\n\n"
 
                             return StreamingResponse(
@@ -1323,7 +1568,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     }
 
                 async def tap_prompt_generator() -> AsyncIterator[str]:
-                    yield f"event: delta\ndata: {json.dumps({'text': guidance})}\n\n"
+                    async for delta_event in _stream_text_deltas(guidance):
+                        yield delta_event
                     if ticket_payload:
                         yield f"event: confirmation_ticket\ndata: {json.dumps(ticket_payload)}\n\n"
                     yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
@@ -1357,7 +1603,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 await asyncio.to_thread(record_call_turn, active_call_id, "assistant", decline_msg)
 
                 async def decline_generator() -> AsyncIterator[str]:
-                    yield f"event: delta\ndata: {json.dumps({'text': decline_msg})}\n\n"
+                    async for delta_event in _stream_text_deltas(decline_msg):
+                        yield delta_event
                     yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
                 return StreamingResponse(
@@ -1373,7 +1620,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 await asyncio.to_thread(record_call_turn, active_call_id, "assistant", clarif_msg)
 
                 async def clarif_generator() -> AsyncIterator[str]:
-                    yield f"event: delta\ndata: {json.dumps({'text': clarif_msg})}\n\n"
+                    async for delta_event in _stream_text_deltas(clarif_msg):
+                        yield delta_event
                     yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
                 return StreamingResponse(
@@ -1398,7 +1646,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         await asyncio.to_thread(record_call_turn, active_call_id, "assistant", q_text)
 
         async def time_clarif_gen() -> AsyncIterator[str]:
-            yield f"event: delta\ndata: {json.dumps({'text': q_text})}\n\n"
+            async for delta_event in _stream_text_deltas(q_text):
+                yield delta_event
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
         return StreamingResponse(
@@ -1426,7 +1675,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             await asyncio.to_thread(record_call_turn, active_call_id, "assistant", msg)
 
             async def invalid_dt_gen() -> AsyncIterator[str]:
-                yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
+                async for delta_event in _stream_text_deltas(msg):
+                    yield delta_event
                 yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
             return StreamingResponse(
@@ -1441,7 +1691,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             await asyncio.to_thread(record_call_turn, active_call_id, "assistant", msg)
 
             async def past_dt_gen() -> AsyncIterator[str]:
-                yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
+                async for delta_event in _stream_text_deltas(msg):
+                    yield delta_event
                 yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
             return StreamingResponse(
@@ -1477,7 +1728,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             await asyncio.to_thread(record_call_turn, active_call_id, "assistant", msg)
 
             async def outside_hours_gen() -> AsyncIterator[str]:
-                yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
+                async for delta_event in _stream_text_deltas(msg):
+                    yield delta_event
                 yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
             return StreamingResponse(
@@ -1528,7 +1780,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             await asyncio.to_thread(record_call_turn, active_call_id, "assistant", msg)
 
             async def conflict_gen() -> AsyncIterator[str]:
-                yield f"event: delta\ndata: {json.dumps({'text': msg})}\n\n"
+                async for delta_event in _stream_text_deltas(msg):
+                    yield delta_event
                 yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
             return StreamingResponse(
@@ -1592,7 +1845,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         }
 
         async def recap_gen() -> AsyncIterator[str]:
-            yield f"event: delta\ndata: {json.dumps({'text': recap_text})}\n\n"
+            async for delta_event in _stream_text_deltas(recap_text):
+                yield delta_event
             yield f"event: confirmation_ticket\ndata: {json.dumps(ticket_payload)}\n\n"
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
@@ -1645,7 +1899,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         await asyncio.to_thread(record_call_turn, active_call_id, "assistant", q_text)
 
         async def missing_slot_gen() -> AsyncIterator[str]:
-            yield f"event: delta\ndata: {json.dumps({'text': q_text})}\n\n"
+            async for delta_event in _stream_text_deltas(q_text):
+                yield delta_event
             yield f"event: done\ndata: {json.dumps({'outcome': 'info_only'})}\n\n"
 
         return StreamingResponse(
@@ -1689,6 +1944,9 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
     async def sse_generator() -> AsyncIterator[str]:
         outcome = "info_only"
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            _active_chat_tasks[active_call_id] = current_task
         try:
             # First pass: request streaming chat completion with tools if applicable
             comp_kwargs: dict[str, Any] = {
@@ -1712,6 +1970,14 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             streamed_content = ""
 
             async for chunk in response:
+                if await request.is_disconnected():
+                    logger.info(
+                        "chat_stream_client_disconnected",
+                        call_id=active_call_id,
+                        pass_num=1,
+                    )
+                    break
+
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if not delta:
                     continue
@@ -1742,6 +2008,11 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 elif delta.content and not tool_calls_accumulator:
                     streamed_content += delta.content
                     yield f"event: delta\ndata: {json.dumps({'text': delta.content})}\n\n"
+
+            # Check if client disconnected before processing tool calls or persisting turns
+            if await request.is_disconnected():
+                logger.info("chat_stream_aborted_skip_execution", call_id=active_call_id)
+                return
 
             # If the model requested read-only lookup: execute and stream the final answer
             if tool_calls_accumulator:
@@ -1774,6 +2045,13 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 )
 
                 for i, tc in tool_calls_accumulator.items():
+                    if await request.is_disconnected():
+                        logger.info(
+                            "chat_stream_client_disconnected_before_tool",
+                            call_id=active_call_id,
+                            tool=tc["name"],
+                        )
+                        return
                     name = tc["name"]
                     args = parsed_args[i]
 
@@ -1814,6 +2092,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                         }
                     )
 
+                if await request.is_disconnected():
+                    logger.info("chat_stream_aborted_before_second_stream", call_id=active_call_id)
+                    return
+
                 # Second stream: generate voice reply based on tool execution result
                 second_response = await _create_stream_completion(
                     client=client,
@@ -1828,10 +2110,24 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
                 second_content = ""
                 async for chunk in second_response:
+                    if await request.is_disconnected():
+                        logger.info(
+                            "chat_stream_client_disconnected",
+                            call_id=active_call_id,
+                            pass_num=2,
+                        )
+                        break
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta and delta.content:
                         second_content += delta.content
                         yield f"event: delta\ndata: {json.dumps({'text': delta.content})}\n\n"
+
+                if await request.is_disconnected():
+                    logger.info(
+                        "chat_stream_aborted_skip_second_turn_record",
+                        call_id=active_call_id,
+                    )
+                    return
 
                 if second_content.strip():
                     await asyncio.to_thread(
@@ -1839,12 +2135,22 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                     )
 
             elif streamed_content.strip():
+                if await request.is_disconnected():
+                    logger.info(
+                        "chat_stream_aborted_skip_first_turn_record",
+                        call_id=active_call_id,
+                    )
+                    return
                 await asyncio.to_thread(
                     record_call_turn, active_call_id, "assistant", streamed_content.strip()
                 )
 
-            yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
+            if not await request.is_disconnected():
+                yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
 
+        except asyncio.CancelledError:
+            logger.info("chat_stream_cancelled_by_barge_in", call_id=active_call_id)
+            raise
         except Exception as e:
             err_msg = str(e)
             logger.error("chat_stream_error", error=err_msg)
@@ -1873,6 +2179,10 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                 yield f"event: done\ndata: {json.dumps({'outcome': outcome})}\n\n"
             else:
                 yield f"event: error\ndata: {json.dumps({'error': err_msg})}\n\n"
+        finally:
+            if current_task is not None and _active_chat_tasks.get(active_call_id) is current_task:
+                _active_chat_tasks.pop(active_call_id, None)
+
 
     return StreamingResponse(
         sse_generator(),

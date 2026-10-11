@@ -523,6 +523,96 @@ await runTest("3.3 Stale interrupt timers from superseded barge-in events do NOT
   speech.stop();
 });
 
+await runTest("3.4 Full-duplex listening triggers onBargeIn on genuine caller speech during agent playback", async () => {
+  const speech = new BrowserSpeechRecognition();
+  const mockTrack = new MockMediaStreamTrack();
+  (speech as any).mediaStream = {
+    getAudioTracks: () => [mockTrack],
+    getTracks: () => [mockTrack],
+  };
+
+  let bargeInTriggered = 0;
+  speech.setCallbacks({
+    onBargeIn: () => {
+      bargeInTriggered++;
+    },
+  });
+
+  await speech.start();
+  speech.enterAssistantTurn(50);
+  (speech as any).sessionStartTime = Date.now() - 500;
+
+  assert.equal((speech as any).isPausedForAgent, true, "isPausedForAgent is true during playback");
+  assert.equal(mockTrack.enabled, true, "Physical microphone track remains enabled for full-duplex listening");
+  assert.notEqual((speech as any).recognition, null, "Native speech recognition instance preserved for full-duplex listening");
+
+  // Caller speaks genuine interruption phrase
+  const rec = (speech as any).recognition;
+  rec.onresult({
+    resultIndex: 0,
+    results: [
+      [{ transcript: "wait stop I have a question", isFinal: true }],
+    ],
+  });
+
+  assert.equal(bargeInTriggered, 1, "onBargeIn triggered exactly once on genuine caller speech");
+  speech.stop();
+});
+
+await runTest("3.5 Echo candidate during playback is suppressed by isAcousticEcho and does not trigger onBargeIn", async () => {
+  const speech = new BrowserSpeechRecognition();
+  const mockTrack = new MockMediaStreamTrack();
+  (speech as any).mediaStream = {
+    getAudioTracks: () => [mockTrack],
+    getTracks: () => [mockTrack],
+  };
+
+  speech.registerAssistantSpeech("Thank you for calling Apex Air. What is the best callback phone number for our technician to reach you?");
+
+  let bargeInTriggered = 0;
+  speech.setCallbacks({
+    onBargeIn: () => {
+      bargeInTriggered++;
+    },
+  });
+
+  await speech.start();
+  speech.enterAssistantTurn(60);
+  (speech as any).sessionStartTime = Date.now() - 500;
+
+  // Microphone picks up assistant's own speaker output
+  const rec = (speech as any).recognition;
+  rec.onresult({
+    resultIndex: 0,
+    results: [
+      [{ transcript: "thank you for calling apex air", isFinal: true }],
+    ],
+  });
+
+  assert.equal(bargeInTriggered, 0, "onBargeIn was NOT triggered on acoustic echo candidate");
+  speech.stop();
+});
+
+await runTest("3.6 Non-barge-in mode maintains half-duplex hardware gating on enterAssistantTurn", async () => {
+  const speech = new BrowserSpeechRecognition();
+  const mockTrack = new MockMediaStreamTrack();
+  (speech as any).mediaStream = {
+    getAudioTracks: () => [mockTrack],
+    getTracks: () => [mockTrack],
+  };
+
+  // onBargeIn is undefined
+  await speech.start();
+  assert.notEqual((speech as any).recognition, null);
+
+  speech.enterAssistantTurn(70);
+
+  assert.equal((speech as any).isPausedForAgent, true, "isPausedForAgent is true");
+  assert.equal((speech as any).recognition, null, "Recognition instance nullified for half-duplex fallback");
+  assert.equal(mockTrack.enabled, false, "Physical track gated/muted for half-duplex fallback");
+  speech.stop();
+});
+
 // ============================================================================
 // CHALLENGE 4: Platform-Calibrated Cooldown Matrix for Android, Windows, and iOS
 // ============================================================================
@@ -663,3 +753,6 @@ runTest("5.4 True assistant signature echo is still properly suppressed", () => 
 console.log("\n================================================================================");
 console.log(`ALL ADVERSARIAL STRESS CHALLENGES PASSED: ${passedTests} / ${totalTests} (100%)`);
 console.log("================================================================================\n");
+
+process.exit(0);
+

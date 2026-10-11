@@ -2287,3 +2287,498 @@ def test_calendar_month_date_extraction_and_parsing() -> None:
     assert parsed1.month == 10
     assert parsed1.day == 15
     assert parsed1.hour == 14
+
+
+def test_deterministic_turns_stream_in_clause_chunks() -> None:
+    """Verify that deterministic turns stream in clause chunks for ultra-low latency playback."""
+    settings = Settings(
+        BUSINESS_COMPANY_NAME="Acme Cooling",
+        BUSINESS_OPENING_HOURS={"monday": "8:00 AM - 6:00 PM"},
+        _env_file=None,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+
+    # 1. Greeting stream test
+    res = client.post(
+        "/v1/calls/chat",
+        json={
+            "session_id": "test-stream-chunks",
+            "message": "__GREETING__",
+            "call_secret": _CALL_SECRET,
+        },
+    )
+    assert res.status_code == 200
+    lines = res.text.strip().split("\n")
+    greeting_deltas = []
+    for i, line in enumerate(lines):
+        if line == "event: delta":
+            data_line = lines[i + 1]
+            if data_line.startswith("data: "):
+                payload = json.loads(data_line[6:])
+                greeting_deltas.append(payload["text"])
+
+    assert len(greeting_deltas) >= 2, (
+        f"Expected greeting to be chunked into at least 2 clauses, got {greeting_deltas}"
+    )
+    assert "Thanks for calling Acme Cooling!" in greeting_deltas[0]
+    full_greeting = "".join(greeting_deltas)
+    assert "Thanks for calling Acme Cooling! This is Sarah — how can I help with your heating or cooling today?" == full_greeting
+
+    # 2. Safety emergency stream test
+    call_id = _start_browser_call("test-emergency-chunks")
+    res_emer = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload("test-emergency-chunks", call_id, "I smell gas in my basement!"),
+    )
+    assert res_emer.status_code == 200
+    emer_lines = res_emer.text.strip().split("\n")
+    emer_deltas = []
+    for i, line in enumerate(emer_lines):
+        if line == "event: delta":
+            data_line = emer_lines[i + 1]
+            if data_line.startswith("data: "):
+                payload = json.loads(data_line[6:])
+                emer_deltas.append(payload["text"])
+
+    assert len(emer_deltas) >= 2, (
+        f"Expected emergency to be chunked into at least 2 clauses, got {emer_deltas}"
+    )
+    full_emergency = "".join(emer_deltas)
+    assert "If you smell gas or smoke" in full_emergency
+    assert "Your safety is the top priority." in full_emergency
+
+    # 3. Hours speech stream test
+    call_id_hours = _start_browser_call("test-hours-chunks")
+    res_hours = client.post(
+        "/v1/calls/chat",
+        json=_browser_payload("test-hours-chunks", call_id_hours, "What are your business hours?"),
+    )
+    assert res_hours.status_code == 200
+    hours_lines = res_hours.text.strip().split("\n")
+    hours_deltas = []
+    for i, line in enumerate(hours_lines):
+        if line == "event: delta":
+            data_line = hours_lines[i + 1]
+            if data_line.startswith("data: "):
+                payload = json.loads(data_line[6:])
+                hours_deltas.append(payload["text"])
+
+    assert len(hours_deltas) >= 2, (
+        f"Expected hours speech to be chunked into at least 2 clauses, got {hours_deltas}"
+    )
+    full_hours = "".join(hours_deltas)
+    assert "Monday" in full_hours
+    assert "How can I help you" in full_hours
+
+
+def test_clause_splitting_preserves_meridiem_and_abbreviations() -> None:
+    """Verify that a.m., p.m., e.g., i.e., Dr., and dates are never mutilated by clause chunking."""
+    from app.chat_api import _split_into_clause_chunks
+
+    cases = [
+        ("Would tomorrow at 10:30 a.m. work?", ["Would tomorrow at 10:30 a.m. work?"]),
+        ("Would 2:00 p.m. work?", ["Would 2:00 p.m. work?"]),
+        ("Let us meet at 10:30 a.m. tomorrow.", ["Let us meet at 10:30 a.m. tomorrow."]),
+        ("For example, e.g. filters or belts.", ["For example, ", "e.g. filters or belts."]),
+        ("That is, i.e. tomorrow at 2.", ["That is, ", "i.e. tomorrow at 2."]),
+        ("Please call Dr. Smith at 555-0199.", ["Please call Dr. Smith at 555-0199."]),
+        ("Appointment on Jan. 15 at 10:00 AM.", ["Appointment on Jan. 15 at 10:00 AM."]),
+        (
+            "I have an opening at 10:30 a.m. Would that work?",
+            ["I have an opening at 10:30 a.m. ", "Would that work?"],
+        ),
+        ("We can meet at 10:30 a.m., but not later.", ["We can meet at 10:30 a.m., ", "but not later."]),
+        ("Version 2.0.1 was released on Oct. 31.", ["Version 2.0.1 was released on Oct. 31."]),
+        ("Thinking... okay, got it.", ["Thinking... okay, ", "got it."]),
+    ]
+    for text_input, expected_chunks in cases:
+        actual_chunks = _split_into_clause_chunks(text_input)
+        assert actual_chunks == expected_chunks, (
+            f"Failed on input {text_input!r}:\n  Got:      {actual_chunks}\n  Expected: {expected_chunks}"
+        )
+        assert "".join(actual_chunks) == text_input
+        # Explicitly verify 'm.' or single-letter fragments are never isolated chunks
+        assert not any(c.strip() in ("m.", "a.", "p.", "e.", "g.", "i.") for c in actual_chunks)
+
+
+def test_booking_tools_strict_openai_schema_compliance() -> None:
+    """Verify that every tool in BOOKING_TOOLS complies with OpenAI Strict Mode."""
+    from app.chat_api import BOOKING_TOOLS
+
+    tool_names = [t["function"]["name"] for t in BOOKING_TOOLS]
+    assert "book_appointment_tool" in tool_names
+    assert "check_availability" in tool_names
+    assert "reschedule_appointment_tool" in tool_names
+    assert "cancel_appointment_tool" in tool_names
+    assert "check_my_appointments" not in tool_names
+
+    for tool in BOOKING_TOOLS:
+        assert tool["type"] == "function"
+        fn = tool["function"]
+        assert fn["strict"] is True, f"Tool {fn['name']} must set strict: True"
+
+        params = fn["parameters"]
+        assert params["type"] == "object"
+        assert params["additionalProperties"] is False, (
+            f"Tool {fn['name']} must set additionalProperties: False"
+        )
+
+        props = params["properties"]
+        required = params["required"]
+        assert set(required) == set(props.keys()), (
+            f"Tool {fn['name']} required fields must match properties keys exactly"
+        )
+
+    # Check nullable types for optional fields
+    book_tool = next(
+        t["function"] for t in BOOKING_TOOLS if t["function"]["name"] == "book_appointment_tool"
+    )
+    book_props = book_tool["parameters"]["properties"]
+    assert book_props["name"]["type"] == ["string", "null"]
+    assert book_props["notes"]["type"] == ["string", "null"]
+
+    check_tool = next(
+        t["function"] for t in BOOKING_TOOLS if t["function"]["name"] == "check_availability"
+    )
+    check_props = check_tool["parameters"]["properties"]
+    assert check_props["date"]["type"] == "string"
+    assert check_props["time"]["type"] == ["string", "null"]
+    assert check_props["service"]["type"] == ["string", "null"]
+
+
+def test_execute_tool_check_availability() -> None:
+    """Verify check_availability execution via _execute_tool."""
+    from zoneinfo import ZoneInfo
+
+    from app.chat_api import _execute_tool
+    from app.config import Settings
+
+    settings = Settings(_env_file=None)
+    tz = ZoneInfo(settings.business_timezone)
+    cand = datetime.now(tz) + timedelta(days=5)
+    while cand.weekday() >= 5:
+        cand += timedelta(days=1)
+    date_str = cand.strftime("%Y-%m-%d")
+
+    # Slot is available
+    res = _execute_tool(
+        settings,
+        "check_availability",
+        {"date": date_str, "time": "10:00 AM", "service": "AC repair"},
+    )
+    assert "is available" in res
+    assert "10:00 AM" in res
+
+    # Book slot, then check again for conflict
+    phone = "+15553278401"
+    book_res = _execute_tool(
+        settings,
+        "book_appointment_tool",
+        {"phone_number": phone, "service": "AC repair", "date": date_str, "time": "10:00 AM"},
+    )
+    assert "Booked" in book_res
+
+    conflict_res = _execute_tool(
+        settings,
+        "check_availability",
+        {"date": date_str, "time": "10:00 AM", "service": "AC repair"},
+    )
+    assert "already booked" in conflict_res or "already taken" in conflict_res
+    assert "Nearest available" in conflict_res
+
+
+def test_execute_tool_book_appointment_atomically_consumes_pending_ticket() -> None:
+    """Verify booking via tool atomically updates any existing pending ticket to consumed."""
+    from datetime import UTC
+    from uuid import uuid4
+    from zoneinfo import ZoneInfo
+
+    from app.chat_api import _execute_tool
+    from app.config import Settings
+    from app.db import Appointment, ConfirmationTicket, new_session
+
+    settings = Settings(_env_file=None)
+    tz = ZoneInfo(settings.business_timezone)
+    cand = datetime.now(tz) + timedelta(days=6)
+    while cand.weekday() >= 5:
+        cand += timedelta(days=1)
+    date_str = cand.strftime("%Y-%m-%d")
+    time_str = "11:00 AM"
+
+    call_id = 9876543
+    tkt_id = f"tkt_{uuid4().hex[:12]}"
+    phone = "+15553278402"
+    service = "AC repair"
+    now_utc = datetime.now(UTC)
+
+    # 1. Create a pre-existing pending ticket for this call_id
+    with new_session() as session:
+        pending_ticket = ConfirmationTicket(
+            ticket_id=tkt_id,
+            call_id=str(call_id),
+            service=service,
+            phone=phone,
+            scheduled_for=cand.replace(hour=11, minute=0).astimezone(UTC),
+            fingerprint="test_fp_pending",
+            status="pending",
+            created_at=now_utc,
+            expires_at=now_utc + timedelta(minutes=10),
+            appointment_id=None,
+        )
+        session.add(pending_ticket)
+        session.commit()
+
+    # 2. Execute book_appointment_tool with call_id
+    res = _execute_tool(
+        settings,
+        "book_appointment_tool",
+        {
+            "phone_number": phone,
+            "service": service,
+            "date": date_str,
+            "time": time_str,
+            "name": "Jane Doe",
+            "notes": "Furnace making strange rattling noise",
+        },
+        call_id=call_id,
+    )
+    assert "Booked" in res
+
+    # 3. Assert pending ticket transitioned atomically to consumed with appointment_id linked
+    with new_session() as session:
+        tkt = session.query(ConfirmationTicket).filter_by(ticket_id=tkt_id).one()
+        assert tkt.status == "consumed"
+        assert tkt.consumed_at is not None
+        assert tkt.appointment_id is not None
+
+        # Verify linked appointment exists
+        appt = session.query(Appointment).filter_by(id=tkt.appointment_id).one()
+        assert appt.service == service
+
+        # Assert ZERO pending tickets remain for this call_id
+        pending_remaining = (
+            session.query(ConfirmationTicket)
+            .filter_by(call_id=str(call_id), status="pending")
+            .count()
+        )
+        assert pending_remaining == 0
+
+
+def test_execute_tool_book_appointment_fresh_consumed_ticket_when_no_pending() -> None:
+    """Verify tool booking creates a consumed ledger ticket when no pending ticket existed."""
+    from zoneinfo import ZoneInfo
+
+    from app.chat_api import _execute_tool
+    from app.config import Settings
+    from app.db import ConfirmationTicket, new_session
+
+    settings = Settings(_env_file=None)
+    tz = ZoneInfo(settings.business_timezone)
+    cand = datetime.now(tz) + timedelta(days=7)
+    while cand.weekday() >= 5:
+        cand += timedelta(days=1)
+    date_str = cand.strftime("%Y-%m-%d")
+
+    call_id = 9876544
+    phone = "+15553278403"
+    service = "Emergency service"
+
+    res = _execute_tool(
+        settings,
+        "book_appointment_tool",
+        {
+            "phone_number": phone,
+            "service": service,
+            "date": date_str,
+            "time": "02:00 PM",
+        },
+        call_id=call_id,
+    )
+    assert "Booked" in res
+
+    with new_session() as session:
+        tickets = (
+            session.query(ConfirmationTicket)
+            .filter_by(call_id=str(call_id))
+            .all()
+        )
+        assert len(tickets) == 1
+        tkt = tickets[0]
+        assert tkt.ticket_id.startswith("tool_")
+        assert tkt.status == "consumed"
+        assert tkt.appointment_id is not None
+
+
+def test_chat_stream_disconnect_aborts_streaming_and_skips_turn_record() -> None:
+    """Requirement R3: When client aborts / disconnects, streaming loop terminates
+
+    and incomplete assistant turn is NOT persisted to the database.
+    """
+    from uuid import uuid4
+
+    from starlette.requests import Request
+
+    from app.db import CallTurn, new_session
+
+    settings = Settings(LLM_API_KEY="test-key", _env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"barge-in-disc-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+
+    async def fake_stream(*args: object, **kwargs: object) -> object:
+        for i in range(5):
+            delta = type(
+                "Delta",
+                (),
+                {"content": f"Clause chunk {i}. ", "tool_calls": None},
+            )()
+            chunk = type("Chunk", (), {"choices": [type("Choice", (), {"delta": delta})()]})()
+            yield chunk
+
+    with patch("app.chat_api._get_client") as mock_get_client:
+        mock_openai = AsyncMock()
+        mock_openai.chat.completions.create = AsyncMock(side_effect=fake_stream)
+        mock_get_client.return_value = mock_openai
+
+        # Simulate client disconnecting after receiving initial tokens
+        disconnect_calls = [False, False, True]
+
+        async def mock_is_disconnected(self: Request) -> bool:
+            if disconnect_calls:
+                return disconnect_calls.pop(0)
+            return True
+
+        with patch.object(Request, "is_disconnected", mock_is_disconnected):
+            res = client.post(
+                "/v1/calls/chat",
+                json=_browser_payload(room, call_id, "What are your services?"),
+            )
+            assert res.status_code == 200
+
+    # Ensure no assistant turn was written to the database for the aborted stream
+    with new_session() as session:
+        turns = (
+            session.query(CallTurn)
+            .filter_by(call_id=call_id, role="assistant")
+            .all()
+        )
+        assert len(turns) == 0, "Aborted assistant turn must NOT be recorded in the database"
+
+
+def test_chat_stream_disconnect_skips_tool_execution() -> None:
+    """Requirement R3: Client disconnect before tool execution prevents
+
+    running tools and booking unconfirmed appointments.
+    """
+    from uuid import uuid4
+
+    from starlette.requests import Request
+
+    from app.db import Appointment, CallTurn, new_session
+
+    settings = Settings(LLM_API_KEY="test-key", _env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"barge-in-tool-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+
+    tool_call_obj = type(
+        "ToolCall",
+        (),
+        {
+            "id": "call_bargein_1",
+            "function": type(
+                "Function",
+                (),
+                {
+                    "name": "book_appointment_tool",
+                    "arguments": json.dumps({
+                        "phone_number": "+15559998877",
+                        "service": "AC repair",
+                        "date": "2026-11-10",
+                        "time": "10:00 AM",
+                    }),
+                },
+            )(),
+        },
+    )()
+
+    async def fake_stream_with_tool(*args: object, **kwargs: object) -> object:
+        delta = type("Delta", (), {"content": None, "tool_calls": [tool_call_obj]})()
+        chunk = type("Chunk", (), {"choices": [type("Choice", (), {"delta": delta})()]})()
+        yield chunk
+
+    with patch("app.chat_api._get_client") as mock_get_client, \
+         patch("app.chat_api._execute_tool") as mock_tool:
+        mock_openai = AsyncMock()
+        mock_openai.chat.completions.create = AsyncMock(side_effect=fake_stream_with_tool)
+        mock_get_client.return_value = mock_openai
+
+        async def mock_is_disconnected(self: Request) -> bool:
+            return True
+
+        with patch.object(Request, "is_disconnected", mock_is_disconnected):
+            res = client.post(
+                "/v1/calls/chat",
+                json=_browser_payload(room, call_id, "Can you check available times for tomorrow?"),
+            )
+            assert res.status_code == 200
+
+        # _execute_tool must not have been executed
+        assert mock_tool.call_count == 0, "Tools must be skipped on client disconnect"
+
+    # Confirm zero appointments or assistant turns created
+    with new_session() as session:
+        turns = (
+            session.query(CallTurn)
+            .filter_by(call_id=call_id, role="assistant")
+            .all()
+        )
+        assert len(turns) == 0
+        appts = session.query(Appointment).filter_by(service="AC repair").all()
+        assert len(appts) == 0
+
+
+def test_chat_stream_cancels_prior_task_on_new_request() -> None:
+    """Requirement R3: A subsequent request for the same call_id immediately cancels
+
+    any in-flight chat stream task registered in _active_chat_tasks.
+    """
+    from unittest.mock import MagicMock
+    from uuid import uuid4
+
+    from app.chat_api import _active_chat_tasks
+
+    settings = Settings(LLM_API_KEY="test-key", _env_file=None)
+    app = create_app(settings)
+    client = TestClient(app)
+
+    room = f"task-cancel-{uuid4().hex[:8]}"
+    call_id = _start_browser_call(room)
+
+    # Register a mock running task (done() is synchronous in asyncio.Task)
+    mock_task = MagicMock()
+    mock_task.done.return_value = False
+    _active_chat_tasks[call_id] = mock_task
+
+    async def fake_empty_stream(*args: object, **kwargs: object) -> object:
+        if False:
+            yield None
+
+    with patch("app.chat_api._get_client") as mock_get_client:
+        mock_openai = AsyncMock()
+        mock_openai.chat.completions.create = AsyncMock(side_effect=fake_empty_stream)
+        mock_get_client.return_value = mock_openai
+
+        client.post(
+            "/v1/calls/chat",
+            json=_browser_payload(room, call_id, "New turn while prior turn running"),
+        )
+
+    mock_task.cancel.assert_called_once()
+    assert call_id not in _active_chat_tasks or _active_chat_tasks[call_id] is not mock_task
+

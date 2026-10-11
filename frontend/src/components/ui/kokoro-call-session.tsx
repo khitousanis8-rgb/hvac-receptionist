@@ -457,13 +457,11 @@ export function KokoroCallSession({
           },
           onBargeIn: () => {
             console.log("[VoiceCall] Caller barged in: interrupting assistant playback");
-            if (abortControllerRef.current) {
-              abortControllerRef.current.abort();
-              abortControllerRef.current = null;
-            }
+            abortControllerRef.current?.abort();
+            abortControllerRef.current = null;
+            neuralVoice.stop();
             speechEpochRef.current += 1;
             const interruptEpoch = speechEpochRef.current;
-            neuralVoice.stop();
             setIsAgentSpeaking(false);
             isAgentSpeakingRef.current = false;
             setIsAgentThinking(false);
@@ -812,15 +810,15 @@ export function KokoroCallSession({
   };
 
   const handleInterrupt = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
     neuralVoice.stop();
+    speechEpochRef.current += 1;
+    const interruptEpoch = speechEpochRef.current;
     setIsAgentSpeaking(false);
     isAgentSpeakingRef.current = false;
     setIsAgentThinking(false);
-    speechRecRef.current?.resumeImmediatelyForInterrupt();
+    speechRecRef.current?.resumeImmediatelyForInterrupt(interruptEpoch);
   };
 
   const handleEndCall = async () => {

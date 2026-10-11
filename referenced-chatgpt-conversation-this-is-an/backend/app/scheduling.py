@@ -393,6 +393,135 @@ def format_available_slot_for_speech(dt: datetime, settings: Settings) -> str:
     return f"{weekday} at {time_str}"
 
 
+def check_slot_availability(
+    session: Session,
+    settings: Settings,
+    date_str: str,
+    time_str: str | None = None,
+    service: str | None = None,
+) -> tuple[bool, str, list[datetime]]:
+    """Check if a date and time slot is available for service, or find available openings.
+
+    Returns:
+        (is_available, message, alternative_datetimes)
+    """
+    clean_date = date_str.strip() if date_str else ""
+    if not clean_date:
+        return False, "Please provide an appointment date to check availability.", []
+
+    if time_str is not None:
+        clean_time = time_str.strip()
+        if not clean_time or clean_time.lower() in ("none", "null"):
+            time_str = None
+        else:
+            time_str = clean_time
+
+    if service is not None:
+        clean_service = service.strip()
+        if not clean_service or clean_service.lower() in ("none", "null"):
+            service = None
+        else:
+            service = clean_service
+
+    if service and settings.business_services:
+        if isinstance(settings.business_services, str):
+            approved_services = [s.strip() for s in settings.business_services.split(",")]
+        else:
+            approved_services = [s.strip() for s in settings.business_services]
+        normalized_requested = service.strip().lower()
+        matched_service: str | None = None
+        for approved in approved_services:
+            clean_app = approved.lower()
+            if (
+                normalized_requested == clean_app
+                or normalized_requested in clean_app
+                or clean_app in normalized_requested
+            ):
+                matched_service = approved
+                break
+        if not matched_service:
+            tune_words = {"tune-up", "tuneup", "tune up", "maintenance", "inspection"}
+            if any(tw in normalized_requested for tw in tune_words):
+                for approved in approved_services:
+                    low_app = approved.lower()
+                    if "repair" in low_app or "furnace" in low_app or "ac" in low_app:
+                        matched_service = approved
+                        break
+        if not matched_service:
+            services_str = ", ".join(approved_services)
+            return (
+                False,
+                f"'{service}' is not on our approved services list ({services_str}).",
+                [],
+            )
+        service = matched_service
+
+    if time_str:
+        when = parse_local_datetime(settings, clean_date, time_str)
+        if when is None:
+            return (
+                False,
+                "I could not understand that date or time. Please provide a clear date and time.",
+                [],
+            )
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        now_utc = datetime.now(UTC)
+        if when < now_utc:
+            alts = find_nearest_available_slots(session, settings, now_utc, count=2)
+            return False, "That time is in the past. Please choose a future time.", alts
+        if not is_within_business_hours(when, settings):
+            alts = find_nearest_available_slots(session, settings, when, count=2)
+            return (
+                False,
+                "That time is outside business hours. Please choose a time during opening hours.",
+                alts,
+            )
+        when_utc = when.astimezone(UTC)
+        if has_conflict(session, when_utc):
+            alts = find_nearest_available_slots(session, settings, when, count=2)
+            return False, "That slot is already booked. Please choose another time.", alts
+
+        tz = ZoneInfo(settings.business_timezone)
+        local_time = when.astimezone(tz).strftime("%I:%M %p").lstrip("0")
+        local_date = when.astimezone(tz).strftime("%A, %B %d")
+        svc_clause = f" for {service}" if service else ""
+        return True, f"The slot on {local_date} at {local_time} is available{svc_clause}.", []
+
+    # Date-level availability check
+    ref_dt = parse_local_datetime(settings, clean_date, "09:00")
+    if ref_dt is None:
+        return False, "I could not understand that date. Please provide a clear date.", []
+
+    tz = ZoneInfo(settings.business_timezone)
+    local_ref = ref_dt.astimezone(tz)
+    now_local = datetime.now(tz)
+    now_utc = datetime.now(UTC)
+
+    day_date = local_ref.date()
+    if day_date < now_local.date():
+        alts = find_nearest_available_slots(session, settings, now_utc, count=2)
+        return False, "That date is in the past. Please choose a future date.", alts
+
+    day_slots: list[datetime] = []
+    for hour in range(24):
+        slot_dt = datetime(day_date.year, day_date.month, day_date.day, hour, 0, tzinfo=tz)
+        slot_utc = slot_dt.astimezone(UTC)
+        if slot_utc >= now_utc and is_within_business_hours(slot_dt, settings):
+            if not has_conflict(session, slot_utc):
+                day_slots.append(slot_dt)
+
+    date_formatted = local_ref.strftime("%A, %B %d")
+    if day_slots:
+        return True, f"We have openings on {date_formatted}.", day_slots[:3]
+    else:
+        start_search = datetime(day_date.year, day_date.month, day_date.day, 9, 0, tzinfo=tz)
+        if start_search.astimezone(UTC) < now_utc:
+            start_search = now_local
+        alts = find_nearest_available_slots(session, settings, start_search, count=2)
+        return False, f"There are no available slots on {date_formatted}.", alts
+
+
 def lookup_customer_appointment(session: Session, phone_number: str) -> Appointment | None:
     """Find the earliest upcoming active appointment for a customer by phone number."""
     now = datetime.now(UTC)

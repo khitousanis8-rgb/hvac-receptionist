@@ -27,6 +27,10 @@ const suites = [
   { name: "Audio Context Unlock & Stress", path: "stress-audio-challenger.mjs", stripTypes: false },
   { name: "Speech Recognition Challenge", path: "speech-recognition.challenge.test.ts", stripTypes: true },
   { name: "Empirical Audio & Stream Stress", path: "../__tests__/empirical-frontend-audio-stress.test.ts", stripTypes: true },
+  { name: "Empirical Clause Streaming Stress", path: "../__tests__/empirical-clause-streaming-stress.test.ts", stripTypes: true },
+  { name: "Adversarial Clause Challenger M1 Iter 2", path: "../__tests__/adversarial-clause-challenger-m1-iter2.test.ts", stripTypes: true },
+  { name: "Adversarial Audio & Barge-In Challenge", path: "../__tests__/adversarial-audio-challenge.test.ts", stripTypes: true },
+  { name: "Barge-In Purge Adversarial Challenger", path: "../__tests__/barge-in-purge-adversarial.test.ts", stripTypes: true },
 ];
 
 for (const suite of suites) {

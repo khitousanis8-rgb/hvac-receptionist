@@ -400,3 +400,46 @@ Integrity mode: development
 - [ ] Production build succeeds (`npm run build`).
 - [ ] Runtime database `hvac_receptionist.db` remains 100% untouched.
 
+
+
+## 2026-10-10T20:41:31Z
+
+Requested team: Full Team
+
+Implement ultra-low latency clause streaming, strict grammar-enforced tool calling, and full-duplex interruption (barge-in) handling for the Blueridge Comfort Systems voice receptionist.
+
+Working directory: c:\Users\TL\Documents\Codex\2026-08-27\referenced-chatgpt-conversation-this-is-an
+Integrity mode: demo
+
+## Requirements
+
+### R1. Clause-Level Audio Streaming Pipeline
+Stream assistant response tokens into immediate clause chunks (delimited by punctuation and natural speech cadence: ., ,, ?, !, ;) so audio synthesis and delivery begin within <400ms without waiting for full turn completion.
+
+### R2. Strict Grammar-Enforced Tool Schemas
+Enforce strict JSON schema validation (strict: true) on scheduling and appointment tools (book_appointment_tool, check_availability, etc.), guaranteeing 100% schema-compliant parameter generation with zero parsing failures.
+
+### R3. Full-Duplex Interruption & Cancellation (Barge-In)
+Implement bidirectional streaming interruption handling: when a caller speaks while the assistant is speaking, actively cancel pending LLM generation and purge downstream audio delivery within <100ms without stale audio playback.
+
+## Verification Resources
+
+- Verification suite runner: python tools/verification/runner.py --profile fast
+- Backend test suite: python -m pytest tests/ -q
+- Unit verification harness: python -m unittest discover -s tools/verification/tests -v
+
+## Acceptance Criteria
+
+### Latency & Streaming Performance
+- [ ] Time-to-First-Audio-Chunk (TTFB) is verified under 450ms across simulated multi-clause responses.
+- [ ] Simulated interruption event aborts ongoing generation and purges audio stream within <100ms.
+
+### Tool Calling Reliability
+- [ ] All tool schemas validate strictly (strict: true) with zero argument validation errors.
+- [ ] Confirmation tickets and database reservations remain atomic with no orphaned appointments.
+
+### Regression & Code Quality
+- [ ] All 342+ backend unit & integration tests pass with 0 failures.
+- [ ] ruff check app tests passes with 0 warnings or errors.
+- [ ] mypy app passes with 0 type issues across all source files.
+- [ ] Verification harness (python tools/verification/runner.py --profile fast) passes cleanly.

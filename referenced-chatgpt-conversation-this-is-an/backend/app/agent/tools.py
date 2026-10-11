@@ -12,6 +12,8 @@ from app.db import init_db, new_session
 from app.scheduling import (
     book_appointment,
     cancel_appointment_by_phone,
+    check_slot_availability,
+    format_available_slot_for_speech,
     parse_local_datetime,
     reschedule_appointment_by_phone,
 )
@@ -142,7 +144,53 @@ async def cancel_appointment_tool(
         return message
 
 
+@function_tool
+async def check_availability(
+    context: RunContext[None],
+    date: str,
+    time: str | None = None,
+    service: str | None = None,
+) -> str:
+    """Check if a date and time slot is available for service, or find available openings.
+
+    Args:
+        date: Appointment date in YYYY-MM-DD or spoken format (e.g. tomorrow, Monday).
+        time: Optional start time in HH:MM or 12h format (e.g. 10:00 AM, 02:00 PM).
+        service: Optional requested HVAC service.
+        context: Injected run context.
+    """
+    settings = get_settings()
+    with new_session() as session:
+        is_avail, message, alternatives = check_slot_availability(
+            session,
+            settings,
+            date_str=date,
+            time_str=time,
+            service=service,
+        )
+        if is_avail:
+            if alternatives:
+                alt_strs = [
+                    format_available_slot_for_speech(sl, settings) for sl in alternatives
+                ]
+                return f"{message} Available times include: {', '.join(alt_strs)}."
+            return message
+        if alternatives:
+            alt_strs = [
+                format_available_slot_for_speech(sl, settings) for sl in alternatives[:2]
+            ]
+            if len(alt_strs) == 1:
+                return f"{message} Nearest available opening is {alt_strs[0]}."
+            return f"{message} Nearest available openings are {alt_strs[0]} and {alt_strs[1]}."
+        return message
+
+
 def build_receptionist_tools(settings: Settings) -> list[Any]:
     """Return the function tools registered on the receptionist agent."""
     init_db()
-    return [book_appointment_tool, reschedule_appointment_tool, cancel_appointment_tool]
+    return [
+        check_availability,
+        book_appointment_tool,
+        reschedule_appointment_tool,
+        cancel_appointment_tool,
+    ]

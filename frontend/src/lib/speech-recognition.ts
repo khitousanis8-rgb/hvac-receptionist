@@ -130,12 +130,13 @@ export class BrowserSpeechRecognition {
       this.recognition.maxAlternatives = 1;
 
       this.recognition.onresult = (event: any) => {
-        // Drop any microphone capture while muted, inactive, while assistant is speaking,
-        // or if this result belongs to an earlier speech epoch (e.g. in-flight Google Speech socket frames)
+        // Drop any microphone capture while muted, inactive,
+        // or if this result belongs to an earlier speech epoch (e.g. in-flight Google Speech socket frames).
+        // If barge-in is disabled (!onBargeIn), also gate during agent playback.
         if (
           !this.shouldBeListening ||
           this.isMuted ||
-          this.isPausedForAgent ||
+          (this.isPausedForAgent && !this.onBargeIn) ||
           this.activeListeningEpoch !== this.currentSpeechEpoch
         ) {
           console.warn(`[EpochGuard] Dropped stale transcript from epoch ${this.activeListeningEpoch} (current: ${this.currentSpeechEpoch})`);
@@ -149,14 +150,6 @@ export class BrowserSpeechRecognition {
           return;
         }
 
-        // Level-based gating: immediately drop capture if physical audio output is active
-        if (this.isAudioOutputActive()) {
-          return;
-        }
-
-        // Acoustic cooldown guard: discard any residual speaker reverb within acoustic cooldown of playback finish
-        if (Date.now() - this.lastAgentSpeechEndTime < this.getAcousticCooldownMs()) return;
-
         let interimText = "";
         let finalText = "";
 
@@ -168,6 +161,37 @@ export class BrowserSpeechRecognition {
             interimText += transcript;
           }
         }
+
+        const candidate = (finalText || interimText).trim();
+
+        // Active listening during assistant playback (barge-in detection)
+        if (this.isPausedForAgent) {
+          if (!this.onBargeIn || !candidate) {
+            return;
+          }
+
+          // Guard against acoustic echo loops
+          if (this.isAcousticEcho(candidate)) {
+            console.warn("[EchoGuard] Suppressed microphone acoustic echo candidate during playback:", candidate);
+            return;
+          }
+
+          // When genuine speech occurs from caller (!isAcousticEcho and candidate text has words), immediately trigger onBargeIn
+          const hasWords = /\b[a-zA-Z0-9]+\b/.test(candidate);
+          if (hasWords) {
+            console.log("[BargeIn] Genuine speech detected during playback, triggering barge-in:", candidate);
+            this.onBargeIn();
+          }
+          return;
+        }
+
+        // Level-based gating: immediately drop capture if physical audio output is active
+        if (this.isAudioOutputActive()) {
+          return;
+        }
+
+        // Acoustic cooldown guard: discard any residual speaker reverb within acoustic cooldown of playback finish
+        if (Date.now() - this.lastAgentSpeechEndTime < this.getAcousticCooldownMs()) return;
 
         if (finalText.trim()) {
           if (this.isAcousticEcho(finalText.trim())) {
@@ -212,9 +236,9 @@ export class BrowserSpeechRecognition {
         console.warn("[SpeechRecognition] Event error:", event.error);
         // "network" or "audio-capture" are recoverable browser session timeouts, not fatal errors
         if (event.error === "network" || event.error === "audio-capture") {
-          if (this.shouldBeListening && !this.isMuted && !this.isPausedForAgent) {
+          if (this.shouldBeListening && !this.isMuted && (!this.isPausedForAgent || this.onBargeIn)) {
             window.setTimeout(() => {
-              if (this.shouldBeListening && !this.isMuted && !this.isPausedForAgent && this.recognition) {
+              if (this.shouldBeListening && !this.isMuted && (!this.isPausedForAgent || this.onBargeIn) && this.recognition) {
                 try {
                   this.activeRecognitionEpoch = this.speechEpoch;
                   this.recognition.start();
@@ -256,10 +280,10 @@ export class BrowserSpeechRecognition {
         // On Android Chrome, Google Speech unbinds its audio recording channel asynchronously.
         // Restarting immediately synchronously causes DOMException: InvalidStateError.
         // Use a 150ms backoff with state guards before attempting to restart.
-        if (this.shouldBeListening && !this.isMuted && !this.isPausedForAgent && this.recognition) {
+        if (this.shouldBeListening && !this.isMuted && (!this.isPausedForAgent || this.onBargeIn) && this.recognition) {
           this.restartTimer = window.setTimeout(() => {
             this.restartTimer = null;
-            if (!this.shouldBeListening || this.isMuted || this.isPausedForAgent || !this.recognition) {
+            if (!this.shouldBeListening || this.isMuted || (this.isPausedForAgent && !this.onBargeIn) || !this.recognition) {
               this.onStateChange?.(false);
               return;
             }
@@ -613,8 +637,8 @@ export class BrowserSpeechRecognition {
     this.shouldBeListening = true;
     this.isMuted = false;
 
-    if (this.isPausedForAgent) {
-      // Do not start microphone while assistant is speaking; will auto-resume on speech finish
+    if (this.isPausedForAgent && !this.onBargeIn) {
+      // Do not start microphone while assistant is speaking if barge-in is disabled; will auto-resume on speech finish
       return;
     }
 
@@ -849,41 +873,67 @@ export class BrowserSpeechRecognition {
     this.accumulatedFinalText = "";
     this.audioChunks = [];
 
-    // 1. Native Web Speech: detach all handlers, abort recognition, and nullify instance
-    if (this.recognition) {
-      try {
-        this.recognition.onresult = null;
-        this.recognition.onerror = null;
-        this.recognition.onend = null;
-        this.recognition.abort();
-      } catch {
-        // ignore
+    if (!this.onBargeIn) {
+      // 1. Native Web Speech: detach all handlers, abort recognition, and nullify instance
+      if (this.recognition) {
+        try {
+          this.recognition.onresult = null;
+          this.recognition.onerror = null;
+          this.recognition.onend = null;
+          this.recognition.abort();
+        } catch {
+          // ignore
+        }
+        this.recognition = null;
       }
-      this.recognition = null;
-    }
 
-    // 2. MediaRecorder Fallback: stop recorder, clear audio chunks, and cancel VAD
-    if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
-      try {
-        this.mediaRecorder.stop();
-      } catch {
-        // ignore
+      // 2. MediaRecorder Fallback: stop recorder, clear audio chunks, and cancel VAD
+      if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
+        try {
+          this.mediaRecorder.stop();
+        } catch {
+          // ignore
+        }
+      }
+      if (this.vadInterval !== null) {
+        window.clearInterval(this.vadInterval);
+        this.vadInterval = null;
+      }
+
+      // 3. True hardware gating: mute physical mediaStream tracks so zero signal reaches AudioContext/VAD
+      if (this.mediaStream) {
+        this.mediaStream.getAudioTracks().forEach((track) => {
+          track.enabled = false;
+        });
+      }
+
+      this.isListening = false;
+      this.onStateChange?.(false);
+    } else {
+      // Full-duplex barge-in mode: keep recognition and microphone tracks active
+      // so caller speech during playback can be captured and evaluated for interruption.
+      this.activeListeningEpoch = this.currentSpeechEpoch;
+      this.activeRecognitionEpoch = this.currentSpeechEpoch;
+      if (this.mediaStream) {
+        this.mediaStream.getAudioTracks().forEach((track) => {
+          track.enabled = true;
+        });
+      }
+      if (this.isSupported) {
+        if (!this.recognition && this.SpeechRecognitionClass) {
+          this.initNativeRecognition(this.SpeechRecognitionClass);
+        }
+        if (this.recognition && !this.isListening) {
+          try {
+            this.recognition.start();
+            this.isListening = true;
+            this.onStateChange?.(true);
+          } catch {
+            // Already active
+          }
+        }
       }
     }
-    if (this.vadInterval !== null) {
-      window.clearInterval(this.vadInterval);
-      this.vadInterval = null;
-    }
-
-    // 3. True hardware gating: mute physical mediaStream tracks so zero signal reaches AudioContext/VAD
-    if (this.mediaStream) {
-      this.mediaStream.getAudioTracks().forEach((track) => {
-        track.enabled = false;
-      });
-    }
-
-    this.isListening = false;
-    this.onStateChange?.(false);
     return this.currentSpeechEpoch;
   }
 
@@ -1094,7 +1144,8 @@ export class BrowserSpeechRecognition {
             reader.onloadend = async () => {
               try {
                 if (epoch !== this.captureEpoch) return;
-                if (!this.shouldBeListening || this.isPausedForAgent || this.isMuted) return;
+                if (!this.shouldBeListening || this.isMuted) return;
+                if (this.isPausedForAgent && !this.onBargeIn) return;
                 const result = reader.result as string;
                 const base64 = result?.split(",")[1];
                 if (base64) {
@@ -1105,14 +1156,28 @@ export class BrowserSpeechRecognition {
                     filename: `audio.${ext}`,
                   });
                   if (epoch !== this.captureEpoch) return;
-                  if (!this.shouldBeListening || this.isPausedForAgent || this.isMuted) return;
+                  if (!this.shouldBeListening || this.isMuted) return;
+                  if (this.isPausedForAgent && !this.onBargeIn) return;
                   const text = res.text || res.transcript;
                   if (text && text.trim()) {
-                    if (this.isAcousticEcho(text.trim())) {
-                      console.warn("[EchoGuard] Suppressed fallback acoustic echo:", text.trim());
+                    const candidate = text.trim();
+                    if (this.isPausedForAgent) {
+                      if (!this.onBargeIn) return;
+                      if (this.isAcousticEcho(candidate)) {
+                        console.warn("[EchoGuard] Suppressed fallback acoustic echo candidate during playback:", candidate);
+                        return;
+                      }
+                      if (/\b[a-zA-Z0-9]+\b/.test(candidate)) {
+                        console.log("[BargeIn] Genuine fallback speech detected during playback, triggering barge-in:", candidate);
+                        this.onBargeIn();
+                      }
                       return;
                     }
-                    this.onTranscript?.(text.trim(), true);
+                    if (this.isAcousticEcho(candidate)) {
+                      console.warn("[EchoGuard] Suppressed fallback acoustic echo:", candidate);
+                      return;
+                    }
+                    this.onTranscript?.(candidate, true);
                   }
                 }
               } catch (innerErr) {

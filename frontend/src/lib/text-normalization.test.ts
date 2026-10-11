@@ -302,6 +302,86 @@ export const CLAUSE_SPLIT_TEST_CASES = [
       }
     },
   },
+  {
+    name: "Opening conversational clause: 'Sure,' splits immediately with trailing comma",
+    input: "Sure, let me check our schedule for you.",
+    test: () => {
+      const split = findClauseSplit("Sure, let me check our schedule for you.", true);
+      if (!split) throw new Error("Expected immediate split at comma for 'Sure,'");
+      if (split.sentence !== "Sure,") {
+        throw new Error(`Expected 'Sure,' with trailing comma but got '${split.sentence}'`);
+      }
+      if (split.rest.trim() !== "let me check our schedule for you.") {
+        throw new Error(`Unexpected rest: '${split.rest}'`);
+      }
+    },
+  },
+  {
+    name: "Opening conversational clause: 'Yes.' and 'Hi!' split immediately",
+    input: "Yes. We have an opening.",
+    test: () => {
+      const splitYes = findClauseSplit("Yes. We have an opening.", true);
+      if (!splitYes || splitYes.sentence !== "Yes.") {
+        throw new Error(`Expected 'Yes.' but got '${splitYes?.sentence}'`);
+      }
+
+      const splitHi = findClauseSplit("Hi! How can I help you?", true);
+      if (!splitHi || splitHi.sentence !== "Hi!") {
+        throw new Error(`Expected 'Hi!' but got '${splitHi?.sentence}'`);
+      }
+
+      const splitGotIt = findClauseSplit("Got it. Let me look that up.", true);
+      if (!splitGotIt || splitGotIt.sentence !== "Got it.") {
+        throw new Error(`Expected 'Got it.' but got '${splitGotIt?.sentence}'`);
+      }
+    },
+  },
+  {
+    name: "Intermediate clause: breath group splits at >= 12 characters and retains cadence punctuation",
+    input: "That sounds wonderful, our technician will be right over.",
+    test: () => {
+      const split = findClauseSplit(
+        "That sounds wonderful, our technician will be right over.",
+        false
+      );
+      if (!split) throw new Error("Expected split at comma for intermediate clause >= 12 chars");
+      if (split.sentence !== "That sounds wonderful,") {
+        throw new Error(`Expected 'That sounds wonderful,' with trailing comma but got '${split.sentence}'`);
+      }
+    },
+  },
+  {
+    name: "Intermediate clause: short clause (< 12 chars) does NOT split prematurely",
+    input: "and then, our technician will inspect the air filter.",
+    test: () => {
+      const split = findClauseSplit(
+        "and then, our technician will inspect the air filter.",
+        false
+      );
+      // 'and then' is 8 chars (< 12), so it should not split at the comma, but proceed to the terminal period
+      if (!split) throw new Error("Expected split at terminal period");
+      if (split.sentence === "and then,") {
+        throw new Error(`Premature intermediate split on short phrase: '${split.sentence}'`);
+      }
+      if (!split.sentence.includes("inspect the air filter.")) {
+        throw new Error(`Expected full sentence up to period, got: '${split.sentence}'`);
+      }
+    },
+  },
+  {
+    name: "Semicolon cadence retention: retains ';' for prosody",
+    input: "Our certified tech is Sarah; she will call ahead before arriving.",
+    test: () => {
+      const split = findClauseSplit(
+        "Our certified tech is Sarah; she will call ahead before arriving.",
+        false
+      );
+      if (!split) throw new Error("Expected split at semicolon");
+      if (split.sentence !== "Our certified tech is Sarah;") {
+        throw new Error(`Expected 'Our certified tech is Sarah;' with semicolon but got '${split.sentence}'`);
+      }
+    },
+  },
 ];
 
 export function runAllTests(): { passed: number; failed: number } {
