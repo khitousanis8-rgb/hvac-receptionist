@@ -61,11 +61,17 @@ async def book_appointment_tool(
     settings = get_settings()
     # Validate service against approved services list when configured
     if settings.business_services:
-        matched_service = resolve_canonical_service(service, settings.business_services)
+        if isinstance(settings.business_services, str):
+            approved_services = [
+                s.strip() for s in settings.business_services.split(",") if s.strip()
+            ]
+        else:
+            approved_services = [s.strip() for s in settings.business_services if s.strip()]
+        matched_service = resolve_canonical_service(service, approved_services)
         if not matched_service:
             return (
                 f"'{service}' is not on our approved services list. "
-                f"Approved services are: {', '.join(settings.business_services)}."
+                f"Approved services are: {', '.join(approved_services)}."
             )
         service = matched_service
 
