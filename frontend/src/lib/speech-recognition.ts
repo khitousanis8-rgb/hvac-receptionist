@@ -495,34 +495,6 @@ export class BrowserSpeechRecognition {
       return false;
     }
 
-    // 0d. Whitelist short (<= 6 words) genuine service selections and date/time phrases.
-    // When the assistant offers choices ("...heating or AC repair?", "...furnace tune up?", "...openings tomorrow at 10 AM?"),
-    // the caller naturally responds with those exact words ("ac repair", "tune up", "tomorrow at 10 AM", "furnace maintenance").
-    // These must NEVER be suppressed as acoustic echo, provided they don't contain assistant signature prompts or lead-in phrases.
-    const isAssistantPromptFragment =
-      clean === "cooling" ||
-      clean === "heating" ||
-      clean === "cooling today" ||
-      clean === "heating today" ||
-      clean === "heating or cooling" ||
-      clean === "heating or cooling today" ||
-      clean === "with your heating" ||
-      clean === "with your cooling" ||
-      clean === "with your heating or cooling" ||
-      clean === "with your heating or cooling today" ||
-      clean === "callback phone";
-
-    if (rawWords.length <= 6 && !isAssistantLeadIn && !isAssistantPromptFragment) {
-      const isEarlyEcho = isEarlyAcousticWindow && this.isTailOfRecentAssistantSpeech(clean);
-      if (!isEarlyEcho) {
-        const hasServiceTerm = /\b(ac|air|conditioning|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter|service|hvac|inspection|boiler)\b/i.test(clean);
-        const hasDateTimeTerm = /\b(tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|asap|earliest|\d+)\b/i.test(clean);
-        if (hasServiceTerm || hasDateTimeTerm) {
-          return false;
-        }
-      }
-    }
-
     // 1. Signature assistant phrases that should NEVER be accepted as caller input
     const SIGNATURE_ASST_PATTERNS = [
       "thank you for calling",
@@ -530,6 +502,15 @@ export class BrowserSpeechRecognition {
       "my name is sarah",
       "this is sarah",
       "how can i assist",
+      "how i can assist",
+      "how can i help",
+      "how i can help",
+      "how can i help you today",
+      "how i can help you today",
+      "how can i help today",
+      "how can i assist you today",
+      "how can i help with your heating or cooling today",
+      "how can i assist with your heating or cooling today",
       "with your heating or cooling",
       "what is the best callback phone number",
       "what s the best callback phone number",
@@ -556,6 +537,38 @@ export class BrowserSpeechRecognition {
         this.echoSuppressionCount++;
         console.warn("[EchoGuard] Suppressed signature assistant phrase echo:", transcript);
         return true;
+      }
+    }
+
+    // 2. Whitelist short (<= 6 words) genuine service selections and date/time phrases.
+    // When the assistant offers choices ("...heating or AC repair?", "...furnace tune up?", "...openings tomorrow at 10 AM?"),
+    // the caller naturally responds with those exact words ("ac repair", "tune up", "tomorrow at 10 AM", "furnace maintenance").
+    // These must NEVER be suppressed as acoustic echo, provided they don't contain assistant signature prompts or lead-in phrases.
+    const isAssistantPromptFragment =
+      clean === "cooling" ||
+      clean === "heating" ||
+      clean === "cooling today" ||
+      clean === "heating today" ||
+      clean === "heating or cooling" ||
+      clean === "heating or cooling today" ||
+      clean === "with your heating" ||
+      clean === "with your cooling" ||
+      clean === "with your heating or cooling" ||
+      clean === "with your heating or cooling today" ||
+      clean === "how can i help" ||
+      clean === "how i can help" ||
+      clean === "how can i help you today" ||
+      clean === "how i can help you today" ||
+      clean === "callback phone";
+
+    if (rawWords.length <= 6 && !isAssistantLeadIn && !isAssistantPromptFragment) {
+      const isEarlyEcho = isEarlyAcousticWindow && this.isTailOfRecentAssistantSpeech(clean);
+      if (!isEarlyEcho) {
+        const hasServiceTerm = /\b(ac|air|conditioning|repair|tune|tuneup|maintenance|furnace|heat|heating|cooling|pump|leak|leaking|noise|duct|pipe|thermostat|filter|service|hvac|inspection|boiler)\b/i.test(clean);
+        const hasDateTimeTerm = /\b(tomorrow|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|morning|afternoon|evening|am|pm|noon|asap|earliest|\d+)\b/i.test(clean);
+        if (hasServiceTerm || hasDateTimeTerm) {
+          return false;
+        }
       }
     }
 

@@ -33,12 +33,25 @@ def booking_missing_fields(slots: dict[str, Any]) -> list[str]:
     return missing
 
 
-def booking_details_changed(updates: dict[str, Any]) -> bool:
-    """Returns true when an update contains phone, service, date, or time."""
-    return any(
-        k in updates and updates[k] is not None
-        for k in ("phone", "service", "date", "time")
-    )
+def booking_details_changed(
+    updates: dict[str, Any],
+    current: dict[str, Any] | None = None,
+) -> bool:
+    """Returns true when an update actually changes phone, service, date, or time."""
+    core_keys = ("phone", "service", "date", "time")
+    if current is None:
+        return any(k in updates and updates[k] is not None for k in core_keys)
+
+    for k in core_keys:
+        if k in updates and updates[k] is not None:
+            cur_val = current.get(k)
+            if cur_val is None and isinstance(current.get("verified"), dict):
+                cur_val = current["verified"].get(k)
+            if cur_val is None or not str(cur_val).strip():
+                return True
+            if str(updates[k]).strip().lower() != str(cur_val).strip().lower():
+                return True
+    return False
 
 
 def is_explicit_booking_confirmation(text: str) -> bool:
@@ -73,8 +86,15 @@ def is_explicit_booking_confirmation(text: str) -> bool:
     if words & date_time_indicators:
         return False
 
+    inquiry_phrases = {
+        "can we", "could we", "can you", "could you", "would you", "would it be",
+        "what about", "what if", "how about", "is there", "are there", "do you",
+    }
+    if any(ip in normalized for ip in inquiry_phrases):
+        return False
+
     inquiry_words = {
-        "want", "need", "can", "could", "would", "what", "how", "why", "where",
+        "want", "need", "what", "how", "why", "where",
         "when", "who", "maybe", "might", "think", "wondering", "if", "prefer",
     }
     if words & inquiry_words:
@@ -140,6 +160,26 @@ def is_explicit_booking_confirmation(text: str) -> bool:
         "schedule it",
         "please schedule it",
         "yes schedule it",
+        "that would be great",
+        "that would be fine",
+        "that would be wonderful",
+        "that would be perfect",
+        "that would work",
+        "that would work for me",
+        "yes that would be great",
+        "yes that would be fine",
+        "yes that would be wonderful",
+        "yes that would be perfect",
+        "yes that would work",
+        "yeah that would work",
+        "yes please lock that in",
+        "yes lock that in",
+        "please lock that in",
+        "yes you can book it",
+        "you can book it",
+        "you can lock that in",
+        "yes please do that",
+        "please do that",
     }
     if normalized in accepted_phrases:
         return True
@@ -160,7 +200,7 @@ def is_explicit_booking_confirmation(text: str) -> bool:
         "lock", "in", "schedule", "confirm", "do", "lets", "let", "us",
         "sounds", "sound", "good", "great", "perfect", "fine", "awesome", "wonderful",
         "works", "work", "for", "me", "correct", "right", "absolutely", "definitely",
-        "and", "to", "thing", "is", "thats", "all", "set",
+        "and", "to", "thing", "is", "thats", "all", "set", "would", "could", "can", "be",
     }
     return all(w in affirmation_vocab for w in normalized.split())
 

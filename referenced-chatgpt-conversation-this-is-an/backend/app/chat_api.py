@@ -1213,7 +1213,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     slots = await asyncio.to_thread(get_call_slots, active_call_id)
     new_slots = _extract_slots_from_text(req.message, slots)
     if new_slots:
-        if booking_details_changed(new_slots):
+        if booking_details_changed(new_slots, current=slots):
             new_slots["confirmation_requested"] = False
             new_slots["confirmation_fingerprint"] = None
             new_slots["confirmed"] = False
@@ -1443,32 +1443,45 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
                             )
                         else:
-                            # Conflict or outside business hours: suggest nearest open slots
-                            def _get_alternatives() -> list[datetime]:
-                                with new_session() as s:
-                                    return find_nearest_available_slots(
-                                        s, settings, booking_dt, count=2
-                                    )
+                            if "approved services list" in book_msg.lower():
+                                fail_msg = (
+                                    f"{book_msg} Which of those services would you like us to help "
+                                    "you with?"
+                                )
+                            else:
+                                # Conflict or outside business hours: suggest nearest open slots
+                                def _get_alternatives() -> list[datetime]:
+                                    with new_session() as s:
+                                        alts = find_nearest_available_slots(
+                                            s, settings, booking_dt, count=3
+                                        )
+                                        return [
+                                            sl for sl in alts
+                                            if abs((sl - booking_dt).total_seconds()) > 60
+                                        ][:2]
 
-                            alt_slots = await asyncio.to_thread(_get_alternatives)
-                            if alt_slots:
-                                alt_strs = [
-                                    format_available_slot_for_speech(sl, settings)
-                                    for sl in alt_slots
-                                ]
-                                if len(alt_strs) >= 2:
-                                    fail_msg = (
-                                        f"That {t_val} slot is no longer available. "
-                                        f"I can get you scheduled for {alt_strs[0]} or "
-                                        f"{alt_strs[1]}—would either of those work?"
-                                    )
+                                alt_slots = await asyncio.to_thread(_get_alternatives)
+                                if alt_slots:
+                                    alt_strs = [
+                                        format_available_slot_for_speech(sl, settings)
+                                        for sl in alt_slots
+                                    ]
+                                    if len(alt_strs) >= 2:
+                                        fail_msg = (
+                                            f"That {t_val} slot is no longer available. "
+                                            f"I can get you scheduled for {alt_strs[0]} or "
+                                            f"{alt_strs[1]}—would either of those work?"
+                                        )
+                                    else:
+                                        fail_msg = (
+                                            f"That {t_val} slot is no longer available. "
+                                            f"I have an opening {alt_strs[0]}—"
+                                            "would that work for you?"
+                                        )
                                 else:
                                     fail_msg = (
-                                        f"That {t_val} slot is no longer available. "
-                                        f"I have an opening {alt_strs[0]}—would that work for you?"
+                                        f"{book_msg} What other day and time works best for you?"
                                     )
-                            else:
-                                fail_msg = f"{book_msg} What other day and time works best for you?"
 
                             await asyncio.to_thread(
                                 record_call_turn, active_call_id, "assistant", fail_msg

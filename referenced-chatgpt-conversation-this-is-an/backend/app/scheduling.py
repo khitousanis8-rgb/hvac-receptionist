@@ -118,6 +118,97 @@ def get_or_create_customer(
     return customer
 
 
+def resolve_canonical_service(service: str, approved_services: list[str]) -> str | None:
+    """Resolve a raw or conversational service string to an approved business service."""
+    if not service or not service.strip():
+        return None
+    if not approved_services:
+        return service.strip()
+
+    normalized_requested = service.strip().lower()
+
+    # 1. Exact match (case-insensitive)
+    for approved in approved_services:
+        if normalized_requested == approved.strip().lower():
+            return approved.strip()
+
+    # 2. Tune-up / maintenance / inspection domain keywords
+    # Prioritize tune-up keywords against tune-up services before falling back to repair or ac
+    tune_words = {
+        "tune-up", "tuneup", "tune up", "maintenance", "inspection", "check-up", "checkup"
+    }
+    if any(tw in normalized_requested for tw in tune_words):
+        for approved in approved_services:
+            low_app = approved.strip().lower()
+            tune_targets = ("tune-up", "tuneup", "tune up", "maintenance", "inspection")
+            if any(tw in low_app for tw in tune_targets):
+                return approved.strip()
+
+    # 3. Heating / Furnace / Heater domain synonyms
+    heat_words = {"heating", "furnace", "heater", "boiler", "heat pump"}
+    if any(hw in normalized_requested for hw in heat_words):
+        for approved in approved_services:
+            low_app = approved.strip().lower()
+            heat_targets = ("furnace", "heat pump", "heating", "heater")
+            if any(ht in low_app for ht in heat_targets):
+                return approved.strip()
+
+    # 4. AC / Cooling / Air Conditioning domain synonyms
+    ac_words = ("ac", "a/c", "air conditioning", "air conditioner", "cooling")
+    if any(re.search(rf"\b{re.escape(w)}\b", normalized_requested) for w in ac_words):
+        is_install = "install" in normalized_requested or "replacement" in normalized_requested
+        for approved in approved_services:
+            low_app = approved.strip().lower()
+            if "ac" in low_app or "air conditioning" in low_app or "cooling" in low_app:
+                if is_install and "install" in low_app:
+                    return approved.strip()
+                if not is_install and "repair" in low_app:
+                    return approved.strip()
+        for approved in approved_services:
+            low_app = approved.strip().lower()
+            if "ac" in low_app or "cooling" in low_app:
+                return approved.strip()
+
+    # 5. Ductless / mini-split
+    mini_words = ("mini-split", "minisplit", "ductless")
+    if any(mw in normalized_requested for mw in mini_words):
+        for approved in approved_services:
+            if "ductless" in approved.lower() or "mini-split" in approved.lower():
+                return approved.strip()
+
+    # 6. Indoor air quality / air filter
+    iaq_words = ("air quality", "filter", "purifier")
+    if any(iw in normalized_requested for iw in iaq_words):
+        for approved in approved_services:
+            if "air quality" in approved.lower() or "indoor" in approved.lower():
+                return approved.strip()
+
+    # 7. Substring containment
+    for approved in approved_services:
+        clean_app = approved.strip().lower()
+        if normalized_requested in clean_app or clean_app in normalized_requested:
+            return approved.strip()
+
+    # 8. Token subset matching (ignoring stop words)
+    stop_words = {"and", "&", "or", "the", "a", "an", "for", "in", "of", "services", "service"}
+    req_words = {w for w in re.findall(r"\w+", normalized_requested) if w not in stop_words}
+    if req_words:
+        for approved in approved_services:
+            clean_app = approved.strip().lower()
+            app_words = {w for w in re.findall(r"\w+", clean_app) if w not in stop_words}
+            if req_words.issubset(app_words) or app_words.issubset(req_words):
+                return approved.strip()
+
+    # 9. Generic tune-up fallback if no specific tune-up named service was found
+    if any(tw in normalized_requested for tw in tune_words):
+        for approved in approved_services:
+            low_app = approved.strip().lower()
+            if "repair" in low_app or "furnace" in low_app or "ac" in low_app:
+                return approved.strip()
+
+    return None
+
+
 def book_appointment(
     session: Session,
     settings: Settings,
@@ -130,39 +221,12 @@ def book_appointment(
     """Book a single slot atomically, enforcing business hours and uniqueness."""
     if settings.business_services:
         if isinstance(settings.business_services, str):
-            approved_services = [s.strip() for s in settings.business_services.split(",")]
+            approved_services = [
+                s.strip() for s in settings.business_services.split(",") if s.strip()
+            ]
         else:
-            approved_services = [s.strip() for s in settings.business_services]
-        normalized_requested = service.strip().lower()
-        matched_service: str | None = None
-        for approved in approved_services:
-            clean_app = approved.lower()
-            if (
-                normalized_requested == clean_app
-                or normalized_requested in clean_app
-                or clean_app in normalized_requested
-            ):
-                matched_service = approved
-                break
-        if not matched_service:
-            stop_words = {
-                "and", "&", "or", "the", "a", "an", "for", "in", "of", "services", "service"
-            }
-            req_words = {w for w in normalized_requested.split() if w not in stop_words}
-            for approved in approved_services:
-                clean_app = approved.lower()
-                app_words = {w for w in clean_app.split() if w not in stop_words}
-                if req_words and req_words.issubset(app_words):
-                    matched_service = approved
-                    break
-        if not matched_service:
-            tune_words = {"tune-up", "tuneup", "tune up", "maintenance", "inspection"}
-            if any(tw in normalized_requested for tw in tune_words):
-                for approved in approved_services:
-                    low_app = approved.lower()
-                    if "repair" in low_app or "furnace" in low_app or "ac" in low_app:
-                        matched_service = approved
-                        break
+            approved_services = [s.strip() for s in settings.business_services if s.strip()]
+        matched_service = resolve_canonical_service(service, approved_services)
         if not matched_service:
             services_str = ", ".join(approved_services)
             return (

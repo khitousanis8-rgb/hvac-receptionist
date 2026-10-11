@@ -45,16 +45,34 @@ def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
     has_prompt = (
         "how can i assist" in clean
         or "how can i help" in clean
+        or "how i can help" in clean
+        or "how i can assist" in clean
         or "heating or cooling today" in clean
     )
     # Catch opening greeting question even when mic starts late and misses the intro phrase
     has_greeting_question = (
-        ("how can i help" in clean or "how can i assist" in clean)
-        and ("heating or cooling" in clean or "heating today" in clean or "cooling today" in clean)
+        (
+            "how can i help" in clean
+            or "how can i assist" in clean
+            or "how i can help" in clean
+            or "how i can assist" in clean
+        )
+        and (
+            "heating or cooling" in clean
+            or "heating today" in clean
+            or "cooling today" in clean
+            or "today" in clean
+        )
     ) or (
         "how can i help with your heating or cooling today" in clean
         or "how can i assist with your heating or cooling today" in clean
         or "how can i help with your heating or cooling" in clean
+        or "how can i help you today" in clean
+        or "how i can help you today" in clean
+        or "how can i assist you today" in clean
+        or "how i can assist you today" in clean
+        or "how can i help today" in clean
+        or "how i can help today" in clean
     )
 
     if not (has_intro and has_prompt) and not has_greeting_question:
@@ -79,6 +97,12 @@ def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
         "how can i assist with heating or cooling today",
         "how can i help with heating or cooling",
         "how can i assist with heating or cooling",
+        "how can i help you today",
+        "how i can help you today",
+        "how can i help today",
+        "how i can help today",
+        "how can i assist you today",
+        "how i can assist you today",
         "with your heating or cooling today",
         "with your heating or cooling",
         "heating or cooling today",
@@ -87,9 +111,12 @@ def _is_assistant_echo(text: str, company_name: str | None = None) -> bool:
         "how can i assist you with",
         "how can i assist with",
         "how can i help you",
+        "how i can help you",
         "how can i assist you",
         "how can i help",
+        "how i can help",
         "how can i assist",
+        "how i can assist",
     ]
     if company_name and company_name.strip():
         phrases.append(company_name.strip().lower())

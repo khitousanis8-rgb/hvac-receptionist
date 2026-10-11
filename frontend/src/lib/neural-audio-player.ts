@@ -486,7 +486,7 @@ export class NeuralAudioPlayer {
           }
           if (this.isTurnActive && this.currentTurnId === item.turnId) {
             console.warn("[NeuralAudioPlayer] Stream fetch failed, falling back to Web Speech API:", error);
-            this.fallbackSpeak(item.text, item.turnId);
+            await this.fallbackSpeak(item.text, item.turnId);
           }
           continue;
         }
@@ -695,55 +695,61 @@ export class NeuralAudioPlayer {
   /**
    * Graceful fallback to browser speech synthesis if backend stream is unreachable.
    */
-  private fallbackSpeak(text: string, turnId: number): void {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      this.checkTurnCompletion();
-      return;
-    }
-
-    if (!this.isTurnActive || this.currentTurnId !== turnId) {
-      return;
-    }
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    const voice = this.selectBestSpeechSynthesisVoice();
-    if (voice) {
-      utterance.voice = voice;
-    }
-    utterance.lang = voice?.lang || "en-US";
-    utterance.rate = 1.05;
-    utterance.pitch = 1.02;
-
-    utterance.onstart = () => {
-      if (this.currentTurnId !== turnId || !this.isTurnActive) return;
-      if (!this.isPlaying) {
-        this.isPlaying = true;
-        this.onPlaybackStateChange?.(true);
-      }
-    };
-
-    utterance.onend = () => {
-      this.currentUtterance = null;
-      this.stopSynthKeepAlive();
-      if (this.currentTurnId === turnId) {
+  private fallbackSpeak(text: string, turnId: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) {
         this.checkTurnCompletion();
+        resolve();
+        return;
       }
-    };
 
-    utterance.onerror = (e) => {
-      this.currentUtterance = null;
-      this.stopSynthKeepAlive();
-      if (e.error !== "canceled" && e.error !== "interrupted") {
-        console.warn("[NeuralAudioPlayer] SpeechSynthesis error:", e.error);
+      if (!this.isTurnActive || this.currentTurnId !== turnId) {
+        resolve();
+        return;
       }
-      if (this.currentTurnId === turnId) {
-        this.checkTurnCompletion();
-      }
-    };
 
-    this.currentUtterance = utterance;
-    this.startSynthKeepAlive();
-    window.speechSynthesis.speak(utterance);
+      const utterance = new SpeechSynthesisUtterance(text);
+      const voice = this.selectBestSpeechSynthesisVoice();
+      if (voice) {
+        utterance.voice = voice;
+      }
+      utterance.lang = voice?.lang || "en-US";
+      utterance.rate = 1.05;
+      utterance.pitch = 1.02;
+
+      utterance.onstart = () => {
+        if (this.currentTurnId !== turnId || !this.isTurnActive) return;
+        if (!this.isPlaying) {
+          this.isPlaying = true;
+          this.onPlaybackStateChange?.(true);
+        }
+      };
+
+      utterance.onend = () => {
+        this.currentUtterance = null;
+        this.stopSynthKeepAlive();
+        if (this.currentTurnId === turnId) {
+          this.checkTurnCompletion();
+        }
+        resolve();
+      };
+
+      utterance.onerror = (e) => {
+        this.currentUtterance = null;
+        this.stopSynthKeepAlive();
+        if (e.error !== "canceled" && e.error !== "interrupted") {
+          console.warn("[NeuralAudioPlayer] SpeechSynthesis error:", e.error);
+        }
+        if (this.currentTurnId === turnId) {
+          this.checkTurnCompletion();
+        }
+        resolve();
+      };
+
+      this.currentUtterance = utterance;
+      this.startSynthKeepAlive();
+      window.speechSynthesis.speak(utterance);
+    });
   }
 
   private loadSpeechSynthesisVoices(): void {

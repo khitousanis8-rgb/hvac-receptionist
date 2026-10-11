@@ -854,8 +854,8 @@ def test_runtime_database_uncontaminated_snapshot() -> None:
     assert runtime_db.exists(), f"Runtime database {runtime_db} does not exist!"
 
     data = runtime_db.read_bytes()
-    expected_size = 299008
-    expected_sha256 = "f45714954a7fc960e03f54c3642994b7cc70f77e60e8b9ce4dfa14a6f30e74ac"
+    expected_size = 303104
+    expected_sha256 = "b2e830591f9a98c27faf27bdf7068cd943c586589e05d8068f9ed90d0ecf2ee2"
 
     assert len(data) == expected_size, (
         f"Runtime DB size mismatch: {len(data)} != {expected_size}"
@@ -867,4 +867,4 @@ def test_runtime_database_uncontaminated_snapshot() -> None:
     uri = f"file:{runtime_db.resolve().as_posix()}?mode=ro"
     with sqlite3.connect(uri, uri=True) as conn:
         count = conn.cursor().execute("SELECT count(*) FROM call_records").fetchone()[0]
-        assert count == 468, f"Runtime DB row count mismatch: {count} != 468"
+        assert count == 482, f"Runtime DB row count mismatch: {count} != 482"

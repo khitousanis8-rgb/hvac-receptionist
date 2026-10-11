@@ -16,6 +16,7 @@ from app.scheduling import (
     format_available_slot_for_speech,
     parse_local_datetime,
     reschedule_appointment_by_phone,
+    resolve_canonical_service,
 )
 
 logger = structlog.get_logger(__name__)
@@ -60,17 +61,7 @@ async def book_appointment_tool(
     settings = get_settings()
     # Validate service against approved services list when configured
     if settings.business_services:
-        normalized_requested = service.strip().lower()
-        matched_service: str | None = None
-        for approved in settings.business_services:
-            clean_app = approved.strip().lower()
-            if (
-                normalized_requested == clean_app
-                or normalized_requested in clean_app
-                or clean_app in normalized_requested
-            ):
-                matched_service = approved.strip()
-                break
+        matched_service = resolve_canonical_service(service, settings.business_services)
         if not matched_service:
             return (
                 f"'{service}' is not on our approved services list. "
